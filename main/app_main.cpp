@@ -87,6 +87,7 @@ struct SharedState {
   uint64_t last_update_ms = 0;
   bool calibrating = false;
   bool usb_msc_mode = false;
+  std::string usb_error;
 };
 
 SharedState state{};
@@ -271,6 +272,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       </select>
       <div class="note">MSC отключает доступ к логам/прошивке, даёт доступ к SD по USB. Переключение перезагружает устройство.</div>
       <button class="btn" onclick="applyUsbMode()">Apply & Reboot</button>
+      <div class="note" id="usbError" style="color:#c0392b; display:none;"></div>
     </div>
   </div>
 
@@ -286,7 +288,20 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
       const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
       document.getElementById('usbModeLabel').textContent = modeLabel;
-      document.getElementById('usbModeSelect').value = data.usbMode === 'msc' ? 'msc' : 'cdc';
+      const usbModeSelect = document.getElementById('usbModeSelect');
+      usbModeSelect.value = data.usbMode === 'msc' ? 'msc' : 'cdc';
+      usbModeSelect.disabled = !data.usbMscBuilt && data.usbMode !== 'msc';
+      if (!data.usbMscBuilt) {
+        usbErrorEl.textContent = 'Прошивка собрана без MSC. Сборка с CONFIG_TINYUSB_MSC_ENABLED=y обязательна.';
+        usbErrorEl.style.display = 'block';
+      }
+      const usbErrorEl = document.getElementById('usbError');
+      if (data.usbError) {
+        usbErrorEl.textContent = data.usbError;
+        usbErrorEl.style.display = 'block';
+      } else {
+        usbErrorEl.style.display = 'none';
+      }
     }
     
     function refreshData() {
@@ -411,10 +426,15 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({mode})
+      }).then(res => {
+        if (!res.ok) {
+          return res.text().then(t => { throw new Error(t || 'Request failed'); });
+        }
+        return res.text();
       }).then(() => {
         alert('Переключаюсь, устройство перезагрузится');
-      }).catch(() => {
-        alert('Запрос отправлен, устройство перезагрузится');
+      }).catch(err => {
+        alert('Не удалось переключить: ' + err.message);
       });
     }
   </script>
@@ -425,9 +445,12 @@ constexpr char INDEX_HTML[] = R"rawliteral(
 // Helpers to guard shared state
 SharedState CopyState() {
   SharedState snapshot;
-  if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+  if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(1)) == pdTRUE) {
     snapshot = state;
     xSemaphoreGive(state_mutex);
+  } else {
+    // Fallback: relaxed read without lock to avoid long blocking in time-critical loops
+    snapshot = state;
   }
   return snapshot;
 }
@@ -653,12 +676,14 @@ void StopStepper() {
 }
 
 void StartStepperMove(int steps, bool forward, int speed_us) {
+  // Clamp speed to avoid starving CPU/idle (min 500 us)
+  const int clamped_speed = std::clamp(speed_us, 500, 2000);
   UpdateState([=](SharedState& s) {
     if (!s.stepper_enabled) {
       return;
     }
     s.stepper_direction_forward = forward;
-    s.stepper_speed_us = speed_us;
+    s.stepper_speed_us = clamped_speed;
     s.stepper_target = s.stepper_position + (forward ? steps : -steps);
     s.stepper_moving = true;
     s.last_step_timestamp_us = esp_timer_get_time();
@@ -667,6 +692,8 @@ void StartStepperMove(int steps, bool forward, int speed_us) {
 }
 
 void StepperTask(void*) {
+  const TickType_t idle_delay_active = pdMS_TO_TICKS(5);
+  const TickType_t idle_delay_idle = pdMS_TO_TICKS(10);
   while (true) {
     SharedState snapshot = CopyState();
     if (snapshot.stepper_enabled && snapshot.stepper_moving) {
@@ -687,9 +714,11 @@ void StepperTask(void*) {
             s.stepper_moving = false;
           }
         });
+        // Yield after step to let lower-priority/idle run
+        vTaskDelay(idle_delay_active);
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(1));
+    vTaskDelay(snapshot.stepper_moving ? idle_delay_active : idle_delay_idle);
   }
 }
 
@@ -799,6 +828,10 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddStringToObject(root, "usbMode", snapshot.usb_msc_mode ? "msc" : "cdc");
+  cJSON_AddBoolToObject(root, "usbMscBuilt", CONFIG_TINYUSB_MSC_ENABLED);
+  if (!snapshot.usb_error.empty()) {
+    cJSON_AddStringToObject(root, "usbError", snapshot.usb_error.c_str());
+  }
 
   const char* resp = cJSON_PrintUnformatted(root);
   httpd_resp_set_type(req, "application/json");
@@ -918,6 +951,13 @@ esp_err_t UsbModeSetHandler(httpd_req_t* req) {
   UsbMode requested = (std::strcmp(mode_str, "msc") == 0) ? UsbMode::kMsc : UsbMode::kCdc;
   cJSON_Delete(root);
 
+#if !CONFIG_TINYUSB_MSC_ENABLED
+  if (requested == UsbMode::kMsc) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC not enabled in firmware");
+    return ESP_FAIL;
+  }
+#endif
+
   if (requested == usb_mode) {
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"unchanged\"}");
@@ -990,9 +1030,14 @@ extern "C" void app_main(void) {
     if (msc_err != ESP_OK) {
       ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
       usb_mode = UsbMode::kCdc;
-      UpdateState([](SharedState& s) { s.usb_msc_mode = false; });
+      UpdateState([&](SharedState& s) {
+        s.usb_msc_mode = false;
+        s.usb_error = "MSC init failed: " + std::string(esp_err_to_name(msc_err));
+      });
       SaveUsbModeToNvs(usb_mode);
     }
+  } else {
+    UpdateState([](SharedState& s) { s.usb_error.clear(); });
   }
 
   InitGpios();
@@ -1004,8 +1049,9 @@ extern "C" void app_main(void) {
   InitWifi();
   StartHttpServer();
 
-  xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 5, nullptr, tskNO_AFFINITY);
-  xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 5, nullptr, tskNO_AFFINITY);
+  // Pin tasks to different cores: ADC on core1, stepper on core0 with low priority
+  xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 1);
+  xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 1, nullptr, 0);
 
   ESP_LOGI(TAG, "System ready");
 }
