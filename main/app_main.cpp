@@ -698,6 +698,9 @@ void StepperTask(void*) {
   while (true) {
     SharedState snapshot = CopyState();
     if (snapshot.stepper_enabled && snapshot.stepper_moving) {
+      // Reassert direction each loop to avoid spurious flips from noise
+      gpio_set_level(STEPPER_DIR, snapshot.stepper_direction_forward ? 1 : 0);
+
       const int64_t now = esp_timer_get_time();
       if (now - snapshot.last_step_timestamp_us >= snapshot.stepper_speed_us) {
         gpio_set_level(STEPPER_STEP, 1);
