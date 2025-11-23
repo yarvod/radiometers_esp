@@ -15,6 +15,7 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -246,7 +247,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         
         <div class="form-group">
           <label for="speed">Speed (microseconds delay):</label>
-          <input type="number" id="speed" value="500" min="50" max="2000">
+          <input type="number" id="speed" value="1000" min="50" max="2000">
           <div class="speed-info">Lower value = faster speed (50-2000 microseconds)</div>
         </div>
         
@@ -676,8 +677,8 @@ void StopStepper() {
 }
 
 void StartStepperMove(int steps, bool forward, int speed_us) {
-  // Clamp speed to avoid starving CPU/idle (min 500 us)
-  const int clamped_speed = std::clamp(speed_us, 500, 2000);
+  // Clamp speed to avoid starving CPU/idle (min 1000 us)
+  const int clamped_speed = std::clamp(speed_us, 1000, 2000);
   UpdateState([=](SharedState& s) {
     if (!s.stepper_enabled) {
       return;
@@ -692,8 +693,8 @@ void StartStepperMove(int steps, bool forward, int speed_us) {
 }
 
 void StepperTask(void*) {
-  const TickType_t idle_delay_active = pdMS_TO_TICKS(5);
-  const TickType_t idle_delay_idle = pdMS_TO_TICKS(10);
+  const TickType_t idle_delay_active = pdMS_TO_TICKS(1);
+  const TickType_t idle_delay_idle = pdMS_TO_TICKS(5);
   while (true) {
     SharedState snapshot = CopyState();
     if (snapshot.stepper_enabled && snapshot.stepper_moving) {
@@ -963,6 +964,11 @@ esp_err_t UsbModeSetHandler(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"status\":\"unchanged\"}");
   }
 
+  // If leaving MSC, unmount before reboot to keep host happy
+  if (usb_mode == UsbMode::kMsc && requested == UsbMode::kCdc) {
+    tinyusb_msc_storage_unmount();
+  }
+
   SaveUsbModeToNvs(requested);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, "{\"status\":\"restarting\",\"mode\":\"pending\"}");
@@ -1017,6 +1023,9 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(ret);
   }
 
+  // Optionally disable task watchdog to avoid false positives from tight stepper loop
+  esp_task_wdt_deinit();
+
   state_mutex = xSemaphoreCreateMutex();
 
   usb_mode = LoadUsbModeFromNvs();
@@ -1049,9 +1058,9 @@ extern "C" void app_main(void) {
   InitWifi();
   StartHttpServer();
 
-  // Pin tasks to different cores: ADC on core1, stepper on core0 with low priority
-  xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 1);
-  xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 1, nullptr, 0);
+  // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
+  xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
+  xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
 
   ESP_LOGI(TAG, "System ready");
 }
