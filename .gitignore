@@ -1,0 +1,33 @@
+# macOS filesystem noise
+.DS_Store
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# ESP-IDF / CMake build outputs
+/build*/
+sdkconfig
+sdkconfig.old
+sdkconfig.save
+/managed_components/
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+CMakeScripts/
+Testing/
+compile_commands.json
+
+# Compiled binaries and intermediates
+*.o
+*.obj
+*.a
+*.elf
+*.bin
+*.map
+
+# IDE project files
+.idea/
