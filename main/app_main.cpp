@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <functional>
 #include <string>
 
@@ -19,6 +21,13 @@
 #include "freertos/task.h"
 #include "ltc2440.h"
 #include "nvs_flash.h"
+#include "nvs.h"
+#include "sdmmc_cmd.h"
+#include "esp_vfs_fat.h"
+#include "tinyusb.h"
+#include "tusb.h"
+#include "class/msc/msc.h"
+#include "tusb_msc_storage.h"
 #include "esp_rom_sys.h"
 
 namespace {
@@ -32,6 +41,11 @@ constexpr gpio_num_t ADC_SCK = GPIO_NUM_6;
 constexpr gpio_num_t ADC_CS1 = GPIO_NUM_16;
 constexpr gpio_num_t ADC_CS2 = GPIO_NUM_15;
 constexpr gpio_num_t ADC_CS3 = GPIO_NUM_7;
+
+// SD card pins (1-bit SDMMC)
+constexpr gpio_num_t SD_CLK = GPIO_NUM_39;
+constexpr gpio_num_t SD_CMD = GPIO_NUM_38;
+constexpr gpio_num_t SD_D0 = GPIO_NUM_40;
 
 // Relay and stepper pins
 constexpr gpio_num_t RELAY_PIN = GPIO_NUM_17;
@@ -47,6 +61,7 @@ constexpr char WIFI_PASS[] = "ran/fian/asc/2010";
 constexpr char HOSTNAME[] = "miap-device";
 constexpr bool USE_CUSTOM_MAC = true;
 uint8_t CUSTOM_MAC[6] = {0x10, 0x00, 0x3B, 0x6E, 0x83, 0x70};
+constexpr char MSC_BASE_PATH[] = "/usb_msc";
 
 // Wi-Fi helpers
 constexpr int WIFI_CONNECTED_BIT = BIT0;
@@ -71,15 +86,71 @@ struct SharedState {
   int64_t last_step_timestamp_us = 0;
   uint64_t last_update_ms = 0;
   bool calibrating = false;
+  bool usb_msc_mode = false;
 };
 
 SharedState state{};
 SemaphoreHandle_t state_mutex = nullptr;
 
+enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };
+UsbMode usb_mode = UsbMode::kCdc;
+
 // Devices
 LTC2440 adc1(ADC_CS1);
 LTC2440 adc2(ADC_CS2);
 LTC2440 adc3(ADC_CS3);
+sdmmc_card_t* sd_card = nullptr;
+
+// TinyUSB MSC descriptors (single-interface device)
+constexpr uint8_t EPNUM_MSC_OUT = 0x01;
+constexpr uint8_t EPNUM_MSC_IN = 0x81;
+constexpr uint8_t ITF_MSC = 0;
+
+tusb_desc_device_t kMscDeviceDescriptor = {
+    .bLength = sizeof(tusb_desc_device_t),
+    .bDescriptorType = TUSB_DESC_DEVICE,
+    .bcdUSB = 0x0200,
+    .bDeviceClass = TUSB_CLASS_MISC,
+    .bDeviceSubClass = MISC_SUBCLASS_COMMON,
+    .bDeviceProtocol = MISC_PROTOCOL_IAD,
+    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor = 0x303A,  // Espressif VID
+    .idProduct = 0x4002,
+    .bcdDevice = 0x0100,
+    .iManufacturer = 0x01,
+    .iProduct = 0x02,
+    .iSerialNumber = 0x03,
+    .bNumConfigurations = 0x01,
+};
+
+uint8_t const kMscConfigDescriptor[] = {
+    // Config number, interface count, string index, total length, attribute, power in mA
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    // Interface number, string index, EP Out & EP In address, EP size
+    TUD_MSC_DESCRIPTOR(ITF_MSC, 0, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
+};
+
+const char* kMscStringDescriptor[] = {
+    (const char[]) {0x09, 0x04},  // English (0x0409)
+    "Espressif",                  // Manufacturer
+    "SD Mass Storage",            // Product
+    "123456",                     // Serial
+    "MSC",                        // MSC interface
+};
+
+#if (TUD_OPT_HIGH_SPEED)
+const tusb_desc_device_qualifier_t kDeviceQualifier = {
+    .bLength = sizeof(tusb_desc_device_qualifier_t),
+    .bDescriptorType = TUSB_DESC_DEVICE_QUALIFIER,
+    .bcdUSB = 0x0200,
+    .bDeviceClass = TUSB_CLASS_MISC,
+    .bDeviceSubClass = MISC_SUBCLASS_COMMON,
+    .bDeviceProtocol = MISC_PROTOCOL_IAD,
+    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
+    .bNumConfigurations = 0x01,
+    .bReserved = 0,
+};
+#endif
 
 // HTTP server
 httpd_handle_t http_server = nullptr;
@@ -117,6 +188,8 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     label { display: block; margin-bottom: 5px; font-weight: bold; }
     input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
     .speed-info { font-size: 12px; color: #666; margin-top: 5px; }
+    .usb-panel { background: #eef7e8; padding: 20px; border-radius: 8px; margin-top: 10px; }
+    .note { font-size: 12px; color: #666; margin-top: 5px; }
   </style>
 </head>
 <body>
@@ -186,6 +259,18 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     
     <div class="status">
       Last update: <span id="lastUpdate">-</span>
+      <br>USB mode: <span id="usbModeLabel">Serial (logs/flash)</span>
+    </div>
+
+    <div class="usb-panel">
+      <h3>USB Mode (requires reboot)</h3>
+      <label for="usbModeSelect">Select mode:</label>
+      <select id="usbModeSelect">
+        <option value="cdc">Serial (logs + flashing)</option>
+        <option value="msc">Mass Storage (SD card over USB)</option>
+      </select>
+      <div class="note">MSC отключает доступ к логам/прошивке, даёт доступ к SD по USB. Переключение перезагружает устройство.</div>
+      <button class="btn" onclick="applyUsbMode()">Apply & Reboot</button>
     </div>
   </div>
 
@@ -199,6 +284,9 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
       document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes' : 'No';
       document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+      const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
+      document.getElementById('usbModeLabel').textContent = modeLabel;
+      document.getElementById('usbModeSelect').value = data.usbMode === 'msc' ? 'msc' : 'cdc';
     }
     
     function refreshData() {
@@ -312,6 +400,23 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     
     // Initial load
     refreshData();
+
+    function applyUsbMode() {
+      const mode = document.getElementById('usbModeSelect').value;
+      const confirmText = mode === 'msc'
+        ? 'Переключиться в Mass Storage. Логи/прошивка по USB станут недоступны. Перезагрузить устройство?'
+        : 'Вернуть USB в режим Serial (логи/прошивка). Устройство перезагрузится. Продолжить?';
+      if (!confirm(confirmText)) return;
+      fetch('/usb/mode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode})
+      }).then(() => {
+        alert('Переключаюсь, устройство перезагрузится');
+      }).catch(() => {
+        alert('Запрос отправлен, устройство перезагрузится');
+      });
+    }
   </script>
 </body>
 </html>
@@ -331,6 +436,35 @@ void UpdateState(const std::function<void(SharedState&)>& updater) {
   if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     updater(state);
     xSemaphoreGive(state_mutex);
+  }
+}
+
+void ScheduleRestart() {
+  xTaskCreate(
+      [](void*) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        esp_restart();
+      },
+      "restart_task", 2048, nullptr, 5, nullptr);
+}
+
+UsbMode LoadUsbModeFromNvs() {
+  nvs_handle_t handle;
+  uint8_t mode = static_cast<uint8_t>(UsbMode::kCdc);
+  if (nvs_open("usb", NVS_READONLY, &handle) == ESP_OK) {
+    nvs_get_u8(handle, "mode", &mode);
+    nvs_close(handle);
+  }
+  return mode == static_cast<uint8_t>(UsbMode::kMsc) ? UsbMode::kMsc : UsbMode::kCdc;
+}
+
+void SaveUsbModeToNvs(UsbMode mode) {
+  nvs_handle_t handle;
+  if (nvs_open("usb", NVS_READWRITE, &handle) == ESP_OK) {
+    uint8_t v = static_cast<uint8_t>(mode);
+    nvs_set_u8(handle, "mode", v);
+    nvs_commit(handle);
+    nvs_close(handle);
   }
 }
 
@@ -417,6 +551,84 @@ void InitGpios() {
   gpio_set_level(STEPPER_EN, 1);   // disable motor by default
   gpio_set_level(STEPPER_DIR, 0);
   gpio_set_level(STEPPER_STEP, 0);
+}
+
+esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
+  bool host_init = false;
+  sdmmc_card_t* card = static_cast<sdmmc_card_t*>(malloc(sizeof(sdmmc_card_t)));
+  ESP_RETURN_ON_FALSE(card, ESP_ERR_NO_MEM, TAG, "No mem for sdmmc_card_t");
+
+  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  host.flags |= SDMMC_HOST_FLAG_1BIT;
+
+  sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+  slot_config.width = 1;
+  slot_config.clk = SD_CLK;
+  slot_config.cmd = SD_CMD;
+  slot_config.d0 = SD_D0;
+  slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+  ESP_RETURN_ON_ERROR((*host.init)(), TAG, "Host init failed");
+  host_init = true;
+
+  esp_err_t err = sdmmc_host_init_slot(host.slot, &slot_config);
+  if (err != ESP_OK) {
+    if (host_init) {
+      if (host.flags & SDMMC_HOST_FLAG_DEINIT_ARG) {
+        host.deinit_p(host.slot);
+      } else {
+        (*host.deinit)();
+      }
+    }
+    free(card);
+    return err;
+  }
+
+  // Retry until card present
+  while (sdmmc_card_init(&host, card) != ESP_OK) {
+    ESP_LOGW(TAG, "Insert SD card");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+
+  sdmmc_card_print_info(stdout, card);
+  *out_card = card;
+  return ESP_OK;
+}
+
+esp_err_t StartUsbMsc(sdmmc_card_t* card) {
+  tinyusb_msc_sdmmc_config_t config_sdmmc = {
+      .card = card,
+      .callback_mount_changed = nullptr,
+      .callback_premount_changed = nullptr,
+      .mount_config =
+          {
+              .format_if_mount_failed = false,
+              .max_files = 4,
+              .allocation_unit_size = 0,
+              .disk_status_check_enable = false,
+              .use_one_fat = false,
+          },
+  };
+  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_init_sdmmc(&config_sdmmc), TAG, "Init MSC storage failed");
+  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_mount(MSC_BASE_PATH), TAG, "Mount MSC storage failed");
+
+  tinyusb_config_t tusb_cfg = {};
+  tusb_cfg.device_descriptor = &kMscDeviceDescriptor;
+  tusb_cfg.string_descriptor = kMscStringDescriptor;
+  tusb_cfg.string_descriptor_count = sizeof(kMscStringDescriptor) / sizeof(kMscStringDescriptor[0]);
+  tusb_cfg.external_phy = false;
+#if (TUD_OPT_HIGH_SPEED)
+  tusb_cfg.fs_configuration_descriptor = kMscConfigDescriptor;
+  tusb_cfg.hs_configuration_descriptor = kMscConfigDescriptor;
+  tusb_cfg.qualifier_descriptor = &kDeviceQualifier;
+#else
+  tusb_cfg.configuration_descriptor = kMscConfigDescriptor;
+#endif
+  tusb_cfg.self_powered = false;
+  tusb_cfg.vbus_monitor_io = -1;
+  ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), TAG, "TinyUSB install failed");
+  ESP_LOGI(TAG, "USB in MSC mode");
+  return ESP_OK;
 }
 
 void EnableStepper() {
@@ -586,6 +798,7 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
+  cJSON_AddStringToObject(root, "usbMode", snapshot.usb_msc_mode ? "msc" : "cdc");
 
   const char* resp = cJSON_PrintUnformatted(root);
   httpd_resp_set_type(req, "application/json");
@@ -672,6 +885,51 @@ esp_err_t StepperZeroHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"position_zeroed\"}");
 }
 
+esp_err_t UsbModeGetHandler(httpd_req_t* req) {
+  httpd_resp_set_type(req, "application/json");
+  if (usb_mode == UsbMode::kMsc) {
+    return httpd_resp_sendstr(req, "{\"mode\":\"msc\"}");
+  }
+  return httpd_resp_sendstr(req, "{\"mode\":\"cdc\"}");
+}
+
+esp_err_t UsbModeSetHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  const char* mode_str = cJSON_GetObjectItem(root, "mode") && cJSON_GetObjectItem(root, "mode")->valuestring
+                             ? cJSON_GetObjectItem(root, "mode")->valuestring
+                             : "";
+  UsbMode requested = (std::strcmp(mode_str, "msc") == 0) ? UsbMode::kMsc : UsbMode::kCdc;
+  cJSON_Delete(root);
+
+  if (requested == usb_mode) {
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"unchanged\"}");
+  }
+
+  SaveUsbModeToNvs(requested);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, "{\"status\":\"restarting\",\"mode\":\"pending\"}");
+  ScheduleRestart();
+  return ESP_OK;
+}
+
 httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
@@ -691,6 +949,8 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t stepper_move_uri = {.uri = "/stepper/move", .method = HTTP_POST, .handler = StepperMoveHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_stop_uri = {.uri = "/stepper/stop", .method = HTTP_POST, .handler = StepperStopHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_zero_uri = {.uri = "/stepper/zero", .method = HTTP_POST, .handler = StepperZeroHandler, .user_ctx = nullptr};
+  httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
+  httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -700,6 +960,8 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &stepper_move_uri);
   httpd_register_uri_handler(http_server, &stepper_stop_uri);
   httpd_register_uri_handler(http_server, &stepper_zero_uri);
+  httpd_register_uri_handler(http_server, &usb_mode_get_uri);
+  httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }
@@ -716,6 +978,23 @@ extern "C" void app_main(void) {
   }
 
   state_mutex = xSemaphoreCreateMutex();
+
+  usb_mode = LoadUsbModeFromNvs();
+  UpdateState([&](SharedState& s) { s.usb_msc_mode = (usb_mode == UsbMode::kMsc); });
+
+  if (usb_mode == UsbMode::kMsc) {
+    esp_err_t msc_err = InitSdCardForMsc(&sd_card);
+    if (msc_err == ESP_OK) {
+      msc_err = StartUsbMsc(sd_card);
+    }
+    if (msc_err != ESP_OK) {
+      ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
+      usb_mode = UsbMode::kCdc;
+      UpdateState([](SharedState& s) { s.usb_msc_mode = false; });
+      SaveUsbModeToNvs(usb_mode);
+    }
+  }
+
   InitGpios();
   ESP_ERROR_CHECK(InitSpiBus());
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST));

@@ -12,6 +12,9 @@ idf_component_register(
         json
         esp_timer
         esp_rom
+        tinyusb
+        sdmmc
+        fatfs
     INCLUDE_DIRS "."
 )
 
