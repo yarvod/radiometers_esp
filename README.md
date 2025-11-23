@@ -1,53 +1,33 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-H21 | ESP32-H4 | ESP32-P4 | ESP32-S2 | ESP32-S3 | Linux |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- | -------- | ----- |
+# Радиометр на ESP-IDF (ESP32-S3 WROOM-1 N16R8)
 
-# Hello World Example
+Порт Arduino-скетча на ESP-IDF под ESP32-S3 WROOM-1 N16R8: три LTC2440 по SPI, веб-интерфейс для просмотра напряжений и управления шаговым двигателем (TMC2208) плюс реле для калибровки нуля.
 
-Starts a FreeRTOS task to print "Hello World".
+## Что внутри
+- Wi‑Fi STA с установкой hostname и (опционально) кастомного MAC (`WIFI_SSID`, `WIFI_PASS`, `HOSTNAME`, `CUSTOM_MAC` в `main/app_main.cpp`).
+- SPI2 (HSPI) с LTC2440 на выводах MISO 4, MOSI 5, SCK 6, CS 16/15/7. Шаговый двигатель: EN 35, DIR 36, STEP 37. Реле калибровки: 17. Проверьте соответствие вашей плате перед прошивкой.
+- HTTP‑UI на порту 80 (страница `/` + API `/data`, `/calibrate`, `/stepper/enable|disable|move|stop|zero`), формат совпадает с исходным фронтом.
+- Фоновые задачи: опрос АЦП каждые 200 мс, генерация шагов в отдельной задаче, калибровка (100 выборок, первые 10 отбрасываются).
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## Сборка и прошивка локально
+Требуется установленный ESP-IDF (5.x).
+1) Выберите цель (при первом запуске):  
+   `idf.py set-target esp32s3`
+2) Сборка:  
+   `idf.py build`
+3) Прошивка и монитор (укажите свой порт):  
+   `idf.py -p /dev/cu.usbserial-XXXX flash monitor`
 
-## How to use example
+Если меняли параметры подключения/пины, правьте константы в `main/app_main.cpp` и пересоберите.
 
-Follow detailed instructions provided specifically for this example.
+## Использование
+- После загрузки устройство подключается к Wi‑Fi, поднимает сервер на порту 80 и показывает IP в логе.
+- Откройте `http://<ip>` — увидите веб-страницу с тремя каналами и контролами шаговика.
+- Калибровка `/calibrate` включает реле на 1 с и собирает 100 выборок (20 с). Во время калибровки измерения ставятся на паузу; статус шаговика сохраняется.
 
-Select the instructions depending on Espressif chip installed on your development board:
+## Devcontainer и Docker
+В `.devcontainer/Dockerfile` используется официальный образ `espressif/idf` с предустановленным ESP-IDF. Откройте папку в VS Code через Dev Containers — получите готовую среду, где достаточно выполнить команды `idf.py build/flash/monitor`. Это избавляет от ручной установки тулчейна.
 
-- [ESP32 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html)
-- [ESP32-S2 Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s2/get-started/index.html)
-
-
-## Example folder contents
-
-The project **hello_world** contains one source file in C language [hello_world_main.c](main/hello_world_main.c). The file is located in folder [main](main).
-
-ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt` files that provide set of directives and instructions describing the project's source files and targets (executable, library, or both).
-
-Below is short explanation of remaining files in the project folder.
-
-```
-├── CMakeLists.txt
-├── pytest_hello_world.py      Python script used for automated testing
-├── main
-│   ├── CMakeLists.txt
-│   └── hello_world_main.c
-└── README.md                  This is the file you are currently reading
-```
-
-For more information on structure and contents of ESP-IDF projects, please refer to Section [Build System](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/build-system.html) of the ESP-IDF Programming Guide.
-
-## Troubleshooting
-
-* Program upload failure
-
-    * Hardware connection is not correct: run `idf.py -p PORT monitor`, and reboot your board to see if there are any output logs.
-    * The baud rate for downloading is too high: lower your baud rate in the `menuconfig` menu, and try again.
-
-## Technical support and feedback
-
-Please use the following feedback channels:
-
-* For technical queries, go to the [esp32.com](https://esp32.com/) forum
-* For a feature request or bug report, create a [GitHub issue](https://github.com/espressif/esp-idf/issues)
-
-We will get back to you as soon as possible.
+## Замечания по выводам для ESP32-S3 WROOM-1 N16R8
+- Текущие пины (MISO 4, MOSI 5, SCK 6, CS 16/15/7, реле 17, шаговик 35/36/37) свободны на ESP32-S3 и не конфликтуют с встроенной флэш/PSRAM. Тем не менее, перед разводкой проверьте даташит/пин-аут именно вашей платы и корректируйте константы в `main/app_main.cpp`.
+- Избегайте использования бут-страп пинов (0, 3, 45, 46) и USB D± (19, 20), если задействуете нативный USB.
+- Для модулей N16R8 PSRAM уже подключена; при необходимости включите поддержку PSRAM в `idf.py menuconfig` → *Component config* → *ESP32S3-specific* → *Support for external, SPI-connected RAM*.
