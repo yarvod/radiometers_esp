@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <functional>
 #include <cmath>
+#include <array>
 #include <string>
 
 #include "cJSON.h"
@@ -62,6 +63,7 @@ constexpr gpio_num_t FAN2_TACH = GPIO_NUM_21;
 
 // Temperature (1-Wire)
 constexpr gpio_num_t TEMP_1WIRE = GPIO_NUM_18;
+constexpr int MAX_TEMP_SENSORS = 8;
 
 // SD card pins (1-bit SDMMC)
 constexpr gpio_num_t SD_CLK = GPIO_NUM_39;
@@ -137,8 +139,8 @@ struct SharedState {
   float fan_power = 0.0f;       // 0..100%
   uint32_t fan1_rpm = 0;
   uint32_t fan2_rpm = 0;
-  float temp1_c = 0.0f;
-  float temp2_c = 0.0f;
+  int temp_sensor_count = 0;
+  std::array<float, MAX_TEMP_SENSORS> temps_c{};
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -292,8 +294,10 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       </div>
       <div class="adc-channel">
         <div class="channel-name">Temperatures</div>
-        <div class="voltage" id="temp1Display">0.0 &deg;C</div>
-        <div>Sensor 2: <span id="temp2Display">0.0</span> &deg;C</div>
+        <div id="tempList">
+          <div class="voltage">--.- &deg;C</div>
+          <div>Sensor list will appear here</div>
+        </div>
       </div>
     </div>
     
@@ -388,10 +392,21 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('fanPowerDisplay').textContent = data.fanPower.toFixed(0) + ' %';
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
-      const t1 = Number.isFinite(data.temp1) ? data.temp1.toFixed(2) + ' °C' : '--.- °C';
-      const t2 = Number.isFinite(data.temp2) ? data.temp2.toFixed(2) : '--.-';
-      document.getElementById('temp1Display').textContent = t1;
-      document.getElementById('temp2Display').textContent = t2;
+      const list = document.getElementById('tempList');
+      if (Array.isArray(data.tempSensors) && data.tempSensors.length > 0) {
+        let html = '';
+        data.tempSensors.forEach((t, idx) => {
+          const text = Number.isFinite(t) ? `${t.toFixed(2)} °C` : '--.- °C';
+          if (idx === 0) {
+            html += `<div class="voltage">Sensor ${idx + 1}: ${text}</div>`;
+          } else {
+            html += `<div>Sensor ${idx + 1}: ${text}</div>`;
+          }
+        });
+        list.innerHTML = html;
+      } else {
+        list.innerHTML = '<div class="voltage">--.- °C</div><div>No sensors</div>';
+      }
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
@@ -1224,14 +1239,22 @@ void FanTachTask(void*) {
 }
 
 void TempTask(void*) {
+  std::array<float, MAX_TEMP_SENSORS> temps{};
   while (true) {
-    float t1 = NAN;
-    float t2 = NAN;
-    if (Ds18b20ReadTemperatures(&t1, &t2)) {
+    int count = 0;
+    if (Ds18b20ReadTemperatures(temps.data(), MAX_TEMP_SENSORS, &count)) {
       UpdateState([&](SharedState& s) {
-        s.temp1_c = t1;
-        s.temp2_c = t2;
+        s.temp_sensor_count = count;
+        s.temps_c = temps;
       });
+      if (count > 0) {
+        ESP_LOGI(TAG, "Temps (%d):", count);
+        for (int i = 0; i < count; ++i) {
+          ESP_LOGI(TAG, "  Sensor %d: %.2f C", i + 1, temps[i]);
+        }
+      }
+    } else {
+      ESP_LOGW(TAG, "Ds18b20ReadTemperatures failed");
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
   }
@@ -1315,8 +1338,12 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
-  cJSON_AddNumberToObject(root, "temp1", snapshot.temp1_c);
-  cJSON_AddNumberToObject(root, "temp2", snapshot.temp2_c);
+  cJSON_AddNumberToObject(root, "tempSensorCount", snapshot.temp_sensor_count);
+  cJSON* temp_array = cJSON_CreateArray();
+  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+    cJSON_AddItemToArray(temp_array, cJSON_CreateNumber(snapshot.temps_c[i]));
+  }
+  cJSON_AddItemToObject(root, "tempSensors", temp_array);
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
