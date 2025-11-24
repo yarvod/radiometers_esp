@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <functional>
+#include <cmath>
 #include <string>
 
 #include "cJSON.h"
@@ -33,6 +34,7 @@
 #include "class/msc/msc.h"
 #include "tusb_msc_storage.h"
 #include "esp_rom_sys.h"
+#include "onewire_ds18b20.h"
 
 namespace {
 
@@ -57,6 +59,9 @@ constexpr gpio_num_t HEATER_PWM = GPIO_NUM_14;
 constexpr gpio_num_t FAN_PWM = GPIO_NUM_2;
 constexpr gpio_num_t FAN1_TACH = GPIO_NUM_1;
 constexpr gpio_num_t FAN2_TACH = GPIO_NUM_21;
+
+// Temperature (1-Wire)
+constexpr gpio_num_t TEMP_1WIRE = GPIO_NUM_18;
 
 // SD card pins (1-bit SDMMC)
 constexpr gpio_num_t SD_CLK = GPIO_NUM_39;
@@ -132,6 +137,8 @@ struct SharedState {
   float fan_power = 0.0f;       // 0..100%
   uint32_t fan1_rpm = 0;
   uint32_t fan2_rpm = 0;
+  float temp1_c = 0.0f;
+  float temp2_c = 0.0f;
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -283,6 +290,11 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         <div>FAN1 RPM: <span id="fan1RpmDisplay">0</span></div>
         <div>FAN2 RPM: <span id="fan2RpmDisplay">0</span></div>
       </div>
+      <div class="adc-channel">
+        <div class="channel-name">Temperatures</div>
+        <div class="voltage" id="temp1Display">0.0 &deg;C</div>
+        <div>Sensor 2: <span id="temp2Display">0.0</span> &deg;C</div>
+      </div>
     </div>
     
     <div class="controls">
@@ -376,6 +388,10 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('fanPowerDisplay').textContent = data.fanPower.toFixed(0) + ' %';
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
+      const t1 = Number.isFinite(data.temp1) ? data.temp1.toFixed(2) + ' °C' : '--.- °C';
+      const t2 = Number.isFinite(data.temp2) ? data.temp2.toFixed(2) : '--.-';
+      document.getElementById('temp1Display').textContent = t1;
+      document.getElementById('temp2Display').textContent = t2;
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
@@ -1207,6 +1223,20 @@ void FanTachTask(void*) {
   }
 }
 
+void TempTask(void*) {
+  while (true) {
+    float t1 = NAN;
+    float t2 = NAN;
+    if (Ds18b20ReadTemperatures(&t1, &t2)) {
+      UpdateState([&](SharedState& s) {
+        s.temp1_c = t1;
+        s.temp2_c = t2;
+      });
+    }
+    vTaskDelay(pdMS_TO_TICKS(2000));
+  }
+}
+
 void CalibrateZero() {
   bool already_running = false;
   UpdateState([&](SharedState& s) {
@@ -1285,6 +1315,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
+  cJSON_AddNumberToObject(root, "temp1", snapshot.temp1_c);
+  cJSON_AddNumberToObject(root, "temp2", snapshot.temp2_c);
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
@@ -1594,6 +1626,10 @@ extern "C" void app_main(void) {
   InitGpios();
   InitHeaterPwm();
   InitFanPwm();
+  bool temp_ok = Ds18b20Init(TEMP_1WIRE);
+  if (!temp_ok) {
+    ESP_LOGW(TAG, "DS18B20 init failed or no sensors found");
+  }
   ESP_ERROR_CHECK(InitSpiBus());
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST));
   ESP_ERROR_CHECK(adc2.Init(SPI2_HOST));
@@ -1616,6 +1652,9 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 3072, nullptr, 2, nullptr, 0);
   }
   xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
+  if (temp_ok) {
+    xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
+  }
 
   ESP_LOGI(TAG, "System ready");
 }

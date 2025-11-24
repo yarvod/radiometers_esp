@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "ltc2440.cpp"
+        "onewire_ds18b20.cpp"
        
     PRIV_REQUIRES
         esp_wifi
