@@ -9,6 +9,7 @@
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "driver/spi_common.h"
+#include "driver/ledc.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -48,6 +49,9 @@ constexpr gpio_num_t ADC_CS3 = GPIO_NUM_7;
 // INA219 pins (I2C)
 constexpr gpio_num_t INA_SDA = GPIO_NUM_42;
 constexpr gpio_num_t INA_SCL = GPIO_NUM_41;
+
+// Heater
+constexpr gpio_num_t HEATER_PWM = GPIO_NUM_14;
 
 // SD card pins (1-bit SDMMC)
 constexpr gpio_num_t SD_CLK = GPIO_NUM_39;
@@ -107,6 +111,7 @@ struct SharedState {
   float ina_bus_voltage = 0.0f;
   float ina_current = 0.0f;
   float ina_power = 0.0f;
+  float heater_power = 0.0f;
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -260,6 +265,15 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         <button class="btn" onclick="refreshData()">Refresh Data</button>
         <button class="btn btn-calibrate" onclick="calibrate()">Calibrate Zero</button>
       </div>
+
+      <div class="control-panel">
+        <h3>Heater Control</h3>
+        <div class="form-group">
+          <label for="heaterPower">Power (%)</label>
+          <input type="number" id="heaterPower" value="0" min="0" max="100" step="0.1">
+        </div>
+        <button class="btn" onclick="setHeater()">Set Heater</button>
+      </div>
       
       <div class="control-panel">
         <h3>Stepper Motor Control</h3>
@@ -323,6 +337,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('inaVoltage').textContent = data.inaBusVoltage.toFixed(3) + ' V';
       document.getElementById('inaCurrent').textContent = data.inaCurrent.toFixed(3);
       document.getElementById('inaPower').textContent = data.inaPower.toFixed(3);
+      document.getElementById('heaterPower').value = data.heaterPower.toFixed(1);
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
@@ -450,6 +465,19 @@ constexpr char INDEX_HTML[] = R"rawliteral(
           alert('Position set to zero');
           refreshData();
         });
+    }
+
+    function setHeater() {
+      const p = parseFloat(document.getElementById('heaterPower').value);
+      fetch('/heater/set', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ power: p })
+      })
+      .then(() => refreshData())
+      .catch(() => refreshData());
     }
     
     // Auto-refresh every 2 seconds
@@ -754,7 +782,8 @@ void InitGpios() {
   io_conf.intr_type = GPIO_INTR_DISABLE;
   io_conf.mode = GPIO_MODE_OUTPUT;
   io_conf.pin_bit_mask =
-      (1ULL << RELAY_PIN) | (1ULL << STEPPER_EN) | (1ULL << STEPPER_DIR) | (1ULL << STEPPER_STEP);
+      (1ULL << RELAY_PIN) | (1ULL << STEPPER_EN) | (1ULL << STEPPER_DIR) | (1ULL << STEPPER_STEP) |
+      (1ULL << HEATER_PWM);
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   ESP_ERROR_CHECK(gpio_config(&io_conf));
@@ -763,7 +792,38 @@ void InitGpios() {
   gpio_set_level(STEPPER_EN, 1);   // disable motor by default
   gpio_set_level(STEPPER_DIR, 0);
   gpio_set_level(STEPPER_STEP, 0);
+  gpio_set_level(HEATER_PWM, 0);
 }
+
+void InitHeaterPwm() {
+  ledc_timer_config_t t = {};
+  t.speed_mode = LEDC_LOW_SPEED_MODE;
+  t.duty_resolution = LEDC_TIMER_10_BIT;
+  t.timer_num = LEDC_TIMER_0;
+  t.freq_hz = 1000;
+  t.clk_cfg = LEDC_AUTO_CLK;
+  ESP_ERROR_CHECK(ledc_timer_config(&t));
+
+  ledc_channel_config_t c = {};
+  c.gpio_num = HEATER_PWM;
+  c.speed_mode = LEDC_LOW_SPEED_MODE;
+  c.channel = LEDC_CHANNEL_0;
+  c.timer_sel = LEDC_TIMER_0;
+  c.duty = 0;
+  ESP_ERROR_CHECK(ledc_channel_config(&c));
+}
+
+void HeaterSetPowerPercent(float p) {
+  if (p < 0.0f) p = 0.0f;
+  if (p > 100.0f) p = 100.0f;
+  const uint32_t duty = static_cast<uint32_t>(p * 1023.0f / 100.0f);
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+  UpdateState([&](SharedState& s) { s.heater_power = p; });
+}
+
+[[maybe_unused]] void HeaterOn() { HeaterSetPowerPercent(100.0f); }
+[[maybe_unused]] void HeaterOff() { HeaterSetPowerPercent(0.0f); }
 
 esp_err_t InitIna219() {
   i2c_config_t conf = {};
@@ -1104,6 +1164,7 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
+  cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
@@ -1200,6 +1261,42 @@ esp_err_t StepperZeroHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"position_zeroed\"}");
 }
 
+esp_err_t HeaterSetHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  float power = 0.0f;
+  cJSON* power_item = cJSON_GetObjectItem(root, "power");
+  if (power_item && cJSON_IsNumber(power_item)) {
+    power = static_cast<float>(power_item->valuedouble);
+  } else {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing power");
+    return ESP_FAIL;
+  }
+  cJSON_Delete(root);
+
+  HeaterSetPowerPercent(power);
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+}
+
 esp_err_t UsbModeGetHandler(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   if (usb_mode == UsbMode::kMsc) {
@@ -1261,7 +1358,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 10;
+  config.max_uri_handlers = 12;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1278,6 +1375,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t stepper_zero_uri = {.uri = "/stepper/zero", .method = HTTP_POST, .handler = StepperZeroHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
+  httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -1289,6 +1387,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &stepper_zero_uri);
   httpd_register_uri_handler(http_server, &usb_mode_get_uri);
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
+  httpd_register_uri_handler(http_server, &heater_set_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }
@@ -1337,6 +1436,7 @@ extern "C" void app_main(void) {
   }
 
   InitGpios();
+  InitHeaterPwm();
   ESP_ERROR_CHECK(InitSpiBus());
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST));
   ESP_ERROR_CHECK(adc2.Init(SPI2_HOST));
