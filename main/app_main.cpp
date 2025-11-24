@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -57,18 +58,32 @@ constexpr gpio_num_t STEPPER_STEP = GPIO_NUM_37;
 constexpr float VREF = 4.096f;  // ±Vref/2 range, matches original sketch
 constexpr float ADC_SCALE = (VREF / 2.0f) / static_cast<float>(1 << 23);
 
-constexpr char WIFI_SSID[] = "ASC_WiFi";
-constexpr char WIFI_PASS[] = "ran/fian/asc/2010";
+constexpr char DEFAULT_WIFI_SSID[] = "ASC_WiFi";
+constexpr char DEFAULT_WIFI_PASS[] = "ran/fian/asc/2010";
 constexpr char HOSTNAME[] = "miap-device";
 constexpr bool USE_CUSTOM_MAC = true;
 uint8_t CUSTOM_MAC[6] = {0x10, 0x00, 0x3B, 0x6E, 0x83, 0x70};
 constexpr char MSC_BASE_PATH[] = "/usb_msc";
+constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
+constexpr char CONFIG_FILE_PATH[] = "/sdcard/config.txt";
+constexpr size_t WIFI_SSID_MAX_LEN = 32;
+constexpr size_t WIFI_PASSWORD_MAX_LEN = 64;
 
 // Wi-Fi helpers
 constexpr int WIFI_CONNECTED_BIT = BIT0;
 constexpr int WIFI_FAIL_BIT = BIT1;
 EventGroupHandle_t wifi_event_group = nullptr;
 int retry_count = 0;
+
+struct AppConfig {
+  std::string wifi_ssid = DEFAULT_WIFI_SSID;
+  std::string wifi_password = DEFAULT_WIFI_PASS;
+  bool wifi_from_file = false;
+  bool usb_mass_storage = false;
+  bool usb_mass_storage_from_file = false;
+};
+
+AppConfig app_config{};
 
 // State shared across tasks and HTTP handlers
 struct SharedState {
@@ -443,6 +458,151 @@ constexpr char INDEX_HTML[] = R"rawliteral(
 </html>
 )rawliteral";
 
+std::string Trim(const std::string& str) {
+  size_t start = 0;
+  while (start < str.size() && std::isspace(static_cast<unsigned char>(str[start]))) {
+    ++start;
+  }
+  size_t end = str.size();
+  while (end > start && std::isspace(static_cast<unsigned char>(str[end - 1]))) {
+    --end;
+  }
+  return str.substr(start, end - start);
+}
+
+bool ParseBool(const std::string& value, bool* out) {
+  if (!out) {
+    return false;
+  }
+  std::string lower;
+  lower.reserve(value.size());
+  for (char c : value) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  if (lower == "true" || lower == "1" || lower == "yes" || lower == "on") {
+    *out = true;
+    return true;
+  }
+  if (lower == "false" || lower == "0" || lower == "no" || lower == "off") {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+bool ParseConfigFile(FILE* file, AppConfig* config) {
+  if (!file || !config) {
+    return false;
+  }
+
+  char line[256];
+  bool ssid_set = false;
+  bool pass_set = false;
+  bool usb_set = false;
+  bool usb_value = false;
+  std::string ssid;
+  std::string password;
+
+  while (fgets(line, sizeof(line), file)) {
+    std::string raw(line);
+    std::string trimmed = Trim(raw);
+    if (trimmed.empty() || trimmed[0] == '#') {
+      continue;
+    }
+
+    const size_t eq = trimmed.find('=');
+    if (eq == std::string::npos) {
+      continue;
+    }
+
+    std::string key = Trim(trimmed.substr(0, eq));
+    std::string value = Trim(trimmed.substr(eq + 1));
+
+    if (key == "wifi_ssid") {
+      if (!value.empty() && value.size() < WIFI_SSID_MAX_LEN) {
+        ssid = value;
+        ssid_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid wifi_ssid in config.txt");
+      }
+    } else if (key == "wifi_password") {
+      if (value.size() >= 8 && value.size() < WIFI_PASSWORD_MAX_LEN) {
+        password = value;
+        pass_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid wifi_password in config.txt");
+      }
+    } else if (key == "usb_mass_storage") {
+      if (ParseBool(value, &usb_value)) {
+        usb_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid usb_mass_storage value in config.txt");
+      }
+    }
+  }
+
+  if (ssid_set && pass_set) {
+    config->wifi_ssid = ssid;
+    config->wifi_password = password;
+    config->wifi_from_file = true;
+  }
+  if (usb_set) {
+    config->usb_mass_storage = usb_value;
+    config->usb_mass_storage_from_file = true;
+  }
+  return config->wifi_from_file || config->usb_mass_storage_from_file;
+}
+
+void LoadConfigFromSdCard(AppConfig* config) {
+  if (!config) {
+    return;
+  }
+
+  sdmmc_card_t* card = nullptr;
+  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  host.flags |= SDMMC_HOST_FLAG_1BIT;
+
+  sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+  slot_config.width = 1;
+  slot_config.clk = SD_CLK;
+  slot_config.cmd = SD_CMD;
+  slot_config.d0 = SD_D0;
+  slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+  esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
+  mount_config.format_if_mount_failed = false;
+  mount_config.max_files = 4;
+  mount_config.allocation_unit_size = 0;
+
+  esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "SD mount failed for config.txt: %s", esp_err_to_name(ret));
+    return;
+  }
+
+  FILE* file = fopen(CONFIG_FILE_PATH, "r");
+  if (!file) {
+    ESP_LOGW(TAG, "Config file not found at %s", CONFIG_FILE_PATH);
+    esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, card);
+    return;
+  }
+
+  const bool parsed = ParseConfigFile(file, config);
+  fclose(file);
+  esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, card);
+
+  if (parsed) {
+    if (config->wifi_from_file) {
+      ESP_LOGI(TAG, "Wi-Fi config loaded from config.txt (SSID: %s)", config->wifi_ssid.c_str());
+    }
+    if (config->usb_mass_storage_from_file) {
+      ESP_LOGI(TAG, "usb_mass_storage=%s (config.txt)", config->usb_mass_storage ? "true" : "false");
+    }
+  } else {
+    ESP_LOGW(TAG, "config.txt present but values are missing/invalid, using defaults");
+  }
+}
+
 // Helpers to guard shared state
 SharedState CopyState() {
   SharedState snapshot;
@@ -511,7 +671,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
   }
 }
 
-void InitWifi() {
+void InitWifi(const std::string& ssid, const std::string& password) {
   wifi_event_group = xEventGroupCreate();
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -527,8 +687,10 @@ void InitWifi() {
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEventHandler, nullptr));
 
   wifi_config_t wifi_config = {};
-  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid), WIFI_SSID, sizeof(wifi_config.sta.ssid));
-  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.password), WIFI_PASS, sizeof(wifi_config.sta.password));
+  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid), ssid.c_str(), sizeof(wifi_config.sta.ssid) - 1);
+  std::strncpy(reinterpret_cast<char*>(wifi_config.sta.password), password.c_str(), sizeof(wifi_config.sta.password) - 1);
+  wifi_config.sta.ssid[sizeof(wifi_config.sta.ssid) - 1] = '\0';
+  wifi_config.sta.password[sizeof(wifi_config.sta.password) - 1] = '\0';
   wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
   wifi_config.sta.pmf_cfg = {.capable = true, .required = false};
 
@@ -544,9 +706,9 @@ void InitWifi() {
       wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15'000));
 
   if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(TAG, "Connected to SSID:%s", WIFI_SSID);
+    ESP_LOGI(TAG, "Connected to SSID:%s", ssid.c_str());
   } else {
-    ESP_LOGE(TAG, "Failed to connect to SSID:%s", WIFI_SSID);
+    ESP_LOGE(TAG, "Failed to connect to SSID:%s", ssid.c_str());
   }
 }
 
@@ -1031,7 +1193,13 @@ extern "C" void app_main(void) {
 
   state_mutex = xSemaphoreCreateMutex();
 
+  LoadConfigFromSdCard(&app_config);
+
   usb_mode = LoadUsbModeFromNvs();
+  if (app_config.usb_mass_storage_from_file) {
+    usb_mode = app_config.usb_mass_storage ? UsbMode::kMsc : UsbMode::kCdc;
+    ESP_LOGI(TAG, "USB mode overridden by config.txt: %s", usb_mode == UsbMode::kMsc ? "MSC" : "CDC");
+  }
   UpdateState([&](SharedState& s) { s.usb_msc_mode = (usb_mode == UsbMode::kMsc); });
 
   if (usb_mode == UsbMode::kMsc) {
@@ -1058,7 +1226,10 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(adc2.Init(SPI2_HOST));
   ESP_ERROR_CHECK(adc3.Init(SPI2_HOST));
 
-  InitWifi();
+  if (!app_config.wifi_from_file) {
+    ESP_LOGI(TAG, "Using default Wi-Fi config (SSID: %s)", app_config.wifi_ssid.c_str());
+  }
+  InitWifi(app_config.wifi_ssid, app_config.wifi_password);
   StartHttpServer();
 
   // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
