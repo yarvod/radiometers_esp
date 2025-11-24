@@ -65,6 +65,9 @@ constexpr gpio_num_t FAN2_TACH = GPIO_NUM_21;
 constexpr gpio_num_t TEMP_1WIRE = GPIO_NUM_18;
 constexpr int MAX_TEMP_SENSORS = 8;
 
+// Hall sensor
+constexpr gpio_num_t MT_HALL_SEN = GPIO_NUM_3;
+
 // SD card pins (1-bit SDMMC)
 constexpr gpio_num_t SD_CLK = GPIO_NUM_39;
 constexpr gpio_num_t SD_CMD = GPIO_NUM_38;
@@ -114,6 +117,10 @@ static void IRAM_ATTR FanTachIsr(void* arg) {
   }
 }
 
+bool IsHallTriggered() {
+  return gpio_get_level(MT_HALL_SEN) == 0;
+}
+
 struct AppConfig {
   std::string wifi_ssid = DEFAULT_WIFI_SSID;
   std::string wifi_password = DEFAULT_WIFI_PASS;
@@ -141,6 +148,7 @@ struct SharedState {
   uint32_t fan2_rpm = 0;
   int temp_sensor_count = 0;
   std::array<float, MAX_TEMP_SENSORS> temps_c{};
+  bool homing = false;
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -220,6 +228,7 @@ const tusb_desc_device_qualifier_t kDeviceQualifier = {
 // HTTP server
 httpd_handle_t http_server = nullptr;
 TaskHandle_t calibration_task = nullptr;
+TaskHandle_t find_zero_task = nullptr;
 
 // HTML UI (kept close to original Arduino page)
 constexpr char INDEX_HTML[] = R"rawliteral(
@@ -359,6 +368,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         <button class="btn" onclick="moveStepper()">Move</button>
         <button class="btn btn-stop" onclick="stopStepper()">Stop</button>
         <button class="btn" onclick="setZero()">Set Position to Zero</button>
+        <button class="btn" onclick="findZero()">Find Zero (Hall)</button>
       </div>
     </div>
     
@@ -534,6 +544,12 @@ constexpr char INDEX_HTML[] = R"rawliteral(
           alert('Position set to zero');
           refreshData();
         });
+    }
+
+    function findZero() {
+      fetch('/stepper/find_zero', { method: 'POST' })
+        .then(() => refreshData())
+        .catch(() => refreshData());
     }
 
     function setHeater() {
@@ -876,6 +892,15 @@ void InitGpios() {
   gpio_set_level(STEPPER_STEP, 0);
   gpio_set_level(HEATER_PWM, 0);
 
+  // Hall sensor input
+  gpio_config_t hall_conf = {};
+  hall_conf.intr_type = GPIO_INTR_DISABLE;
+  hall_conf.mode = GPIO_MODE_INPUT;
+  hall_conf.pin_bit_mask = (1ULL << MT_HALL_SEN);
+  hall_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+  hall_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  ESP_ERROR_CHECK(gpio_config(&hall_conf));
+
   // Tachometer inputs with interrupts
   gpio_config_t tach_conf = {};
   tach_conf.intr_type = GPIO_INTR_POSEDGE;
@@ -1150,6 +1175,10 @@ void StepperTask(void*) {
   const TickType_t idle_delay_idle = pdMS_TO_TICKS(5);
   while (true) {
     SharedState snapshot = CopyState();
+    if (snapshot.homing) {
+      vTaskDelay(idle_delay_idle);
+      continue;
+    }
     if (snapshot.stepper_enabled && snapshot.stepper_moving) {
       // Reassert direction each loop to avoid spurious flips from noise
       gpio_set_level(STEPPER_DIR, snapshot.stepper_direction_forward ? 1 : 0);
@@ -1440,6 +1469,46 @@ esp_err_t StepperZeroHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"position_zeroed\"}");
 }
 
+void FindZeroTask(void*) {
+  UpdateState([](SharedState& s) { s.homing = true; });
+  const int step_delay_us = 1000;
+  int steps = 0;
+  const int max_steps = 20000;
+  gpio_set_level(STEPPER_DIR, 0);
+  while (!IsHallTriggered() && steps < max_steps) {
+    gpio_set_level(STEPPER_STEP, 1);
+    esp_rom_delay_us(4);
+    gpio_set_level(STEPPER_STEP, 0);
+    UpdateState([](SharedState& s) {
+      s.stepper_position -= 1;
+      s.stepper_target = s.stepper_position;
+    });
+    esp_rom_delay_us(step_delay_us);
+    steps++;
+  }
+  UpdateState([](SharedState& s) {
+    s.stepper_position = 0;
+    s.stepper_target = 0;
+    s.stepper_moving = false;
+    s.homing = false;
+  });
+  find_zero_task = nullptr;
+  vTaskDelete(nullptr);
+}
+
+esp_err_t StepperFindZeroHandler(httpd_req_t* req) {
+  SharedState snapshot = CopyState();
+  if (!snapshot.stepper_enabled) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stepper not enabled");
+    return ESP_FAIL;
+  }
+  if (find_zero_task == nullptr) {
+    xTaskCreatePinnedToCore(&FindZeroTask, "find_zero", 4096, nullptr, 4, &find_zero_task, 1);
+  }
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"homing_started\"}");
+}
+
 esp_err_t HeaterSetHandler(httpd_req_t* req) {
   const size_t buf_len = std::min<size_t>(req->content_len, 64);
   if (buf_len == 0) {
@@ -1571,7 +1640,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 13;
+  config.max_uri_handlers = 14;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1586,6 +1655,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t stepper_move_uri = {.uri = "/stepper/move", .method = HTTP_POST, .handler = StepperMoveHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_stop_uri = {.uri = "/stepper/stop", .method = HTTP_POST, .handler = StepperStopHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_zero_uri = {.uri = "/stepper/zero", .method = HTTP_POST, .handler = StepperZeroHandler, .user_ctx = nullptr};
+  httpd_uri_t stepper_find_zero_uri = {.uri = "/stepper/find_zero", .method = HTTP_POST, .handler = StepperFindZeroHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
@@ -1599,6 +1669,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &stepper_move_uri);
   httpd_register_uri_handler(http_server, &stepper_stop_uri);
   httpd_register_uri_handler(http_server, &stepper_zero_uri);
+  httpd_register_uri_handler(http_server, &stepper_find_zero_uri);
   httpd_register_uri_handler(http_server, &usb_mode_get_uri);
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
