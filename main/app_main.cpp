@@ -17,6 +17,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
+#include "driver/i2c.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -44,6 +45,10 @@ constexpr gpio_num_t ADC_CS1 = GPIO_NUM_16;
 constexpr gpio_num_t ADC_CS2 = GPIO_NUM_15;
 constexpr gpio_num_t ADC_CS3 = GPIO_NUM_7;
 
+// INA219 pins (I2C)
+constexpr gpio_num_t INA_SDA = GPIO_NUM_42;
+constexpr gpio_num_t INA_SCL = GPIO_NUM_41;
+
 // SD card pins (1-bit SDMMC)
 constexpr gpio_num_t SD_CLK = GPIO_NUM_39;
 constexpr gpio_num_t SD_CMD = GPIO_NUM_38;
@@ -68,7 +73,13 @@ constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
 constexpr char CONFIG_FILE_PATH[] = "/sdcard/config.txt";
 constexpr size_t WIFI_SSID_MAX_LEN = 32;
 constexpr size_t WIFI_PASSWORD_MAX_LEN = 64;
-
+// INA219 constants (32V, 2A, Rshunt=0.1 ohm)
+constexpr uint8_t INA219_ADDR = 0x40;
+constexpr uint16_t INA219_CONFIG = 0x399F;           // 32V range, gain /8 (320mV), 12-bit, continuous
+constexpr uint16_t INA219_CALIBRATION = 4096;        // current_LSB=100uA for 0.1R, power_LSB=2mW
+constexpr float INA219_CURRENT_LSB = 0.0001f;        // 100 uA
+constexpr float INA219_POWER_LSB = INA219_CURRENT_LSB * 20.0f;
+constexpr float INA219_BUS_LSB = 0.004f;             // 4 mV
 // Wi-Fi helpers
 constexpr int WIFI_CONNECTED_BIT = BIT0;
 constexpr int WIFI_FAIL_BIT = BIT1;
@@ -93,6 +104,9 @@ struct SharedState {
   float offset1 = 0.0f;
   float offset2 = 0.0f;
   float offset3 = 0.0f;
+  float ina_bus_voltage = 0.0f;
+  float ina_current = 0.0f;
+  float ina_power = 0.0f;
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -230,6 +244,15 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         <div class="voltage" id="voltage3">0.000000 V</div>
       </div>
     </div>
+
+    <div class="adc-readings">
+      <div class="adc-channel">
+        <div class="channel-name">INA219 Bus Voltage</div>
+        <div class="voltage" id="inaVoltage">0.000 V</div>
+        <div>Current: <span id="inaCurrent">0.000</span> A</div>
+        <div>Power: <span id="inaPower">0.000</span> W</div>
+      </div>
+    </div>
     
     <div class="controls">
       <div class="control-panel">
@@ -297,6 +320,9 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('voltage1').textContent = data.voltage1.toFixed(6) + ' V';
       document.getElementById('voltage2').textContent = data.voltage2.toFixed(6) + ' V';
       document.getElementById('voltage3').textContent = data.voltage3.toFixed(6) + ' V';
+      document.getElementById('inaVoltage').textContent = data.inaBusVoltage.toFixed(3) + ' V';
+      document.getElementById('inaCurrent').textContent = data.inaCurrent.toFixed(3);
+      document.getElementById('inaPower').textContent = data.inaPower.toFixed(3);
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
@@ -739,6 +765,83 @@ void InitGpios() {
   gpio_set_level(STEPPER_STEP, 0);
 }
 
+esp_err_t InitIna219() {
+  i2c_config_t conf = {};
+  conf.mode = I2C_MODE_MASTER;
+  conf.sda_io_num = INA_SDA;
+  conf.scl_io_num = INA_SCL;
+  conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+  conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+  conf.master.clk_speed = 400000;
+  conf.clk_flags = 0;
+
+  ESP_RETURN_ON_ERROR(i2c_param_config(I2C_NUM_0, &conf), TAG, "I2C param config failed");
+  ESP_RETURN_ON_ERROR(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0), TAG, "I2C install failed");
+
+  auto write_reg = [](uint8_t reg, uint16_t value) -> esp_err_t {
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (INA219_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg, true);
+    i2c_master_write_byte(cmd, static_cast<uint8_t>((value >> 8) & 0xFF), true);
+    i2c_master_write_byte(cmd, static_cast<uint8_t>(value & 0xFF), true);
+    i2c_master_stop(cmd);
+    esp_err_t res = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    return res;
+  };
+
+  ESP_RETURN_ON_ERROR(write_reg(0x00, INA219_CONFIG), TAG, "INA219 config failed");
+  ESP_RETURN_ON_ERROR(write_reg(0x05, INA219_CALIBRATION), TAG, "INA219 calibration failed");
+  ESP_LOGI(TAG, "INA219 initialized");
+  return ESP_OK;
+}
+
+esp_err_t ReadIna219() {
+  auto read_reg = [](uint8_t reg, uint16_t* value) -> esp_err_t {
+    if (!value) {
+      return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t msb = 0;
+    uint8_t lsb = 0;
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (INA219_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg, true);
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (INA219_ADDR << 1) | I2C_MASTER_READ, true);
+    i2c_master_read_byte(cmd, &msb, I2C_MASTER_ACK);
+    i2c_master_read_byte(cmd, &lsb, I2C_MASTER_NACK);
+    i2c_master_stop(cmd);
+    esp_err_t res = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    if (res == ESP_OK) {
+      *value = static_cast<uint16_t>(static_cast<uint16_t>(msb) << 8 | static_cast<uint16_t>(lsb));
+    }
+    return res;
+  };
+
+  uint16_t bus_raw = 0;
+  uint16_t current_raw = 0;
+  uint16_t power_raw = 0;
+
+  ESP_RETURN_ON_ERROR(read_reg(0x02, &bus_raw), TAG, "INA219 read bus failed");
+  ESP_RETURN_ON_ERROR(read_reg(0x04, &current_raw), TAG, "INA219 read current failed");
+  ESP_RETURN_ON_ERROR(read_reg(0x03, &power_raw), TAG, "INA219 read power failed");
+
+  // Bus voltage: bits 3..15, LSB = 4 mV
+  const float bus_v = static_cast<float>((bus_raw >> 3) & 0x1FFF) * INA219_BUS_LSB;
+  const float current_a = static_cast<int16_t>(current_raw) * INA219_CURRENT_LSB;
+  const float power_w = static_cast<uint16_t>(power_raw) * INA219_POWER_LSB;
+
+  UpdateState([&](SharedState& s) {
+    s.ina_bus_voltage = bus_v;
+    s.ina_current = current_a;
+    s.ina_power = power_w;
+  });
+  return ESP_OK;
+}
+
 esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
   bool host_init = false;
   sdmmc_card_t* card = static_cast<sdmmc_card_t*>(malloc(sizeof(sdmmc_card_t)));
@@ -917,6 +1020,16 @@ void AdcTask(void*) {
   }
 }
 
+void Ina219Task(void*) {
+  while (true) {
+    esp_err_t err = ReadIna219();
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "INA219 read failed: %s", esp_err_to_name(err));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
 void CalibrateZero() {
   bool already_running = false;
   UpdateState([&](SharedState& s) {
@@ -988,6 +1101,9 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "voltage1", snapshot.voltage1);
   cJSON_AddNumberToObject(root, "voltage2", snapshot.voltage2);
   cJSON_AddNumberToObject(root, "voltage3", snapshot.voltage3);
+  cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
+  cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
+  cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
@@ -1225,6 +1341,10 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST));
   ESP_ERROR_CHECK(adc2.Init(SPI2_HOST));
   ESP_ERROR_CHECK(adc3.Init(SPI2_HOST));
+  esp_err_t ina_err = InitIna219();
+  if (ina_err != ESP_OK) {
+    ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));
+  }
 
   if (!app_config.wifi_from_file) {
     ESP_LOGI(TAG, "Using default Wi-Fi config (SSID: %s)", app_config.wifi_ssid.c_str());
@@ -1235,6 +1355,9 @@ extern "C" void app_main(void) {
   // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
   xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
   xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
+  if (ina_err == ESP_OK) {
+    xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 3072, nullptr, 2, nullptr, 0);
+  }
 
   ESP_LOGI(TAG, "System ready");
 }
