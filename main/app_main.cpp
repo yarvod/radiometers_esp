@@ -53,6 +53,11 @@ constexpr gpio_num_t INA_SCL = GPIO_NUM_41;
 // Heater
 constexpr gpio_num_t HEATER_PWM = GPIO_NUM_14;
 
+// Fans
+constexpr gpio_num_t FAN_PWM = GPIO_NUM_2;
+constexpr gpio_num_t FAN1_TACH = GPIO_NUM_1;
+constexpr gpio_num_t FAN2_TACH = GPIO_NUM_21;
+
 // SD card pins (1-bit SDMMC)
 constexpr gpio_num_t SD_CLK = GPIO_NUM_39;
 constexpr gpio_num_t SD_CMD = GPIO_NUM_38;
@@ -90,6 +95,18 @@ constexpr int WIFI_FAIL_BIT = BIT1;
 EventGroupHandle_t wifi_event_group = nullptr;
 int retry_count = 0;
 
+volatile uint32_t fan1_pulse_count = 0;
+volatile uint32_t fan2_pulse_count = 0;
+
+static void IRAM_ATTR FanTachIsr(void* arg) {
+  uint32_t gpio = (uint32_t)arg;
+  if (gpio == static_cast<uint32_t>(FAN1_TACH)) {
+    __atomic_fetch_add(&fan1_pulse_count, 1, __ATOMIC_RELAXED);
+  } else if (gpio == static_cast<uint32_t>(FAN2_TACH)) {
+    __atomic_fetch_add(&fan2_pulse_count, 1, __ATOMIC_RELAXED);
+  }
+}
+
 struct AppConfig {
   std::string wifi_ssid = DEFAULT_WIFI_SSID;
   std::string wifi_password = DEFAULT_WIFI_PASS;
@@ -112,6 +129,9 @@ struct SharedState {
   float ina_current = 0.0f;
   float ina_power = 0.0f;
   float heater_power = 0.0f;
+  float fan_power = 0.0f;       // 0..100%
+  uint32_t fan1_rpm = 0;
+  uint32_t fan2_rpm = 0;
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -257,6 +277,12 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         <div>Current: <span id="inaCurrent">0.000</span> A</div>
         <div>Power: <span id="inaPower">0.000</span> W</div>
       </div>
+      <div class="adc-channel">
+        <div class="channel-name">Fan Status</div>
+        <div class="voltage" id="fanPowerDisplay">0 %</div>
+        <div>FAN1 RPM: <span id="fan1RpmDisplay">0</span></div>
+        <div>FAN2 RPM: <span id="fan2RpmDisplay">0</span></div>
+      </div>
     </div>
     
     <div class="controls">
@@ -273,6 +299,15 @@ constexpr char INDEX_HTML[] = R"rawliteral(
           <input type="number" id="heaterPower" value="0" min="0" max="100" step="0.1">
         </div>
         <button class="btn" onclick="setHeater()">Set Heater</button>
+      </div>
+
+      <div class="control-panel">
+        <h3>Fan Control</h3>
+        <div class="form-group">
+          <label for="fanPower">Fan Power (%)</label>
+          <input type="number" id="fanPower" value="100" min="0" max="100" step="1">
+        </div>
+        <button class="btn" onclick="setFan()">Set Fan</button>
       </div>
       
       <div class="control-panel">
@@ -338,6 +373,9 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('inaCurrent').textContent = data.inaCurrent.toFixed(3);
       document.getElementById('inaPower').textContent = data.inaPower.toFixed(3);
       document.getElementById('heaterPower').value = data.heaterPower.toFixed(1);
+      document.getElementById('fanPowerDisplay').textContent = data.fanPower.toFixed(0) + ' %';
+      document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
+      document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
@@ -470,6 +508,19 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     function setHeater() {
       const p = parseFloat(document.getElementById('heaterPower').value);
       fetch('/heater/set', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ power: p })
+      })
+      .then(() => refreshData())
+      .catch(() => refreshData());
+    }
+
+    function setFan() {
+      const p = parseFloat(document.getElementById('fanPower').value);
+      fetch('/fan/set', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -783,7 +834,7 @@ void InitGpios() {
   io_conf.mode = GPIO_MODE_OUTPUT;
   io_conf.pin_bit_mask =
       (1ULL << RELAY_PIN) | (1ULL << STEPPER_EN) | (1ULL << STEPPER_DIR) | (1ULL << STEPPER_STEP) |
-      (1ULL << HEATER_PWM);
+      (1ULL << HEATER_PWM) | (1ULL << FAN_PWM);
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   ESP_ERROR_CHECK(gpio_config(&io_conf));
@@ -793,6 +844,22 @@ void InitGpios() {
   gpio_set_level(STEPPER_DIR, 0);
   gpio_set_level(STEPPER_STEP, 0);
   gpio_set_level(HEATER_PWM, 0);
+
+  // Tachometer inputs with interrupts
+  gpio_config_t tach_conf = {};
+  tach_conf.intr_type = GPIO_INTR_POSEDGE;
+  tach_conf.mode = GPIO_MODE_INPUT;
+  tach_conf.pin_bit_mask = (1ULL << FAN1_TACH) | (1ULL << FAN2_TACH);
+  tach_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+  tach_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  ESP_ERROR_CHECK(gpio_config(&tach_conf));
+
+  esp_err_t isr_err = gpio_install_isr_service(0);
+  if (isr_err != ESP_ERR_INVALID_STATE) {
+    ESP_ERROR_CHECK(isr_err);
+  }
+  ESP_ERROR_CHECK(gpio_isr_handler_add(FAN1_TACH, FanTachIsr, (void*)FAN1_TACH));
+  ESP_ERROR_CHECK(gpio_isr_handler_add(FAN2_TACH, FanTachIsr, (void*)FAN2_TACH));
 }
 
 void InitHeaterPwm() {
@@ -824,6 +891,36 @@ void HeaterSetPowerPercent(float p) {
 
 [[maybe_unused]] void HeaterOn() { HeaterSetPowerPercent(100.0f); }
 [[maybe_unused]] void HeaterOff() { HeaterSetPowerPercent(0.0f); }
+
+void FanSetPowerPercent(float p) {
+  if (p < 0.0f) p = 0.0f;
+  if (p > 100.0f) p = 100.0f;
+  const uint32_t duty = static_cast<uint32_t>(p * 1023.0f / 100.0f);
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+  UpdateState([&](SharedState& s) { s.fan_power = p; });
+}
+
+void InitFanPwm() {
+  ledc_timer_config_t t = {};
+  t.speed_mode = LEDC_LOW_SPEED_MODE;
+  t.duty_resolution = LEDC_TIMER_10_BIT;
+  t.timer_num = LEDC_TIMER_1;
+  t.freq_hz = 25000;
+  t.clk_cfg = LEDC_AUTO_CLK;
+  ESP_ERROR_CHECK(ledc_timer_config(&t));
+
+  ledc_channel_config_t c = {};
+  c.gpio_num = FAN_PWM;
+  c.speed_mode = LEDC_LOW_SPEED_MODE;
+  c.channel = LEDC_CHANNEL_1;
+  c.timer_sel = LEDC_TIMER_1;
+  c.duty = 0;
+  ESP_ERROR_CHECK(ledc_channel_config(&c));
+
+  // Default to full power
+  FanSetPowerPercent(100.0f);
+}
 
 esp_err_t InitIna219() {
   i2c_config_t conf = {};
@@ -1090,6 +1187,26 @@ void Ina219Task(void*) {
   }
 }
 
+void FanTachTask(void*) {
+  const uint32_t pulses_per_rev = 2;
+  while (true) {
+    uint32_t c1 = fan1_pulse_count;
+    uint32_t c2 = fan2_pulse_count;
+    fan1_pulse_count = 0;
+    fan2_pulse_count = 0;
+
+    const uint32_t rpm1 = (c1 * 60U) / pulses_per_rev;
+    const uint32_t rpm2 = (c2 * 60U) / pulses_per_rev;
+
+    UpdateState([&](SharedState& s) {
+      s.fan1_rpm = rpm1;
+      s.fan2_rpm = rpm2;
+    });
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
 void CalibrateZero() {
   bool already_running = false;
   UpdateState([&](SharedState& s) {
@@ -1165,6 +1282,9 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
+  cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
+  cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
+  cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
@@ -1297,6 +1417,40 @@ esp_err_t HeaterSetHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }
 
+esp_err_t FanSetHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  cJSON* val = cJSON_GetObjectItem(root, "power");
+  if (!val || !cJSON_IsNumber(val)) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing power");
+    return ESP_FAIL;
+  }
+  float p = static_cast<float>(val->valuedouble);
+  cJSON_Delete(root);
+
+  FanSetPowerPercent(p);
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+}
+
 esp_err_t UsbModeGetHandler(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   if (usb_mode == UsbMode::kMsc) {
@@ -1358,7 +1512,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 12;
+  config.max_uri_handlers = 13;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1376,6 +1530,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
+  httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -1388,6 +1543,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &usb_mode_get_uri);
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
+  httpd_register_uri_handler(http_server, &fan_set_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }
@@ -1437,6 +1593,7 @@ extern "C" void app_main(void) {
 
   InitGpios();
   InitHeaterPwm();
+  InitFanPwm();
   ESP_ERROR_CHECK(InitSpiBus());
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST));
   ESP_ERROR_CHECK(adc2.Init(SPI2_HOST));
@@ -1458,6 +1615,7 @@ extern "C" void app_main(void) {
   if (ina_err == ESP_OK) {
     xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 3072, nullptr, 2, nullptr, 0);
   }
+  xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
 
   ESP_LOGI(TAG, "System ready");
 }
