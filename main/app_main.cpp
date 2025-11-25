@@ -784,11 +784,16 @@ void ScheduleRestart() {
       "restart_task", 2048, nullptr, 5, nullptr);
 }
 
-UsbMode LoadUsbModeFromNvs() {
+UsbMode LoadUsbModeFromNvs(bool* found) {
   nvs_handle_t handle;
   uint8_t mode = static_cast<uint8_t>(UsbMode::kCdc);
+  if (found) {
+    *found = false;
+  }
   if (nvs_open("usb", NVS_READONLY, &handle) == ESP_OK) {
-    nvs_get_u8(handle, "mode", &mode);
+    if (nvs_get_u8(handle, "mode", &mode) == ESP_OK && found) {
+      *found = true;
+    }
     nvs_close(handle);
   }
   return mode == static_cast<uint8_t>(UsbMode::kMsc) ? UsbMode::kMsc : UsbMode::kCdc;
@@ -1696,10 +1701,12 @@ extern "C" void app_main(void) {
 
   LoadConfigFromSdCard(&app_config);
 
-  usb_mode = LoadUsbModeFromNvs();
-  if (app_config.usb_mass_storage_from_file) {
+  bool usb_mode_found = false;
+  usb_mode = LoadUsbModeFromNvs(&usb_mode_found);
+  if (app_config.usb_mass_storage_from_file && !usb_mode_found) {
     usb_mode = app_config.usb_mass_storage ? UsbMode::kMsc : UsbMode::kCdc;
-    ESP_LOGI(TAG, "USB mode overridden by config.txt: %s", usb_mode == UsbMode::kMsc ? "MSC" : "CDC");
+    ESP_LOGI(TAG, "USB mode set from config.txt (no NVS value): %s", usb_mode == UsbMode::kMsc ? "MSC" : "CDC");
+    SaveUsbModeToNvs(usb_mode);
   }
   UpdateState([&](SharedState& s) { s.usb_msc_mode = (usb_mode == UsbMode::kMsc); });
 
