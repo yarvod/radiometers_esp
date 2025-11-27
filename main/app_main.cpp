@@ -7,6 +7,7 @@
 #include <cmath>
 #include <array>
 #include <string>
+#include <vector>
 
 #include "cJSON.h"
 #include "driver/gpio.h"
@@ -121,6 +122,18 @@ bool IsHallTriggered() {
   return gpio_get_level(MT_HALL_SEN) == 0;
 }
 
+bool SanitizeFilename(const std::string& name, std::string* out_full) {
+  if (name.empty() || name.size() > 64) return false;
+  for (char c : name) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.')) {
+      return false;
+    }
+  }
+  std::string full = std::string(CONFIG_MOUNT_POINT) + "/" + name;
+  if (out_full) *out_full = full;
+  return true;
+}
+
 struct AppConfig {
   std::string wifi_ssid = DEFAULT_WIFI_SSID;
   std::string wifi_password = DEFAULT_WIFI_PASS;
@@ -149,6 +162,8 @@ struct SharedState {
   int temp_sensor_count = 0;
   std::array<float, MAX_TEMP_SENSORS> temps_c{};
   bool homing = false;
+  bool logging = false;
+  std::string log_filename;
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -173,6 +188,9 @@ LTC2440 adc1(ADC_CS1);
 LTC2440 adc2(ADC_CS2);
 LTC2440 adc3(ADC_CS3);
 sdmmc_card_t* sd_card = nullptr;
+sdmmc_card_t* log_sd_card = nullptr;
+FILE* log_file = nullptr;
+bool log_sd_mounted = false;
 
 // TinyUSB MSC descriptors (single-interface device)
 constexpr uint8_t EPNUM_MSC_OUT = 0x01;
@@ -229,6 +247,7 @@ const tusb_desc_device_qualifier_t kDeviceQualifier = {
 httpd_handle_t http_server = nullptr;
 TaskHandle_t calibration_task = nullptr;
 TaskHandle_t find_zero_task = nullptr;
+TaskHandle_t log_task = nullptr;
 
 // HTML UI (kept close to original Arduino page)
 constexpr char INDEX_HTML[] = R"rawliteral(
@@ -327,6 +346,17 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       </div>
 
       <div class="control-panel">
+        <h3>Data Logging</h3>
+        <div class="form-group">
+          <label for="logFilename">Filename (on SD)</label>
+          <input type="text" id="logFilename" value="log.txt">
+        </div>
+        <div>Status: <span id="logStatus">Idle</span></div>
+        <button class="btn" onclick="startLog()">Start Logging</button>
+        <button class="btn btn-stop" onclick="stopLog()">Stop Logging</button>
+      </div>
+
+      <div class="control-panel">
         <h3>Fan Control</h3>
         <div class="form-group">
           <label for="fanPower">Fan Power (%)</label>
@@ -416,6 +446,12 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         list.innerHTML = html;
       } else {
         list.innerHTML = '<div class="voltage">--.- °C</div><div>No sensors</div>';
+      }
+      const logStatus = document.getElementById('logStatus');
+      if (data.logging) {
+        logStatus.textContent = 'Logging to ' + (data.logFilename || '');
+      } else {
+        logStatus.textContent = 'Idle';
       }
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
@@ -577,7 +613,22 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       .then(() => refreshData())
       .catch(() => refreshData());
     }
-    
+
+    function startLog() {
+      const fname = document.getElementById('logFilename').value;
+      fetch('/log/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: fname })
+      }).then(() => refreshData()).catch(() => refreshData());
+    }
+
+    function stopLog() {
+      fetch('/log/stop', { method: 'POST' })
+        .then(() => refreshData())
+        .catch(() => refreshData());
+    }
+
     // Auto-refresh every 2 seconds
     setInterval(refreshData, 2000);
     
@@ -723,7 +774,7 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
   esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
   mount_config.format_if_mount_failed = false;
-  mount_config.max_files = 4;
+  mount_config.max_files = 8;
   mount_config.allocation_unit_size = 0;
 
   esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
@@ -1378,6 +1429,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
     cJSON_AddItemToArray(temp_array, cJSON_CreateNumber(snapshot.temps_c[i]));
   }
   cJSON_AddItemToObject(root, "tempSensors", temp_array);
+  cJSON_AddBoolToObject(root, "logging", snapshot.logging);
+  cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
@@ -1501,6 +1554,122 @@ void FindZeroTask(void*) {
   vTaskDelete(nullptr);
 }
 
+bool MountLogSd() {
+  if (log_sd_mounted) {
+    return true;
+  }
+  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  host.flags |= SDMMC_HOST_FLAG_1BIT;
+
+  sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+  slot_config.width = 1;
+  slot_config.clk = SD_CLK;
+  slot_config.cmd = SD_CMD;
+  slot_config.d0 = SD_D0;
+  slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+  esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
+  mount_config.format_if_mount_failed = false;
+  mount_config.max_files = 8;
+  mount_config.allocation_unit_size = 0;
+
+  esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &log_sd_card);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "SD mount for logging failed: %s", esp_err_to_name(ret));
+    return false;
+  }
+  log_sd_mounted = true;
+  return true;
+}
+
+void UnmountLogSd() {
+  if (log_sd_mounted) {
+    esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, log_sd_card);
+    log_sd_mounted = false;
+    log_sd_card = nullptr;
+  }
+}
+
+void StopLogging() {
+  if (log_file) {
+    fclose(log_file);
+    log_file = nullptr;
+  }
+  UnmountLogSd();
+  UpdateState([](SharedState& s) {
+    s.logging = false;
+    s.log_filename.clear();
+  });
+  if (log_task) {
+    vTaskDelete(log_task);
+    log_task = nullptr;
+  }
+}
+
+void LoggingTask(void*) {
+  while (true) {
+    SharedState snapshot = CopyState();
+    if (!snapshot.logging || !log_file) {
+      StopLogging();
+      vTaskDelete(nullptr);
+    }
+    uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
+    // timestamp, adc1, adc2, adc3, temps..., bus_v, bus_i, bus_p
+    fprintf(log_file, "%llu,%.6f,%.6f,%.6f", (unsigned long long)ts_ms, snapshot.voltage1, snapshot.voltage2,
+            snapshot.voltage3);
+    for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+      fprintf(log_file, ",%.2f", snapshot.temps_c[i]);
+    }
+    fprintf(log_file, ",%.3f,%.3f,%.3f\n", snapshot.ina_bus_voltage, snapshot.ina_current, snapshot.ina_power);
+    fflush(log_file);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
+bool StartLoggingToFile(const std::string& name, UsbMode current_usb_mode) {
+  if (current_usb_mode == UsbMode::kMsc) {
+    ESP_LOGW(TAG, "Cannot start logging in MSC mode");
+    return false;
+  }
+  if (!MountLogSd()) {
+    return false;
+  }
+  if (log_file) {
+    fclose(log_file);
+    log_file = nullptr;
+  }
+  std::string full_path;
+  if (!SanitizeFilename(name, &full_path)) {
+    ESP_LOGW(TAG, "Bad filename for logging: %s", name.c_str());
+    UnmountLogSd();
+    return false;
+  }
+  log_file = fopen(full_path.c_str(), "w");
+  if (!log_file) {
+    ESP_LOGE(TAG, "Failed to open log file %s", full_path.c_str());
+    UnmountLogSd();
+    return false;
+  }
+  SharedState snapshot = CopyState();
+  fprintf(log_file, "timestamp_ms,adc1,adc2,adc3");
+  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+    fprintf(log_file, ",temp%d", i + 1);
+  }
+  fprintf(log_file, ",bus_v,bus_i,bus_p\n");
+  fflush(log_file);
+
+  UpdateState([&](SharedState& s) {
+    s.logging = true;
+    s.log_filename = name;
+  });
+
+  if (log_task == nullptr) {
+    xTaskCreatePinnedToCore(&LoggingTask, "log_task", 4096, nullptr, 2, &log_task, 0);
+  }
+  ESP_LOGI(TAG, "Logging started: %s", full_path.c_str());
+  return true;
+}
+
 esp_err_t StepperFindZeroHandler(httpd_req_t* req) {
   SharedState snapshot = CopyState();
   if (!snapshot.stepper_enabled) {
@@ -1584,6 +1753,51 @@ esp_err_t FanSetHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }
 
+esp_err_t LogStartHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 96);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  const cJSON* filename_item = cJSON_GetObjectItem(root, "filename");
+  std::string filename = filename_item && cJSON_IsString(filename_item) && filename_item->valuestring
+                             ? filename_item->valuestring
+                             : "";
+  cJSON_Delete(root);
+
+  if (filename.empty()) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
+    return ESP_FAIL;
+  }
+
+  if (!StartLoggingToFile(filename, usb_mode)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to start logging");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"logging_started\"}");
+}
+
+esp_err_t LogStopHandler(httpd_req_t* req) {
+  StopLogging();
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"logging_stopped\"}");
+}
+
 esp_err_t UsbModeGetHandler(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   if (usb_mode == UsbMode::kMsc) {
@@ -1645,7 +1859,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 14;
+  config.max_uri_handlers = 16;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1665,6 +1879,8 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
   httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
+  httpd_uri_t log_start_uri = {.uri = "/log/start", .method = HTTP_POST, .handler = LogStartHandler, .user_ctx = nullptr};
+  httpd_uri_t log_stop_uri = {.uri = "/log/stop", .method = HTTP_POST, .handler = LogStopHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -1679,6 +1895,8 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
   httpd_register_uri_handler(http_server, &fan_set_uri);
+  httpd_register_uri_handler(http_server, &log_start_uri);
+  httpd_register_uri_handler(http_server, &log_stop_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }
