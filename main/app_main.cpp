@@ -210,6 +210,15 @@ sdmmc_card_t* log_sd_card = nullptr;
 FILE* log_file = nullptr;
 bool log_sd_mounted = false;
 
+struct LoggingConfig {
+  bool active = false;
+  bool use_motor = false;
+  float duration_s = 1.0f;
+  bool homed_once = false;
+};
+
+LoggingConfig log_config{};
+
 // TinyUSB MSC descriptors (single-interface device)
 constexpr uint8_t EPNUM_MSC_OUT = 0x01;
 constexpr uint8_t EPNUM_MSC_IN = 0x81;
@@ -364,10 +373,17 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       </div>
 
       <div class="control-panel">
-        <h3>Data Logging</h3>
+        <h3>Measurements</h3>
         <div class="form-group">
           <label for="logFilename">Filename (on SD)</label>
           <input type="text" id="logFilename" value="log.txt">
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="logUseMotor"> Use motor (home + 180° sweep)</label>
+        </div>
+        <div class="form-group">
+          <label for="logDuration">Averaging duration, sec</label>
+          <input type="number" id="logDuration" value="1" min="0.1" step="0.1">
         </div>
         <div>Status: <span id="logStatus">Idle</span></div>
         <button class="btn" onclick="startLog()">Start Logging</button>
@@ -682,10 +698,12 @@ constexpr char INDEX_HTML[] = R"rawliteral(
 
     function startLog() {
       const fname = document.getElementById('logFilename').value;
+      const useMotor = document.getElementById('logUseMotor').checked;
+      const duration = parseFloat(document.getElementById('logDuration').value);
       fetch('/log/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: fname })
+        body: JSON.stringify({ filename: fname, useMotor: useMotor, durationSec: duration })
       }).then(() => refreshData()).catch(() => refreshData());
     }
 
@@ -1790,6 +1808,8 @@ void StopLogging() {
     s.logging = false;
     s.log_filename.clear();
   });
+  log_config.active = false;
+  log_config.homed_once = false;
   if (log_task) {
     vTaskDelete(log_task);
     log_task = nullptr;
@@ -1797,22 +1817,122 @@ void StopLogging() {
 }
 
 void LoggingTask(void*) {
+  const int steps_180 = 200;  // adjust to your mechanics (microsteps for 180 degrees)
+
+  auto home_blocking = [&]() {
+    UpdateState([](SharedState& s) { s.homing = true; });
+    gpio_set_level(STEPPER_DIR, 0);
+    int steps = 0;
+    const int max_steps = 20000;
+    while (!IsHallTriggered() && steps < max_steps) {
+      gpio_set_level(STEPPER_STEP, 1);
+      esp_rom_delay_us(4);
+      gpio_set_level(STEPPER_STEP, 0);
+      esp_rom_delay_us(1000);
+      steps++;
+    }
+    UpdateState([](SharedState& s) {
+      s.stepper_position = 0;
+      s.stepper_target = 0;
+      s.stepper_moving = false;
+      s.homing = false;
+    });
+  };
+
+  auto move_blocking = [&](int steps, bool forward) {
+    UpdateState([](SharedState& s) { s.homing = true; });
+    gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
+    for (int i = 0; i < steps; ++i) {
+      gpio_set_level(STEPPER_STEP, 1);
+      esp_rom_delay_us(4);
+      gpio_set_level(STEPPER_STEP, 0);
+      esp_rom_delay_us(1000);
+    }
+    UpdateState([&](SharedState& s) {
+      s.homing = false;
+      s.stepper_position += forward ? steps : -steps;
+      s.stepper_target = s.stepper_position;
+    });
+  };
+
+  auto collect_avg = [&](float duration_s, int temp_count, SharedState* out) -> bool {
+    if (!out) return false;
+    const TickType_t interval = pdMS_TO_TICKS(200);
+    const uint64_t duration_ms = static_cast<uint64_t>(duration_s * 1000.0f);
+    uint64_t start = esp_timer_get_time() / 1000ULL;
+    int samples = 0;
+    double sum_v1 = 0, sum_v2 = 0, sum_v3 = 0;
+    std::array<double, MAX_TEMP_SENSORS> temp_sum{};
+    double sum_bus_v = 0, sum_bus_i = 0, sum_bus_p = 0;
+    while ((esp_timer_get_time() / 1000ULL - start) < duration_ms) {
+      SharedState snap = CopyState();
+      sum_v1 += snap.voltage1;
+      sum_v2 += snap.voltage2;
+      sum_v3 += snap.voltage3;
+      for (int i = 0; i < temp_count && i < MAX_TEMP_SENSORS; ++i) {
+        temp_sum[i] += snap.temps_c[i];
+      }
+      sum_bus_v += snap.ina_bus_voltage;
+      sum_bus_i += snap.ina_current;
+      sum_bus_p += snap.ina_power;
+      samples++;
+      vTaskDelay(interval);
+    }
+    if (samples == 0) return false;
+    out->voltage1 = sum_v1 / samples;
+    out->voltage2 = sum_v2 / samples;
+    out->voltage3 = sum_v3 / samples;
+    out->ina_bus_voltage = sum_bus_v / samples;
+    out->ina_current = sum_bus_i / samples;
+    out->ina_power = sum_bus_p / samples;
+    out->temp_sensor_count = temp_count;
+    for (int i = 0; i < temp_count && i < MAX_TEMP_SENSORS; ++i) {
+      out->temps_c[i] = static_cast<float>(temp_sum[i] / samples);
+    }
+    return true;
+  };
+
   while (true) {
-    SharedState snapshot = CopyState();
-    if (!snapshot.logging || !log_file) {
+    SharedState current = CopyState();
+    if (!current.logging || !log_file) {
       StopLogging();
       vTaskDelete(nullptr);
     }
-    uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
-    // timestamp, adc1, adc2, adc3, temps..., bus_v, bus_i, bus_p
-    fprintf(log_file, "%llu,%.6f,%.6f,%.6f", (unsigned long long)ts_ms, snapshot.voltage1, snapshot.voltage2,
-            snapshot.voltage3);
-    for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-      fprintf(log_file, ",%.2f", snapshot.temps_c[i]);
+
+    if (log_config.use_motor) {
+      EnableStepper();
+      home_blocking();
+    } else if (!log_config.homed_once) {
+      EnableStepper();
+      home_blocking();
+      DisableStepper();
+      log_config.homed_once = true;
     }
-    fprintf(log_file, ",%.3f,%.3f,%.3f\n", snapshot.ina_bus_voltage, snapshot.ina_current, snapshot.ina_power);
+
+    SharedState avg1{};
+    if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg1)) {
+      StopLogging();
+      vTaskDelete(nullptr);
+    }
+
+    bool have_cal = false;
+    SharedState avg2{};
+    if (log_config.use_motor) {
+      move_blocking(steps_180, false);
+      have_cal = collect_avg(log_config.duration_s, current.temp_sensor_count, &avg2);
+    }
+
+    uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
+    fprintf(log_file, "%llu,%.6f,%.6f,%.6f", (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2, avg1.voltage3);
+    for (int i = 0; i < avg1.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+      fprintf(log_file, ",%.2f", avg1.temps_c[i]);
+    }
+    fprintf(log_file, ",%.3f,%.3f,%.3f", avg1.ina_bus_voltage, avg1.ina_current, avg1.ina_power);
+    if (log_config.use_motor && have_cal) {
+      fprintf(log_file, ",%.6f,%.6f,%.6f", avg2.voltage1, avg2.voltage2, avg2.voltage3);
+    }
+    fprintf(log_file, "\n");
     fflush(log_file);
-    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
@@ -1841,11 +1961,17 @@ bool StartLoggingToFile(const std::string& name, UsbMode current_usb_mode) {
     return false;
   }
   SharedState snapshot = CopyState();
+  log_config.active = true;
+  log_config.homed_once = false;
   fprintf(log_file, "timestamp_ms,adc1,adc2,adc3");
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     fprintf(log_file, ",temp%d", i + 1);
   }
-  fprintf(log_file, ",bus_v,bus_i,bus_p\n");
+  fprintf(log_file, ",bus_v,bus_i,bus_p");
+  if (log_config.use_motor) {
+    fprintf(log_file, ",adc1_cal,adc2_cal,adc3_cal");
+  }
+  fprintf(log_file, "\n");
   fflush(log_file);
 
   UpdateState([&](SharedState& s) {
@@ -1966,12 +2092,20 @@ esp_err_t LogStartHandler(httpd_req_t* req) {
   std::string filename = filename_item && cJSON_IsString(filename_item) && filename_item->valuestring
                              ? filename_item->valuestring
                              : "";
+  cJSON* use_motor_item = cJSON_GetObjectItem(root, "useMotor");
+  cJSON* duration_item = cJSON_GetObjectItem(root, "durationSec");
+  bool use_motor = (use_motor_item && cJSON_IsBool(use_motor_item)) ? cJSON_IsTrue(use_motor_item) : false;
+  float duration_s =
+      (duration_item && cJSON_IsNumber(duration_item) && duration_item->valuedouble > 0.1) ? duration_item->valuedouble : 1.0f;
   cJSON_Delete(root);
 
   if (filename.empty()) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
     return ESP_FAIL;
   }
+
+  log_config.use_motor = use_motor;
+  log_config.duration_s = duration_s;
 
   if (!StartLoggingToFile(filename, usb_mode)) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to start logging");
