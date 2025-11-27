@@ -31,3 +31,4 @@ compile_commands.json
 
 # IDE project files
 .idea/
+.vscode/
