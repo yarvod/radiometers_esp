@@ -144,6 +144,17 @@ struct AppConfig {
 
 AppConfig app_config{};
 
+struct PidConfig {
+  float kp = 1.0f;
+  float ki = 0.0f;
+  float kd = 0.0f;
+  float setpoint = 25.0f;
+  int sensor_index = 0;
+  bool from_file = false;
+};
+
+PidConfig pid_config{};
+
 // State shared across tasks and HTTP handlers
 struct SharedState {
   float voltage1 = 0.0f;
@@ -164,6 +175,13 @@ struct SharedState {
   bool homing = false;
   bool logging = false;
   std::string log_filename;
+  bool pid_enabled = false;
+  float pid_kp = 1.0f;
+  float pid_ki = 0.0f;
+  float pid_kd = 0.0f;
+  float pid_setpoint = 25.0f;
+  int pid_sensor_index = 0;
+  float pid_output = 0.0f;
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
@@ -364,6 +382,34 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         </div>
         <button class="btn" onclick="setFan()">Set Fan</button>
       </div>
+
+      <div class="control-panel">
+        <h3>Heater PID Control</h3>
+        <div class="form-group">
+          <label for="pidSetpoint">Target Temp (°C)</label>
+          <input type="number" id="pidSetpoint" value="25" step="0.1">
+        </div>
+        <div class="form-group">
+          <label for="pidSensor">Sensor</label>
+          <select id="pidSensor"></select>
+        </div>
+        <div class="form-group">
+          <label for="pidKp">Kp</label>
+          <input type="number" id="pidKp" value="1" step="0.01">
+        </div>
+        <div class="form-group">
+          <label for="pidKi">Ki</label>
+          <input type="number" id="pidKi" value="0" step="0.01">
+        </div>
+        <div class="form-group">
+          <label for="pidKd">Kd</label>
+          <input type="number" id="pidKd" value="0" step="0.01">
+        </div>
+        <div>Status: <span id="pidStatus">Off</span></div>
+        <button class="btn" onclick="applyPid()">Apply PID</button>
+        <button class="btn btn-stepper" onclick="enablePid()">Enable PID</button>
+        <button class="btn btn-stop" onclick="disablePid()">Disable PID</button>
+      </div>
       
       <div class="control-panel">
         <h3>Stepper Motor Control</h3>
@@ -420,7 +466,14 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     </div>
   </div>
 
-  <script>
+<script>
+    function setValueIfIdle(id, value) {
+      const el = document.getElementById(id);
+      if (el && document.activeElement !== el) {
+        el.value = value;
+      }
+    }
+
     function updateData(data) {
       document.getElementById('voltage1').textContent = data.voltage1.toFixed(6) + ' V';
       document.getElementById('voltage2').textContent = data.voltage2.toFixed(6) + ' V';
@@ -473,6 +526,20 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       } else {
         usbErrorEl.style.display = 'none';
       }
+
+      const sensorSelect = document.getElementById('pidSensor');
+      const currentSensor = data.pidSensorIndex ?? 0;
+      const count = data.tempSensorCount || (data.tempSensors ? data.tempSensors.length : 0);
+      sensorSelect.innerHTML = '';
+      for (let i = 0; i < count; i++) {
+        const opt = document.createElement('option');
+        opt.value = i;
+        opt.textContent = `Sensor ${i + 1}`;
+        if (i === currentSensor) opt.selected = true;
+        sensorSelect.appendChild(opt);
+      }
+      // PID inputs оставляем как ввёл пользователь, не трогаем автоданными
+      document.getElementById('pidStatus').textContent = data.pidEnabled ? `On (out ${data.pidOutput?.toFixed(1) ?? 0}%)` : 'Off';
     }
     
     function refreshData() {
@@ -624,6 +691,33 @@ constexpr char INDEX_HTML[] = R"rawliteral(
 
     function stopLog() {
       fetch('/log/stop', { method: 'POST' })
+      .then(() => refreshData())
+      .catch(() => refreshData());
+    }
+
+    function applyPid() {
+      const payload = {
+        setpoint: parseFloat(document.getElementById('pidSetpoint').value),
+        sensor: parseInt(document.getElementById('pidSensor').value),
+        kp: parseFloat(document.getElementById('pidKp').value),
+        ki: parseFloat(document.getElementById('pidKi').value),
+        kd: parseFloat(document.getElementById('pidKd').value),
+      };
+      fetch('/pid/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(() => refreshData()).catch(() => refreshData());
+    }
+
+    function enablePid() {
+      fetch('/pid/enable', { method: 'POST' })
+        .then(() => refreshData())
+        .catch(() => refreshData());
+    }
+
+    function disablePid() {
+      fetch('/pid/disable', { method: 'POST' })
         .then(() => refreshData())
         .catch(() => refreshData());
     }
@@ -702,6 +796,12 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool pass_set = false;
   bool usb_set = false;
   bool usb_value = false;
+  bool pid_kp_set = false, pid_ki_set = false, pid_kd_set = false, pid_sp_set = false, pid_sensor_set = false;
+  float pid_kp = pid_config.kp;
+  float pid_ki = pid_config.ki;
+  float pid_kd = pid_config.kd;
+  float pid_sp = pid_config.setpoint;
+  int pid_sensor = pid_config.sensor_index;
   std::string ssid;
   std::string password;
 
@@ -740,6 +840,21 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
       } else {
         ESP_LOGW(TAG, "Invalid usb_mass_storage value in config.txt");
       }
+    } else if (key == "pid_kp") {
+      pid_kp = std::strtof(value.c_str(), nullptr);
+      pid_kp_set = true;
+    } else if (key == "pid_ki") {
+      pid_ki = std::strtof(value.c_str(), nullptr);
+      pid_ki_set = true;
+    } else if (key == "pid_kd") {
+      pid_kd = std::strtof(value.c_str(), nullptr);
+      pid_kd_set = true;
+    } else if (key == "pid_setpoint") {
+      pid_sp = std::strtof(value.c_str(), nullptr);
+      pid_sp_set = true;
+    } else if (key == "pid_sensor") {
+      pid_sensor = std::atoi(value.c_str());
+      pid_sensor_set = true;
     }
   }
 
@@ -751,6 +866,14 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (usb_set) {
     config->usb_mass_storage = usb_value;
     config->usb_mass_storage_from_file = true;
+  }
+   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
+    pid_config.kp = pid_kp;
+    pid_config.ki = pid_ki;
+    pid_config.kd = pid_kd;
+    pid_config.setpoint = pid_sp;
+    pid_config.sensor_index = pid_sensor;
+    pid_config.from_file = true;
   }
   return config->wifi_from_file || config->usb_mass_storage_from_file;
 }
@@ -1344,6 +1467,42 @@ void TempTask(void*) {
   }
 }
 
+void PidTask(void*) {
+  float integral = 0.0f;
+  float prev_error = 0.0f;
+  const float dt = 1.0f;
+  while (true) {
+    SharedState snapshot = CopyState();
+    if (!snapshot.pid_enabled) {
+      integral = 0.0f;
+      prev_error = 0.0f;
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+    if (snapshot.pid_sensor_index < 0 || snapshot.pid_sensor_index >= snapshot.temp_sensor_count) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+    float temp = snapshot.temps_c[snapshot.pid_sensor_index];
+    if (!std::isfinite(temp)) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+    float error = snapshot.pid_setpoint - temp;
+    integral += error * dt;
+    integral = std::clamp(integral, -200.0f, 200.0f);
+    float derivative = (error - prev_error) / dt;
+    float output = snapshot.pid_kp * error + snapshot.pid_ki * integral + snapshot.pid_kd * derivative;
+    output = std::clamp(output, 0.0f, 100.0f);
+    HeaterSetPowerPercent(output);
+    UpdateState([&](SharedState& s) {
+      s.pid_output = output;
+    });
+    prev_error = error;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
 void CalibrateZero() {
   bool already_running = false;
   UpdateState([&](SharedState& s) {
@@ -1430,6 +1589,13 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddItemToObject(root, "tempSensors", temp_array);
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
+  cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
+  cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
+  cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
+  cJSON_AddNumberToObject(root, "pidKp", snapshot.pid_kp);
+  cJSON_AddNumberToObject(root, "pidKi", snapshot.pid_ki);
+  cJSON_AddNumberToObject(root, "pidKd", snapshot.pid_kd);
+  cJSON_AddNumberToObject(root, "pidOutput", snapshot.pid_output);
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
@@ -1587,6 +1753,31 @@ void UnmountLogSd() {
     log_sd_mounted = false;
     log_sd_card = nullptr;
   }
+}
+
+static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode) {
+  if (!MountLogSd()) {
+    return false;
+  }
+  FILE* f = fopen(CONFIG_FILE_PATH, "w");
+  if (!f) {
+    ESP_LOGE(TAG, "Failed to open %s for writing", CONFIG_FILE_PATH);
+    UnmountLogSd();
+    return false;
+  }
+  fprintf(f, "# Config generated by device\n");
+  fprintf(f, "wifi_ssid = %s\n", cfg.wifi_ssid.c_str());
+  fprintf(f, "wifi_password = %s\n", cfg.wifi_password.c_str());
+  fprintf(f, "usb_mass_storage = %s\n", (current_usb_mode == UsbMode::kMsc) ? "true" : "false");
+  fprintf(f, "pid_kp = %.6f\n", pid.kp);
+  fprintf(f, "pid_ki = %.6f\n", pid.ki);
+  fprintf(f, "pid_kd = %.6f\n", pid.kd);
+  fprintf(f, "pid_setpoint = %.6f\n", pid.setpoint);
+  fprintf(f, "pid_sensor = %d\n", pid.sensor_index);
+  fclose(f);
+  UnmountLogSd();
+  ESP_LOGI(TAG, "Config saved to %s", CONFIG_FILE_PATH);
+  return true;
 }
 
 void StopLogging() {
@@ -1797,6 +1988,86 @@ esp_err_t LogStopHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"logging_stopped\"}");
 }
 
+esp_err_t PidApplyHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 128);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  auto get_number = [&](const char* key, float* out) -> bool {
+    cJSON* item = cJSON_GetObjectItem(root, key);
+    if (item && cJSON_IsNumber(item)) {
+      *out = static_cast<float>(item->valuedouble);
+      return true;
+    }
+    return false;
+  };
+  float kp = pid_config.kp;
+  float ki = pid_config.ki;
+  float kd = pid_config.kd;
+  float sp = pid_config.setpoint;
+  int sensor = pid_config.sensor_index;
+
+  get_number("kp", &kp);
+  get_number("ki", &ki);
+  get_number("kd", &kd);
+  get_number("setpoint", &sp);
+  cJSON* sensor_item = cJSON_GetObjectItem(root, "sensor");
+  if (sensor_item && cJSON_IsNumber(sensor_item)) {
+    sensor = sensor_item->valueint;
+  }
+  cJSON_Delete(root);
+
+  pid_config.kp = kp;
+  pid_config.ki = ki;
+  pid_config.kd = kd;
+  pid_config.setpoint = sp;
+  pid_config.sensor_index = sensor;
+
+  UpdateState([&](SharedState& s) {
+    s.pid_kp = kp;
+    s.pid_ki = ki;
+    s.pid_kd = kd;
+    s.pid_setpoint = sp;
+    s.pid_sensor_index = sensor;
+  });
+
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"pid_applied\"}");
+}
+
+esp_err_t PidEnableHandler(httpd_req_t* req) {
+  SharedState snapshot = CopyState();
+  if (snapshot.temp_sensor_count == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No temp sensors");
+    return ESP_FAIL;
+  }
+  UpdateState([](SharedState& s) { s.pid_enabled = true; });
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"pid_enabled\"}");
+}
+
+esp_err_t PidDisableHandler(httpd_req_t* req) {
+  UpdateState([](SharedState& s) { s.pid_enabled = false; });
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"pid_disabled\"}");
+}
+
 esp_err_t UsbModeGetHandler(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   if (usb_mode == UsbMode::kMsc) {
@@ -1858,7 +2129,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 16;
+  config.max_uri_handlers = 19;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1880,6 +2151,9 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
   httpd_uri_t log_start_uri = {.uri = "/log/start", .method = HTTP_POST, .handler = LogStartHandler, .user_ctx = nullptr};
   httpd_uri_t log_stop_uri = {.uri = "/log/stop", .method = HTTP_POST, .handler = LogStopHandler, .user_ctx = nullptr};
+  httpd_uri_t pid_apply_uri = {.uri = "/pid/apply", .method = HTTP_POST, .handler = PidApplyHandler, .user_ctx = nullptr};
+  httpd_uri_t pid_enable_uri = {.uri = "/pid/enable", .method = HTTP_POST, .handler = PidEnableHandler, .user_ctx = nullptr};
+  httpd_uri_t pid_disable_uri = {.uri = "/pid/disable", .method = HTTP_POST, .handler = PidDisableHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -1896,6 +2170,9 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &fan_set_uri);
   httpd_register_uri_handler(http_server, &log_start_uri);
   httpd_register_uri_handler(http_server, &log_stop_uri);
+  httpd_register_uri_handler(http_server, &pid_apply_uri);
+  httpd_register_uri_handler(http_server, &pid_enable_uri);
+  httpd_register_uri_handler(http_server, &pid_disable_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }
@@ -1964,6 +2241,13 @@ extern "C" void app_main(void) {
   if (!app_config.wifi_from_file) {
     ESP_LOGI(TAG, "Using default Wi-Fi config (SSID: %s)", app_config.wifi_ssid.c_str());
   }
+  UpdateState([](SharedState& s) {
+    s.pid_kp = pid_config.kp;
+    s.pid_ki = pid_config.ki;
+    s.pid_kd = pid_config.kd;
+    s.pid_setpoint = pid_config.setpoint;
+    s.pid_sensor_index = pid_config.sensor_index;
+  });
   InitWifi(app_config.wifi_ssid, app_config.wifi_password);
   StartHttpServer();
 
@@ -1977,6 +2261,7 @@ extern "C" void app_main(void) {
   if (temp_ok) {
     xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
   }
+  xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
 
   ESP_LOGI(TAG, "System ready");
 }
