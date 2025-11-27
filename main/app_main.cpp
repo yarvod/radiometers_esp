@@ -428,7 +428,6 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('inaVoltage').textContent = data.inaBusVoltage.toFixed(3) + ' V';
       document.getElementById('inaCurrent').textContent = data.inaCurrent.toFixed(3);
       document.getElementById('inaPower').textContent = data.inaPower.toFixed(3);
-      document.getElementById('heaterPower').value = data.heaterPower.toFixed(1);
       document.getElementById('fanPowerDisplay').textContent = data.fanPower.toFixed(0) + ' %';
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
