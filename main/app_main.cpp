@@ -2410,13 +2410,13 @@ void LoggingTask(void*) {
     }
     uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
     const std::string iso = IsoUtcNow();
-    fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2, avg1.voltage3);
+    fprintf(log_file, "%s,%llu,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2);
     for (int i = 0; i < avg1.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
       fprintf(log_file, ",%.2f", avg1.temps_c[i]);
     }
     fprintf(log_file, ",%.3f,%.3f,%.3f", avg1.ina_bus_voltage, avg1.ina_current, avg1.ina_power);
     if (log_config.use_motor && have_cal) {
-      fprintf(log_file, ",%.6f,%.6f,%.6f", avg2.voltage1, avg2.voltage2, avg2.voltage3);
+      fprintf(log_file, ",%.6f,%.6f", avg2.voltage1, avg2.voltage2);
     }
     fprintf(log_file, "\n");
     FlushLogFile();
