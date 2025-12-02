@@ -88,7 +88,7 @@ constexpr gpio_num_t RELAY_PIN = GPIO_NUM_17;
 constexpr gpio_num_t STEPPER_EN = GPIO_NUM_35;
 constexpr gpio_num_t STEPPER_DIR = GPIO_NUM_36;
 constexpr gpio_num_t STEPPER_STEP = GPIO_NUM_37;
-constexpr int ADC_SPI_FREQ_HZ = 1'000'000;
+constexpr int ADC_SPI_FREQ_HZ = 100'000;
 
 constexpr float VREF = 4.096f;  // ±Vref/2 range, matches original sketch
 constexpr float ADC_SCALE = (VREF / 2.0f) / static_cast<float>(1 << 23);
