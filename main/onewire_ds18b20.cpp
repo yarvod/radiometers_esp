@@ -17,6 +17,7 @@ const char* TAG = "DS18B20";
 
 onewire_bus_handle_t g_bus = nullptr;
 std::array<ds18b20_device_handle_t, kMaxDevices> g_devices{};
+std::array<uint64_t, kMaxDevices> g_addresses{};
 int g_sensor_count = 0;
 
 void CleanupDevices() {
@@ -26,6 +27,7 @@ void CleanupDevices() {
       dev = nullptr;
     }
   }
+  g_addresses.fill(0);
   g_sensor_count = 0;
 }
 
@@ -90,6 +92,7 @@ bool Ds18b20Init(gpio_num_t pin) {
       g_sensor_count = device_num + 1;
       onewire_device_address_t address = 0;
       if (ds18b20_get_device_address(handle, &address) == ESP_OK) {
+        g_addresses[device_num] = address;
         ESP_LOGI(TAG, "Found a DS18B20[%d], address: %016llX", device_num, (unsigned long long)address);
       } else {
         ESP_LOGI(TAG, "Found a DS18B20[%d]", device_num);
@@ -139,6 +142,13 @@ bool Ds18b20ReadTemperatures(float* out_values, int max_values, int* out_count) 
   for (int i = 0; i < to_read; ++i) {
     float temp = NAN;
     err = ds18b20_get_temperature(g_devices[i], &temp);
+    // Best-effort: refresh stored address if it was not captured during init.
+    if (g_addresses[i] == 0 && g_devices[i]) {
+      onewire_device_address_t addr = 0;
+      if (ds18b20_get_device_address(g_devices[i], &addr) == ESP_OK) {
+        g_addresses[i] = addr;
+      }
+    }
     if (err == ESP_OK) {
       out_values[i] = temp;
       any_ok = true;
@@ -149,4 +159,24 @@ bool Ds18b20ReadTemperatures(float* out_values, int max_values, int* out_count) 
 
   *out_count = to_read;
   return any_ok;
+}
+
+int Ds18b20GetAddresses(uint64_t* out_values, int max_values) {
+  if (!out_values || max_values <= 0) {
+    return 0;
+  }
+  int count = std::min(g_sensor_count, max_values);
+  for (int i = 0; i < count; ++i) {
+    if (g_addresses[i] == 0 && g_devices[i]) {
+      onewire_device_address_t addr = 0;
+      if (ds18b20_get_device_address(g_devices[i], &addr) == ESP_OK) {
+        g_addresses[i] = addr;
+      }
+    }
+    out_values[i] = g_addresses[i];
+  }
+  for (int i = count; i < max_values; ++i) {
+    out_values[i] = 0;
+  }
+  return count;
 }

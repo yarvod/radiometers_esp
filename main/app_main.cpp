@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <ctime>
+#include <cstdint>
 
 #include "cJSON.h"
 #include "driver/gpio.h"
@@ -74,6 +75,8 @@ constexpr gpio_num_t FAN2_TACH = GPIO_NUM_21;
 // Temperature (1-Wire)
 constexpr gpio_num_t TEMP_1WIRE = GPIO_NUM_18;
 constexpr int MAX_TEMP_SENSORS = 8;
+constexpr uint64_t TEMP_ADDR_RAD = 0x77062223A096AD28ULL;
+constexpr uint64_t TEMP_ADDR_LOAD = 0xE80000105FF4E228ULL;
 
 // Hall sensor
 constexpr gpio_num_t MT_HALL_SEN = GPIO_NUM_3;
@@ -273,6 +276,7 @@ struct SharedState {
   uint32_t fan2_rpm = 0;
   int temp_sensor_count = 0;
   std::array<float, MAX_TEMP_SENSORS> temps_c{};
+  std::array<std::string, MAX_TEMP_SENSORS> temp_labels{};
   bool homing = false;
   bool logging = false;
   std::string log_filename;
@@ -305,7 +309,7 @@ UsbMode usb_mode = UsbMode::kCdc;
 // Devices
 LTC2440 adc1(ADC_CS1, ADC_MISO);
 LTC2440 adc2(ADC_CS2, ADC_MISO);
-LTC2440 adc3(ADC_CS3, ADC_MISO);
+// LTC2440 adc3(ADC_CS3, ADC_MISO);
 sdmmc_card_t* sd_card = nullptr;
 sdmmc_card_t* log_sd_card = nullptr;
 FILE* log_file = nullptr;
@@ -616,14 +620,16 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
       const list = document.getElementById('tempList');
+      const labels = Array.isArray(data.tempLabels) ? data.tempLabels : [];
       if (Array.isArray(data.tempSensors) && data.tempSensors.length > 0) {
         let html = '';
         data.tempSensors.forEach((t, idx) => {
+          const name = labels[idx] || `Sensor ${idx + 1}`;
           const text = Number.isFinite(t) ? `${t.toFixed(2)} °C` : '--.- °C';
           if (idx === 0) {
-            html += `<div class="voltage">Sensor ${idx + 1}: ${text}</div>`;
+            html += `<div class="voltage">${name}: ${text}</div>`;
           } else {
-            html += `<div>Sensor ${idx + 1}: ${text}</div>`;
+            html += `<div>${name}: ${text}</div>`;
           }
         });
         list.innerHTML = html;
@@ -665,7 +671,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       for (let i = 0; i < count; i++) {
         const opt = document.createElement('option');
         opt.value = i;
-        opt.textContent = `Sensor ${i + 1}`;
+        opt.textContent = labels[i] || `Sensor ${i + 1}`;
         if (i === currentSensor) opt.selected = true;
         sensorSelect.appendChild(opt);
       }
@@ -1252,6 +1258,28 @@ esp_err_t InitSpiBus() {
   return spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
 }
 
+std::array<std::string, MAX_TEMP_SENSORS> BuildTempLabels(int count) {
+  std::array<std::string, MAX_TEMP_SENSORS> labels{};
+  uint64_t addrs[MAX_TEMP_SENSORS] = {};
+  const int addr_count = Ds18b20GetAddresses(addrs, MAX_TEMP_SENSORS);
+
+  bool plate_assigned = false;
+  for (int i = 0; i < count && i < addr_count; ++i) {
+    const uint64_t addr = addrs[i];
+    if (addr == TEMP_ADDR_RAD) {
+      labels[i] = "rad";
+    } else if (addr == TEMP_ADDR_LOAD) {
+      labels[i] = "load";
+    } else if (!plate_assigned) {
+      labels[i] = "plate";
+      plate_assigned = true;
+    } else {
+      labels[i] = "temp" + std::to_string(i + 1);
+    }
+  }
+  return labels;
+}
+
 void InitGpios() {
   gpio_config_t io_conf = {};
   io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -1597,12 +1625,12 @@ esp_err_t ReadAllAdc(float* v1, float* v2, float* v3) {
     StartErrorBlink();
     return err;
   }
-  err = adc3.Read(&raw3);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "ADC3 read failed");
-    StartErrorBlink();
-    return err;
-  }
+  // err = adc3.Read(&raw3);
+  // if (err != ESP_OK) {
+  //   ESP_LOGE(TAG, "ADC3 read failed");
+  //   StartErrorBlink();
+  //   return err;
+  // }
 
   *v1 = static_cast<float>(raw1) * ADC_SCALE;
   *v2 = static_cast<float>(raw2) * ADC_SCALE;
@@ -1662,9 +1690,11 @@ void TempTask(void*) {
   while (true) {
     int count = 0;
     if (Ds18b20ReadTemperatures(temps.data(), MAX_TEMP_SENSORS, &count)) {
+      const auto labels = BuildTempLabels(count);
       UpdateState([&](SharedState& s) {
         s.temp_sensor_count = count;
         s.temps_c = temps;
+        s.temp_labels = labels;
       });
       if (count > 0) {
         ESP_LOGI(TAG, "Temps (%d):", count);
@@ -1800,6 +1830,18 @@ esp_err_t DataHandler(httpd_req_t* req) {
     cJSON_AddItemToArray(temp_array, cJSON_CreateNumber(snapshot.temps_c[i]));
   }
   cJSON_AddItemToObject(root, "tempSensors", temp_array);
+  cJSON* label_array = cJSON_CreateArray();
+  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+    const std::string& name = snapshot.temp_labels[i];
+    if (!name.empty()) {
+      cJSON_AddItemToArray(label_array, cJSON_CreateString(name.c_str()));
+    } else {
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), "Sensor %d", i + 1);
+      cJSON_AddItemToArray(label_array, cJSON_CreateString(buf));
+    }
+  }
+  cJSON_AddItemToObject(root, "tempLabels", label_array);
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
@@ -2182,13 +2224,13 @@ bool StartLoggingToFile(const std::string& postfix, UsbMode current_usb_mode) {
   SharedState snapshot = CopyState();
   log_config.active = true;
   log_config.homed_once = false;
-  fprintf(log_file, "timestamp_ms,adc1,adc2,adc3");
+  fprintf(log_file, "timestamp_ms,adc1,adc2");
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     fprintf(log_file, ",temp%d", i + 1);
   }
   fprintf(log_file, ",bus_v,bus_i,bus_p");
   if (log_config.use_motor) {
-    fprintf(log_file, ",adc1_cal,adc2_cal,adc3_cal");
+    fprintf(log_file, ",adc1_cal,adc2_cal");
   }
   fprintf(log_file, "\n");
   fflush(log_file);
@@ -2753,7 +2795,7 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(InitSpiBus());
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
   ESP_ERROR_CHECK(adc2.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
-  ESP_ERROR_CHECK(adc3.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
+  // ESP_ERROR_CHECK(adc3.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
   esp_err_t ina_err = InitIna219();
   if (ina_err != ESP_OK) {
     ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));
