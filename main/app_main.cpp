@@ -311,6 +311,10 @@ SemaphoreHandle_t state_mutex = nullptr;
 enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };
 UsbMode usb_mode = UsbMode::kCdc;
 
+// Forward declarations for shared state helpers
+SharedState CopyState();
+void UpdateState(const std::function<void(SharedState&)>& updater);
+
 // Devices
 LTC2440 adc1(ADC_CS1, ADC_MISO);
 LTC2440 adc2(ADC_CS2, ADC_MISO);
@@ -624,6 +628,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('fanPowerDisplay').textContent = data.fanPower.toFixed(0) + ' %';
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
+      setValueIfIdle('heaterPower', data.heaterPower?.toFixed(1) ?? data.heaterPower ?? 0);
       const list = document.getElementById('tempList');
       const labels = Array.isArray(data.tempLabels) ? data.tempLabels : [];
       if (Array.isArray(data.tempSensors) && data.tempSensors.length > 0) {
@@ -682,6 +687,10 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       }
       // PID inputs оставляем как ввёл пользователь, не трогаем автоданными
       document.getElementById('pidStatus').textContent = data.pidEnabled ? `On (out ${data.pidOutput?.toFixed(1) ?? 0}%)` : 'Off';
+      setValueIfIdle('pidSetpoint', (data.pidSetpoint ?? 0).toFixed(2));
+      setValueIfIdle('pidKp', (data.pidKp ?? 0).toFixed(4));
+      setValueIfIdle('pidKi', (data.pidKi ?? 0).toFixed(4));
+      setValueIfIdle('pidKd', (data.pidKd ?? 0).toFixed(4));
     }
     
     function refreshData() {
@@ -1001,6 +1010,8 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool pass_set = false;
   bool usb_set = false;
   bool usb_value = false;
+  bool pid_enabled_set = false;
+  bool pid_enabled_val = false;
   bool pid_kp_set = false, pid_ki_set = false, pid_kd_set = false, pid_sp_set = false, pid_sensor_set = false;
   float pid_kp = pid_config.kp;
   float pid_ki = pid_config.ki;
@@ -1060,6 +1071,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     } else if (key == "pid_sensor") {
       pid_sensor = std::atoi(value.c_str());
       pid_sensor_set = true;
+    } else if (key == "pid_enabled") {
+      if (ParseBool(value, &pid_enabled_val)) {
+        pid_enabled_set = true;
+      }
     }
   }
 
@@ -1072,7 +1087,7 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     config->usb_mass_storage = usb_value;
     config->usb_mass_storage_from_file = true;
   }
-   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
+  if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
     pid_config.kp = pid_kp;
     pid_config.ki = pid_ki;
     pid_config.kd = pid_kd;
@@ -1080,7 +1095,11 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     pid_config.sensor_index = pid_sensor;
     pid_config.from_file = true;
   }
-  return config->wifi_from_file || config->usb_mass_storage_from_file;
+  if (pid_enabled_set) {
+    UpdateState([&](SharedState& s) { s.pid_enabled = pid_enabled_val; });
+    pid_config.from_file = true;
+  }
+  return config->wifi_from_file || config->usb_mass_storage_from_file || pid_config.from_file;
 }
 
 void LoadConfigFromSdCard(AppConfig* config) {
@@ -1260,9 +1279,9 @@ void InitWifi(const std::string& ssid, const std::string& password) {
 }
 
 void StartSntp() {
-  sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  sntp_setservername(0, "pool.ntp.org");
-  sntp_init();
+  esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  esp_sntp_setservername(0, "pool.ntp.org");
+  esp_sntp_init();
 }
 
 bool WaitForTimeSyncMs(int timeout_ms) {
@@ -1758,6 +1777,11 @@ void PidTask(void*) {
   float integral = 0.0f;
   float prev_error = 0.0f;
   const float dt = 1.0f;
+  // Auto-enable PID if it was enabled in config
+  SharedState initial = CopyState();
+  if (pid_config.from_file && initial.pid_enabled) {
+    UpdateState([](SharedState& s) { s.pid_enabled = true; });
+  }
   while (true) {
     SharedState snapshot = CopyState();
     if (!snapshot.pid_enabled) {
@@ -2078,6 +2102,7 @@ static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMo
   fprintf(f, "pid_kd = %.6f\n", pid.kd);
   fprintf(f, "pid_setpoint = %.6f\n", pid.setpoint);
   fprintf(f, "pid_sensor = %d\n", pid.sensor_index);
+  fprintf(f, "pid_enabled = %s\n", (CopyState().pid_enabled ? "true" : "false"));
   fclose(f);
   UnmountLogSd();
   ESP_LOGI(TAG, "Config saved to %s", CONFIG_FILE_PATH);
@@ -2646,6 +2671,7 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
     s.pid_sensor_index = sensor;
   });
 
+  // Persist PID config and current enable state
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
