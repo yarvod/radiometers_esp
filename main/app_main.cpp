@@ -8,6 +8,7 @@
 #include <array>
 #include <string>
 #include <vector>
+#include <ctime>
 
 #include "cJSON.h"
 #include "driver/gpio.h"
@@ -133,6 +134,46 @@ bool SanitizeFilename(const std::string& name, std::string* out_full) {
   std::string full = std::string(CONFIG_MOUNT_POINT) + "/" + name;
   if (out_full) *out_full = full;
   return true;
+}
+
+std::string SanitizePostfix(const std::string& raw) {
+  std::string out;
+  out.reserve(raw.size());
+  for (char c : raw) {
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') {
+      out.push_back(c);
+    } else if (std::isspace(static_cast<unsigned char>(c))) {
+      out.push_back('_');
+    }
+    if (out.size() >= 24) break;  // keep filenames short
+  }
+  // Trim trailing underscores from whitespace-only input
+  while (!out.empty() && out.back() == '_') {
+    out.pop_back();
+  }
+  return out;
+}
+
+std::string BuildLogFilename(const std::string& postfix_raw) {
+  const std::string postfix = SanitizePostfix(postfix_raw);
+
+  time_t now = time(nullptr);
+  if (now <= 0) {
+    now = static_cast<time_t>(esp_timer_get_time() / 1000000ULL);  // fallback if SNTP not yet synced
+  }
+  struct tm tm_info;
+  gmtime_r(&now, &tm_info);
+  char ts[32];
+  strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_info);
+
+  std::string name = "data_";
+  name += ts;
+  if (!postfix.empty()) {
+    name += "_";
+    name += postfix;
+  }
+  name += ".txt";
+  return name;
 }
 
 struct AppConfig {
@@ -1943,7 +1984,7 @@ void LoggingTask(void*) {
   }
 }
 
-bool StartLoggingToFile(const std::string& name, UsbMode current_usb_mode) {
+bool StartLoggingToFile(const std::string& postfix, UsbMode current_usb_mode) {
   if (current_usb_mode == UsbMode::kMsc) {
     ESP_LOGW(TAG, "Cannot start logging in MSC mode");
     return false;
@@ -1955,9 +1996,11 @@ bool StartLoggingToFile(const std::string& name, UsbMode current_usb_mode) {
     fclose(log_file);
     log_file = nullptr;
   }
+
+  const std::string filename = BuildLogFilename(postfix);
   std::string full_path;
-  if (!SanitizeFilename(name, &full_path)) {
-    ESP_LOGW(TAG, "Bad filename for logging: %s", name.c_str());
+  if (!SanitizeFilename(filename, &full_path)) {
+    ESP_LOGW(TAG, "Bad filename for logging: %s", filename.c_str());
     UnmountLogSd();
     return false;
   }
@@ -1983,7 +2026,7 @@ bool StartLoggingToFile(const std::string& name, UsbMode current_usb_mode) {
 
   UpdateState([&](SharedState& s) {
     s.logging = true;
-    s.log_filename = name;
+    s.log_filename = filename;
   });
 
   if (log_task == nullptr) {
@@ -2105,11 +2148,6 @@ esp_err_t LogStartHandler(httpd_req_t* req) {
   float duration_s =
       (duration_item && cJSON_IsNumber(duration_item) && duration_item->valuedouble > 0.1) ? duration_item->valuedouble : 1.0f;
   cJSON_Delete(root);
-
-  if (filename.empty()) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
-    return ESP_FAIL;
-  }
 
   log_config.use_motor = use_motor;
   log_config.duration_s = duration_s;
