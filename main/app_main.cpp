@@ -55,6 +55,10 @@ constexpr gpio_num_t ADC_CS3 = GPIO_NUM_7;
 constexpr gpio_num_t INA_SDA = GPIO_NUM_42;
 constexpr gpio_num_t INA_SCL = GPIO_NUM_41;
 
+// Status LEDs (active high)
+constexpr gpio_num_t STATUS_LED_RED = GPIO_NUM_45;
+constexpr gpio_num_t STATUS_LED_GREEN = GPIO_NUM_48;
+
 // Heater
 constexpr gpio_num_t HEATER_PWM = GPIO_NUM_14;
 
@@ -113,6 +117,11 @@ volatile uint32_t fan2_pulse_count = 0;
 
 i2c_master_bus_handle_t i2c_bus = nullptr;
 i2c_master_dev_handle_t ina219_dev = nullptr;
+
+void SetStatusLeds(bool ok) {
+  gpio_set_level(STATUS_LED_GREEN, ok ? 1 : 0);
+  gpio_set_level(STATUS_LED_RED, ok ? 0 : 1);
+}
 
 static void IRAM_ATTR FanTachIsr(void* arg) {
   uint32_t gpio = (uint32_t)arg;
@@ -1128,7 +1137,7 @@ void InitGpios() {
   io_conf.mode = GPIO_MODE_OUTPUT;
   io_conf.pin_bit_mask =
       (1ULL << RELAY_PIN) | (1ULL << STEPPER_EN) | (1ULL << STEPPER_DIR) | (1ULL << STEPPER_STEP) |
-      (1ULL << HEATER_PWM) | (1ULL << FAN_PWM);
+      (1ULL << HEATER_PWM) | (1ULL << FAN_PWM) | (1ULL << STATUS_LED_RED) | (1ULL << STATUS_LED_GREEN);
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   ESP_ERROR_CHECK(gpio_config(&io_conf));
@@ -1138,6 +1147,8 @@ void InitGpios() {
   gpio_set_level(STEPPER_DIR, 0);
   gpio_set_level(STEPPER_STEP, 0);
   gpio_set_level(HEATER_PWM, 0);
+  gpio_set_level(STATUS_LED_RED, 0);
+  gpio_set_level(STATUS_LED_GREEN, 0);
 
   // Hall sensor input
   gpio_config_t hall_conf = {};
@@ -2358,6 +2369,8 @@ httpd_handle_t StartHttpServer() {
 }  // namespace
 
 extern "C" void app_main(void) {
+  bool init_ok = true;
+  bool msc_ok = true;
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
@@ -2388,6 +2401,7 @@ extern "C" void app_main(void) {
       msc_err = StartUsbMsc(sd_card);
     }
     if (msc_err != ESP_OK) {
+      msc_ok = false;
       ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
       usb_mode = UsbMode::kCdc;
       UpdateState([&](SharedState& s) {
@@ -2406,6 +2420,7 @@ extern "C" void app_main(void) {
   bool temp_ok = Ds18b20Init(TEMP_1WIRE);
   if (!temp_ok) {
     ESP_LOGW(TAG, "DS18B20 init failed or no sensors found");
+    init_ok = false;
   }
   ESP_ERROR_CHECK(InitSpiBus());
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
@@ -2414,6 +2429,7 @@ extern "C" void app_main(void) {
   esp_err_t ina_err = InitIna219();
   if (ina_err != ESP_OK) {
     ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));
+    init_ok = false;
   }
 
   if (!app_config.wifi_from_file) {
@@ -2441,5 +2457,7 @@ extern "C" void app_main(void) {
   }
   xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
 
+  init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
+  SetStatusLeds(init_ok);
   ESP_LOGI(TAG, "System ready");
 }
