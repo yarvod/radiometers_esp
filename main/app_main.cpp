@@ -27,6 +27,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "ltc2440.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -117,10 +118,35 @@ volatile uint32_t fan2_pulse_count = 0;
 
 i2c_master_bus_handle_t i2c_bus = nullptr;
 i2c_master_dev_handle_t ina219_dev = nullptr;
+TimerHandle_t error_blink_timer = nullptr;
+
+void ErrorBlinkTimerCb(TimerHandle_t) {
+  static bool on = false;
+  on = !on;
+  gpio_set_level(STATUS_LED_RED, on ? 1 : 0);
+}
+
+void StartErrorBlink() {
+  gpio_set_level(STATUS_LED_GREEN, 0);
+  if (!error_blink_timer) {
+    error_blink_timer =
+        xTimerCreate("err_led", pdMS_TO_TICKS(250), pdTRUE, nullptr, reinterpret_cast<TimerCallbackFunction_t>(ErrorBlinkTimerCb));
+  }
+  if (error_blink_timer) {
+    xTimerStart(error_blink_timer, 0);
+  }
+}
 
 void SetStatusLeds(bool ok) {
-  gpio_set_level(STATUS_LED_GREEN, ok ? 1 : 0);
-  gpio_set_level(STATUS_LED_RED, ok ? 0 : 1);
+  if (ok) {
+    if (error_blink_timer) {
+      xTimerStop(error_blink_timer, 0);
+    }
+    gpio_set_level(STATUS_LED_RED, 0);
+    gpio_set_level(STATUS_LED_GREEN, 1);
+  } else {
+    StartErrorBlink();
+  }
 }
 
 static void IRAM_ATTR FanTachIsr(void* arg) {
@@ -1464,9 +1490,24 @@ void StepperTask(void*) {
 
 esp_err_t ReadAllAdc(float* v1, float* v2, float* v3) {
   int32_t raw1 = 0, raw2 = 0, raw3 = 0;
-  ESP_RETURN_ON_ERROR(adc1.Read(&raw1), TAG, "ADC1 read failed");
-  ESP_RETURN_ON_ERROR(adc2.Read(&raw2), TAG, "ADC2 read failed");
-  ESP_RETURN_ON_ERROR(adc3.Read(&raw3), TAG, "ADC3 read failed");
+  esp_err_t err = adc1.Read(&raw1);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "ADC1 read failed");
+    StartErrorBlink();
+    return err;
+  }
+  err = adc2.Read(&raw2);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "ADC2 read failed");
+    StartErrorBlink();
+    return err;
+  }
+  err = adc3.Read(&raw3);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "ADC3 read failed");
+    StartErrorBlink();
+    return err;
+  }
 
   *v1 = static_cast<float>(raw1) * ADC_SCALE;
   *v2 = static_cast<float>(raw2) * ADC_SCALE;
@@ -1538,6 +1579,7 @@ void TempTask(void*) {
       }
     } else {
       ESP_LOGW(TAG, "Ds18b20ReadTemperatures failed");
+      StartErrorBlink();
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
   }
@@ -2399,13 +2441,14 @@ extern "C" void app_main(void) {
     esp_err_t msc_err = InitSdCardForMsc(&sd_card);
     if (msc_err == ESP_OK) {
       msc_err = StartUsbMsc(sd_card);
-    }
-    if (msc_err != ESP_OK) {
-      msc_ok = false;
-      ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
-      usb_mode = UsbMode::kCdc;
-      UpdateState([&](SharedState& s) {
-        s.usb_msc_mode = false;
+  }
+  if (msc_err != ESP_OK) {
+    StartErrorBlink();
+    msc_ok = false;
+    ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
+    usb_mode = UsbMode::kCdc;
+    UpdateState([&](SharedState& s) {
+      s.usb_msc_mode = false;
         s.usb_error = "MSC init failed: " + std::string(esp_err_to_name(msc_err));
       });
       SaveUsbModeToNvs(usb_mode);
@@ -2420,6 +2463,7 @@ extern "C" void app_main(void) {
   bool temp_ok = Ds18b20Init(TEMP_1WIRE);
   if (!temp_ok) {
     ESP_LOGW(TAG, "DS18B20 init failed or no sensors found");
+    StartErrorBlink();
     init_ok = false;
   }
   ESP_ERROR_CHECK(InitSpiBus());
@@ -2429,6 +2473,7 @@ extern "C" void app_main(void) {
   esp_err_t ina_err = InitIna219();
   if (ina_err != ESP_OK) {
     ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));
+    StartErrorBlink();
     init_ok = false;
   }
 
