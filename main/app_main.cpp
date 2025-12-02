@@ -22,7 +22,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -110,6 +110,9 @@ int retry_count = 0;
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
+
+i2c_master_bus_handle_t i2c_bus = nullptr;
+i2c_master_dev_handle_t ina219_dev = nullptr;
 
 static void IRAM_ATTR FanTachIsr(void* arg) {
   uint32_t gpio = (uint32_t)arg;
@@ -1223,29 +1226,34 @@ void InitFanPwm() {
 }
 
 esp_err_t InitIna219() {
-  i2c_config_t conf = {};
-  conf.mode = I2C_MODE_MASTER;
-  conf.sda_io_num = INA_SDA;
-  conf.scl_io_num = INA_SCL;
-  conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-  conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-  conf.master.clk_speed = 400000;
-  conf.clk_flags = 0;
+  if (!i2c_bus) {
+    i2c_master_bus_config_t bus_cfg = {};
+    bus_cfg.i2c_port = I2C_NUM_0;
+    bus_cfg.sda_io_num = INA_SDA;
+    bus_cfg.scl_io_num = INA_SCL;
+    bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
+    bus_cfg.glitch_ignore_cnt = 0;
+    bus_cfg.intr_priority = 0;
+    bus_cfg.trans_queue_depth = 0;
+    bus_cfg.flags.enable_internal_pullup = true;
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &i2c_bus), TAG, "I2C bus init failed");
+  }
 
-  ESP_RETURN_ON_ERROR(i2c_param_config(I2C_NUM_0, &conf), TAG, "I2C param config failed");
-  ESP_RETURN_ON_ERROR(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0), TAG, "I2C install failed");
+  if (!ina219_dev) {
+    i2c_device_config_t dev_cfg = {};
+    dev_cfg.device_address = INA219_ADDR;
+    dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    dev_cfg.scl_speed_hz = 400000;
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &ina219_dev), TAG, "INA219 attach failed");
+  }
 
   auto write_reg = [](uint8_t reg, uint16_t value) -> esp_err_t {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (INA219_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_write_byte(cmd, static_cast<uint8_t>((value >> 8) & 0xFF), true);
-    i2c_master_write_byte(cmd, static_cast<uint8_t>(value & 0xFF), true);
-    i2c_master_stop(cmd);
-    esp_err_t res = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    return res;
+    uint8_t payload[3] = {
+        reg,
+        static_cast<uint8_t>((value >> 8) & 0xFF),
+        static_cast<uint8_t>(value & 0xFF),
+    };
+    return i2c_master_transmit(ina219_dev, payload, sizeof(payload), pdMS_TO_TICKS(100));
   };
 
   ESP_RETURN_ON_ERROR(write_reg(0x00, INA219_CONFIG), TAG, "INA219 config failed");
@@ -1259,21 +1267,12 @@ esp_err_t ReadIna219() {
     if (!value) {
       return ESP_ERR_INVALID_ARG;
     }
-    uint8_t msb = 0;
-    uint8_t lsb = 0;
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (INA219_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (INA219_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read_byte(cmd, &msb, I2C_MASTER_ACK);
-    i2c_master_read_byte(cmd, &lsb, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t res = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
+    uint8_t reg_addr = reg;
+    uint8_t rx[2] = {};
+    esp_err_t res =
+        i2c_master_transmit_receive(ina219_dev, &reg_addr, sizeof(reg_addr), rx, sizeof(rx), pdMS_TO_TICKS(100));
     if (res == ESP_OK) {
-      *value = static_cast<uint16_t>(static_cast<uint16_t>(msb) << 8 | static_cast<uint16_t>(lsb));
+      *value = static_cast<uint16_t>(static_cast<uint16_t>(rx[0]) << 8 | static_cast<uint16_t>(rx[1]));
     }
     return res;
   };
