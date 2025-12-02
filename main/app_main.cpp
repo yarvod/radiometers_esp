@@ -28,6 +28,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
+#include "freertos/semphr.h"
 #include "ltc2440.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -39,6 +40,8 @@
 #include "tusb_msc_storage.h"
 #include "esp_rom_sys.h"
 #include "onewire_ds18b20.h"
+#include <dirent.h>
+#include <sys/stat.h>
 
 namespace {
 
@@ -192,6 +195,24 @@ std::string SanitizePostfix(const std::string& raw) {
   return out;
 }
 
+extern SemaphoreHandle_t sd_mutex;
+
+class SdLockGuard {
+ public:
+  explicit SdLockGuard(TickType_t timeout_ticks = pdMS_TO_TICKS(2000)) {
+    locked_ = (sd_mutex && xSemaphoreTake(sd_mutex, timeout_ticks) == pdTRUE);
+  }
+  ~SdLockGuard() {
+    if (locked_ && sd_mutex) {
+      xSemaphoreGive(sd_mutex);
+    }
+  }
+  bool locked() const { return locked_; }
+
+ private:
+  bool locked_ = false;
+};
+
 std::string BuildLogFilename(const std::string& postfix_raw) {
   const std::string postfix = SanitizePostfix(postfix_raw);
 
@@ -289,6 +310,7 @@ sdmmc_card_t* sd_card = nullptr;
 sdmmc_card_t* log_sd_card = nullptr;
 FILE* log_file = nullptr;
 bool log_sd_mounted = false;
+SemaphoreHandle_t sd_mutex = nullptr;
 
 struct LoggingConfig {
   bool active = false;
@@ -382,6 +404,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     .btn-stepper:hover { background: #219a52; }
     .btn-stop { background: #e67e22; }
     .btn-stop:hover { background: #d35400; }
+    .btn-small { padding: 6px 12px; font-size: 14px; }
     .status { text-align: center; margin: 10px 0; color: #7f8c8d; }
     .stepper-status { background: #fff3cd; padding: 10px; border-radius: 5px; margin: 10px 0; }
     .form-group { margin: 10px 0; }
@@ -390,6 +413,9 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     .speed-info { font-size: 12px; color: #666; margin-top: 5px; }
     .usb-panel { background: #eef7e8; padding: 20px; border-radius: 8px; margin-top: 10px; }
     .note { font-size: 12px; color: #666; margin-top: 5px; }
+    .files-panel { background: #f4f4ff; padding: 20px; border-radius: 8px; margin-top: 20px; }
+    .file-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
+    .file-name { word-break: break-all; }
   </style>
 </head>
 <body>
@@ -559,6 +585,15 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       <div class="note">MSC отключает доступ к логам/прошивке, даёт доступ к SD по USB. Переключение перезагружает устройство.</div>
       <button class="btn" onclick="applyUsbMode()">Apply & Reboot</button>
       <div class="note" id="usbError" style="color:#c0392b; display:none;"></div>
+    </div>
+
+    <div class="files-panel">
+      <h3>Файлы на SD</h3>
+      <div class="form-group">
+        <button class="btn" onclick="loadFiles()">Обновить список</button>
+      </div>
+      <div id="fileList"></div>
+      <div class="note">Можно скачать или удалить файл. Одновременная запись логов и скачивание синхронизированы мьютексом.</div>
     </div>
   </div>
 
@@ -820,11 +855,65 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         .catch(() => refreshData());
     }
 
+    function renderFiles(files) {
+      const listEl = document.getElementById('fileList');
+      if (!listEl) return;
+      if (!Array.isArray(files) || files.length === 0) {
+        listEl.innerHTML = '<div>Нет файлов</div>';
+        return;
+      }
+      listEl.innerHTML = '';
+      files.forEach(name => {
+        const row = document.createElement('div');
+        row.className = 'file-row';
+        const left = document.createElement('span');
+        left.className = 'file-name';
+        left.textContent = name;
+        const actions = document.createElement('div');
+
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'btn btn-small';
+        dlBtn.textContent = 'Скачать';
+        dlBtn.onclick = () => { window.open('/fs/download?file=' + encodeURIComponent(name), '_blank'); };
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-small btn-stop';
+        delBtn.textContent = 'Удалить';
+        delBtn.onclick = () => {
+          if (!confirm(`Удалить файл ${name}?`)) return;
+          fetch('/fs/delete?file=' + encodeURIComponent(name), { method: 'POST' })
+            .then(res => {
+              if (!res.ok) throw new Error();
+              loadFiles();
+            })
+            .catch(() => alert('Не удалось удалить файл'));
+        };
+
+        actions.appendChild(dlBtn);
+        actions.appendChild(delBtn);
+        row.appendChild(left);
+        row.appendChild(actions);
+        listEl.appendChild(row);
+      });
+    }
+
+    function loadFiles() {
+      const listEl = document.getElementById('fileList');
+      if (listEl) listEl.innerHTML = 'Загружаю...';
+      fetch('/fs/list')
+        .then(res => res.json())
+        .then(files => renderFiles(files))
+        .catch(() => {
+          if (listEl) listEl.innerHTML = 'Ошибка загрузки списка';
+        });
+    }
+
     // Auto-refresh every 2 seconds
     setInterval(refreshData, 2000);
     
     // Initial load
     refreshData();
+    loadFiles();
 
     function applyUsbMode() {
       const mode = document.getElementById('usbModeSelect').value;
@@ -978,6 +1067,12 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
 
 void LoadConfigFromSdCard(AppConfig* config) {
   if (!config) {
+    return;
+  }
+
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    ESP_LOGW(TAG, "SD mutex unavailable, skip config load");
     return;
   }
 
@@ -1874,6 +1969,11 @@ void UnmountLogSd() {
 }
 
 static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode) {
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    ESP_LOGW(TAG, "SD mutex unavailable, skip config save");
+    return false;
+  }
   if (!MountLogSd()) {
     return false;
   }
@@ -1899,7 +1999,13 @@ static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMo
 }
 
 void StopLogging() {
-  if (log_file) {
+  SdLockGuard guard;
+  if (guard.locked()) {
+    if (log_file) {
+      fclose(log_file);
+      log_file = nullptr;
+    }
+  } else if (log_file) {
     fclose(log_file);
     log_file = nullptr;
   }
@@ -2022,6 +2128,12 @@ void LoggingTask(void*) {
       have_cal = collect_avg(log_config.duration_s, current.temp_sensor_count, &avg2);
     }
 
+    SdLockGuard guard;
+    if (!guard.locked()) {
+      ESP_LOGW(TAG, "SD mutex unavailable, stopping logging");
+      StopLogging();
+      vTaskDelete(nullptr);
+    }
     uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
     fprintf(log_file, "%llu,%.6f,%.6f,%.6f", (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2, avg1.voltage3);
     for (int i = 0; i < avg1.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
@@ -2039,6 +2151,11 @@ void LoggingTask(void*) {
 bool StartLoggingToFile(const std::string& postfix, UsbMode current_usb_mode) {
   if (current_usb_mode == UsbMode::kMsc) {
     ESP_LOGW(TAG, "Cannot start logging in MSC mode");
+    return false;
+  }
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    ESP_LOGW(TAG, "SD mutex unavailable, cannot start logging");
     return false;
   }
   if (!MountLogSd()) {
@@ -2219,6 +2336,166 @@ esp_err_t LogStopHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"logging_stopped\"}");
 }
 
+esp_err_t FsListHandler(httpd_req_t* req) {
+  SharedState snapshot = CopyState();
+  if (snapshot.usb_msc_mode) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC mode active");
+    return ESP_FAIL;
+  }
+
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD busy");
+    return ESP_FAIL;
+  }
+  if (!MountLogSd()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD mount failed");
+    return ESP_FAIL;
+  }
+
+  DIR* dir = opendir(CONFIG_MOUNT_POINT);
+  if (!dir) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Open dir failed");
+    return ESP_FAIL;
+  }
+
+  std::string json = "[";
+  bool first = true;
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr) {
+    if (ent->d_name[0] == '.') continue;
+    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+    if (!first) json += ",";
+    first = false;
+    json.push_back('"');
+    json.append(ent->d_name);
+    json.push_back('"');
+  }
+  closedir(dir);
+  json.push_back(']');
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, json.c_str(), json.size());
+}
+
+esp_err_t FsDownloadHandler(httpd_req_t* req) {
+  SharedState snapshot = CopyState();
+  if (snapshot.usb_msc_mode) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC mode active");
+    return ESP_FAIL;
+  }
+
+  int qs_len = httpd_req_get_url_query_len(req) + 1;
+  if (qs_len <= 1) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
+    return ESP_FAIL;
+  }
+  std::string qs(qs_len, '\0');
+  if (httpd_req_get_url_query_str(req, qs.data(), qs_len) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
+    return ESP_FAIL;
+  }
+  char file_param[96] = {};
+  if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
+    return ESP_FAIL;
+  }
+  std::string full_path;
+  if (!SanitizeFilename(file_param, &full_path)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+    return ESP_FAIL;
+  }
+
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD busy");
+    return ESP_FAIL;
+  }
+  if (!MountLogSd()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD mount failed");
+    return ESP_FAIL;
+  }
+
+  FILE* f = fopen(full_path.c_str(), "rb");
+  if (!f) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    return ESP_FAIL;
+  }
+
+  const char* ctype = "application/octet-stream";
+  size_t len = full_path.size();
+  if (len >= 4 && full_path.compare(len - 4, 4, ".csv") == 0) {
+    ctype = "text/csv";
+  }
+  httpd_resp_set_type(req, ctype);
+  std::string disp = "attachment; filename=\"";
+  disp.append(file_param);
+  disp.push_back('"');
+  httpd_resp_set_hdr(req, "Content-Disposition", disp.c_str());
+
+  char buf[1024];
+  size_t n = 0;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+    if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+      fclose(f);
+      httpd_resp_send_chunk(req, nullptr, 0);
+      return ESP_FAIL;
+    }
+  }
+  fclose(f);
+  return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+esp_err_t FsDeleteHandler(httpd_req_t* req) {
+  SharedState snapshot = CopyState();
+  if (snapshot.usb_msc_mode) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC mode active");
+    return ESP_FAIL;
+  }
+
+  int qs_len = httpd_req_get_url_query_len(req) + 1;
+  if (qs_len <= 1) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
+    return ESP_FAIL;
+  }
+  std::string qs(qs_len, '\0');
+  if (httpd_req_get_url_query_str(req, qs.data(), qs_len) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
+    return ESP_FAIL;
+  }
+  char file_param[96] = {};
+  if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
+    return ESP_FAIL;
+  }
+  std::string full_path;
+  if (!SanitizeFilename(file_param, &full_path)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+    return ESP_FAIL;
+  }
+  if (snapshot.logging && snapshot.log_filename == file_param) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Cannot delete active log");
+    return ESP_FAIL;
+  }
+
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD busy");
+    return ESP_FAIL;
+  }
+  if (!MountLogSd()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD mount failed");
+    return ESP_FAIL;
+  }
+
+  if (remove(full_path.c_str()) != 0) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Delete failed");
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"deleted\"}");
+}
+
 esp_err_t PidApplyHandler(httpd_req_t* req) {
   const size_t buf_len = std::min<size_t>(req->content_len, 128);
   if (buf_len == 0) {
@@ -2385,6 +2662,9 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t pid_apply_uri = {.uri = "/pid/apply", .method = HTTP_POST, .handler = PidApplyHandler, .user_ctx = nullptr};
   httpd_uri_t pid_enable_uri = {.uri = "/pid/enable", .method = HTTP_POST, .handler = PidEnableHandler, .user_ctx = nullptr};
   httpd_uri_t pid_disable_uri = {.uri = "/pid/disable", .method = HTTP_POST, .handler = PidDisableHandler, .user_ctx = nullptr};
+  httpd_uri_t fs_list_uri = {.uri = "/fs/list", .method = HTTP_GET, .handler = FsListHandler, .user_ctx = nullptr};
+  httpd_uri_t fs_download_uri = {.uri = "/fs/download", .method = HTTP_GET, .handler = FsDownloadHandler, .user_ctx = nullptr};
+  httpd_uri_t fs_delete_uri = {.uri = "/fs/delete", .method = HTTP_POST, .handler = FsDeleteHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -2404,6 +2684,9 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &pid_apply_uri);
   httpd_register_uri_handler(http_server, &pid_enable_uri);
   httpd_register_uri_handler(http_server, &pid_disable_uri);
+  httpd_register_uri_handler(http_server, &fs_list_uri);
+  httpd_register_uri_handler(http_server, &fs_download_uri);
+  httpd_register_uri_handler(http_server, &fs_delete_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }
@@ -2425,6 +2708,7 @@ extern "C" void app_main(void) {
   esp_task_wdt_deinit();
 
   state_mutex = xSemaphoreCreateMutex();
+  sd_mutex = xSemaphoreCreateMutex();
 
   LoadConfigFromSdCard(&app_config);
 
