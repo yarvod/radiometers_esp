@@ -874,12 +874,19 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         return;
       }
       listEl.innerHTML = '';
-      files.forEach(name => {
+      files.forEach(item => {
+        const name = (item && typeof item === 'object') ? item.name : item;
+        const sizeBytes = (item && typeof item === 'object' && Number.isFinite(item.size)) ? item.size : null;
+        if (!name) return;
         const row = document.createElement('div');
         row.className = 'file-row';
         const left = document.createElement('span');
         left.className = 'file-name';
-        left.textContent = name;
+        let sizeText = '';
+        if (sizeBytes !== null) {
+          sizeText = ` (${(sizeBytes / (1024 * 1024)).toFixed(2)} MB)`;
+        }
+        left.textContent = name + sizeText;
         const actions = document.createElement('div');
 
         const dlBtn = document.createElement('button');
@@ -2438,23 +2445,30 @@ esp_err_t FsListHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
 
-  std::string json = "[";
-  bool first = true;
+  cJSON* arr = cJSON_CreateArray();
   struct dirent* ent = nullptr;
   while ((ent = readdir(dir)) != nullptr) {
     if (ent->d_name[0] == '.') continue;
     if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
-    if (!first) json += ",";
-    first = false;
-    json.push_back('"');
-    json.append(ent->d_name);
-    json.push_back('"');
+    std::string full_path = std::string(CONFIG_MOUNT_POINT) + "/" + ent->d_name;
+    struct stat st {};
+    uint64_t size = 0;
+    if (stat(full_path.c_str(), &st) == 0) {
+      size = static_cast<uint64_t>(st.st_size);
+    }
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "name", ent->d_name);
+    cJSON_AddNumberToObject(obj, "size", static_cast<double>(size));
+    cJSON_AddItemToArray(arr, obj);
   }
   closedir(dir);
-  json.push_back(']');
 
+  const char* json = cJSON_PrintUnformatted(arr);
   httpd_resp_set_type(req, "application/json");
-  return httpd_resp_send(req, json.c_str(), json.size());
+  httpd_resp_sendstr(req, json);
+  cJSON_free((void*)json);
+  cJSON_Delete(arr);
+  return ESP_OK;
 }
 
 esp_err_t FsDownloadHandler(httpd_req_t* req) {
@@ -2716,7 +2730,8 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 19;
+  config.max_uri_handlers = 24;
+  config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
