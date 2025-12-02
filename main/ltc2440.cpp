@@ -3,6 +3,7 @@
 #include <inttypes.h>
 
 #include "esp_log.h"
+#include "driver/gpio.h"
 
 namespace {
 constexpr char TAG[] = "LTC2440";
@@ -12,20 +13,40 @@ LTC2440::LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin)
     : chip_select_pin_(chip_select_pin), drdy_pin_(drdy_pin) {}
 
 esp_err_t LTC2440::Init(spi_host_device_t host, int clock_hz) {
+  // Manual CS control so we can hold it low while monitoring DRDY on SDO.
+  gpio_set_direction(chip_select_pin_, GPIO_MODE_OUTPUT);
+  gpio_set_level(chip_select_pin_, 1);
+
   spi_device_interface_config_t devcfg = {};
   devcfg.clock_speed_hz = clock_hz;
   devcfg.mode = 0;
-  devcfg.spics_io_num = static_cast<int>(chip_select_pin_);
+  devcfg.spics_io_num = -1;
   devcfg.queue_size = 1;
   devcfg.cs_ena_posttrans = 2;  // hold CS briefly after transfer
 
   esp_err_t ret = spi_bus_add_device(host, &devcfg, &spi_handle_);
-  if (ret == ESP_OK) {
-    initialized_ = true;
-  } else {
+  if (ret != ESP_OK) {
     ESP_LOGE(TAG, "spi_bus_add_device failed: %s", esp_err_to_name(ret));
+    return ret;
   }
-  return ret;
+
+  // Настроим DRDY пин, если он задан
+  if (drdy_pin_ != GPIO_NUM_NC) {
+    gpio_config_t io_conf{};
+    io_conf.pin_bit_mask = 1ULL << drdy_pin_;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;     // обычно DRDY open-drain / с внешней подтяжкой
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    ret = gpio_config(&io_conf);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "gpio_config failed for DRDY: %s", esp_err_to_name(ret));
+      return ret;
+    }
+  }
+
+  initialized_ = true;
+  return ESP_OK;
 }
 
 esp_err_t LTC2440::WaitReady_(TickType_t timeout_ticks) {
@@ -46,9 +67,20 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   if (!initialized_) {
     return ESP_ERR_INVALID_STATE;
   }
+  // Lock the bus while we manually drive CS for DRDY and the transfer.
+  esp_err_t lock = spi_device_acquire_bus(spi_handle_, portMAX_DELAY);
+  if (lock != ESP_OK) {
+    return lock;
+  }
+
+  // Pull CS low so the ADC can present DRDY (EOC) on SDO.
+  gpio_set_level(chip_select_pin_, 0);
+
   // Wait until conversion complete (DOUT/SDO goes low) to avoid reading 0xFF headers.
-  esp_err_t ready = WaitReady_(pdMS_TO_TICKS(300));
+  esp_err_t ready = WaitReady_(pdMS_TO_TICKS(500));
   if (ready != ESP_OK) {
+    gpio_set_level(chip_select_pin_, 1);
+    spi_device_release_bus(spi_handle_);
     ESP_LOGW(TAG, "ADC not ready (timeout)");
     return ready;
   }
@@ -61,36 +93,37 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   transaction.tx_buffer = tx;
   transaction.rx_buffer = rx;
 
-  for (int attempt = 0; attempt < 3; ++attempt) {
-    esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
-    if (ret != ESP_OK) {
-      return ret;
+  esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
+  if (ret != ESP_OK) {
+    gpio_set_level(chip_select_pin_, 1);
+    spi_device_release_bus(spi_handle_);
+    return ret;
+  }
+
+  uint8_t header = rx[0];
+  uint8_t prefix = header >> 4;
+  if (prefix == 0b0010 || prefix == 0b0001) {
+    bool negative = (header & 0x20) == 0;
+    header &= 0x1F;
+
+    int32_t result = (static_cast<int32_t>(header) << 24) |
+                     (static_cast<int32_t>(rx[1]) << 16) |
+                     (static_cast<int32_t>(rx[2]) << 8)  |
+                      static_cast<int32_t>(rx[3]);
+
+    if (negative) {
+      result |= 0xF0000000;
     }
 
-    uint8_t header = rx[0];
-    uint8_t prefix = header >> 4;
-    if (prefix == 0b0010 || prefix == 0b0001) {
-      bool negative = (header & 0x20) == 0;
-      header &= 0x1F;
-
-      int32_t result = (static_cast<int32_t>(header) << 24) |
-                       (static_cast<int32_t>(rx[1]) << 16) |
-                       (static_cast<int32_t>(rx[2]) << 8) |
-                       static_cast<int32_t>(rx[3]);
-
-      if (negative) {
-        result |= 0xF0000000;
-      }
-
-      *value = result >> 5;  // drop lowest 5 bits as in reference driver
-      return ESP_OK;
-    }
-
-    // Busy or bad header; brief delay before retry to let conversion settle.
-    vTaskDelay(pdMS_TO_TICKS(2));
+    *value = result >> 5;  // drop lowest 5 bits as in reference driver
+    gpio_set_level(chip_select_pin_, 1);
+    spi_device_release_bus(spi_handle_);
+    return ESP_OK;
   }
 
   ESP_LOGW(TAG, "Unexpected header 0x%02X", rx[0]);
+  gpio_set_level(chip_select_pin_, 1);
+  spi_device_release_bus(spi_handle_);
   return ESP_ERR_INVALID_RESPONSE;
 }
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>  // int32_t
+
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
@@ -11,9 +13,9 @@ class LTC2440 {
   explicit LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin = GPIO_NUM_NC);
 
   // Initialize device on already-configured SPI bus.
-  esp_err_t Init(spi_host_device_t host, int clock_hz = 3'000'000);
+  esp_err_t Init(spi_host_device_t host, int clock_hz = 100'000);  // я бы по умолчанию <= 2.5 MHz
 
-  // Read raw 24-bit value (already sign-extended and shifted by 5 bits).
+  // Read value with offset applied (24-bit, sign-extended, shifted by 5 bits).
   esp_err_t Read(int32_t* value);
 
   // Compute and store offset using a moving average over given samples.
