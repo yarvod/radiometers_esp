@@ -25,6 +25,7 @@
 #include "esp_task_wdt.h"
 #include "driver/i2c_master.h"
 #include "esp_wifi.h"
+#include "esp_sntp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -118,6 +119,7 @@ constexpr int WIFI_CONNECTED_BIT = BIT0;
 constexpr int WIFI_FAIL_BIT = BIT1;
 EventGroupHandle_t wifi_event_group = nullptr;
 int retry_count = 0;
+bool time_synced = false;
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
@@ -216,9 +218,12 @@ class SdLockGuard {
   bool locked_ = false;
 };
 
+bool EnsureTimeSynced(int timeout_ms);
+
 std::string BuildLogFilename(const std::string& postfix_raw) {
   const std::string postfix = SanitizePostfix(postfix_raw);
 
+  EnsureTimeSynced(1000);
   time_t now = time(nullptr);
   if (now <= 0) {
     now = static_cast<time_t>(esp_timer_get_time() / 1000000ULL);  // fallback if SNTP not yet synced
@@ -1245,6 +1250,38 @@ void InitWifi(const std::string& ssid, const std::string& password) {
   } else {
     ESP_LOGE(TAG, "Failed to connect to SSID:%s", ssid.c_str());
   }
+}
+
+void StartSntp() {
+  sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  sntp_setservername(0, "pool.ntp.org");
+  sntp_init();
+}
+
+bool WaitForTimeSyncMs(int timeout_ms) {
+  const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
+  while (esp_timer_get_time() < deadline_us) {
+    time_t now = 0;
+    time(&now);
+    if (now > 1'700'000'000) {  // ~2023-11-14
+      time_synced = true;
+      return true;
+    }
+    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+      time(&now);
+      if (now > 1'700'000'000) {
+        time_synced = true;
+        return true;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  return false;
+}
+
+bool EnsureTimeSynced(int timeout_ms) {
+  if (time_synced) return true;
+  return WaitForTimeSyncMs(timeout_ms);
 }
 
 esp_err_t InitSpiBus() {
@@ -2814,6 +2851,12 @@ extern "C" void app_main(void) {
     s.pid_sensor_index = pid_config.sensor_index;
   });
   InitWifi(app_config.wifi_ssid, app_config.wifi_password);
+  StartSntp();
+  if (WaitForTimeSyncMs(8000)) {
+    ESP_LOGI(TAG, "Time synced via NTP");
+  } else {
+    ESP_LOGW(TAG, "NTP sync timed out, using monotonic timestamp fallback");
+  }
   StartHttpServer();
 
   // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
