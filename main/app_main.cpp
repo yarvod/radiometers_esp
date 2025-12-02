@@ -83,8 +83,8 @@ constexpr gpio_num_t STEPPER_STEP = GPIO_NUM_37;
 constexpr float VREF = 4.096f;  // ±Vref/2 range, matches original sketch
 constexpr float ADC_SCALE = (VREF / 2.0f) / static_cast<float>(1 << 23);
 
-constexpr char DEFAULT_WIFI_SSID[] = "ASC_WiFi";
-constexpr char DEFAULT_WIFI_PASS[] = "ran/fian/asc/2010";
+constexpr char DEFAULT_WIFI_SSID[] = "Altai INASAN";
+constexpr char DEFAULT_WIFI_PASS[] = "89852936257";
 constexpr char HOSTNAME[] = "miap-device";
 constexpr bool USE_CUSTOM_MAC = true;
 uint8_t CUSTOM_MAC[6] = {0x10, 0x00, 0x3B, 0x6E, 0x83, 0x70};

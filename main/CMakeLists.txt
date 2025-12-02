@@ -14,6 +14,7 @@ idf_component_register(
         esp_timer
         esp_rom
         tinyusb
+        esp_tinyusb
         sdmmc
         fatfs
     INCLUDE_DIRS "."
