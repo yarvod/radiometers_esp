@@ -249,6 +249,10 @@ struct AppConfig {
   bool wifi_from_file = false;
   bool usb_mass_storage = false;
   bool usb_mass_storage_from_file = false;
+  bool logging_active = false;
+  std::string logging_postfix;
+  bool logging_use_motor = false;
+  float logging_duration_s = 1.0f;
 };
 
 AppConfig app_config{};
@@ -314,6 +318,8 @@ UsbMode usb_mode = UsbMode::kCdc;
 // Forward declarations for shared state helpers
 SharedState CopyState();
 void UpdateState(const std::function<void(SharedState&)>& updater);
+bool MountLogSd();
+void UnmountLogSd();
 
 // Devices
 LTC2440 adc1(ADC_CS1, ADC_MISO);
@@ -330,9 +336,79 @@ struct LoggingConfig {
   bool use_motor = false;
   float duration_s = 1.0f;
   bool homed_once = false;
+  std::string postfix;
+  uint64_t file_start_us = 0;
 };
 
 LoggingConfig log_config{};
+
+std::string IsoUtcNow() {
+  time_t now = time(nullptr);
+  if (now <= 0) {
+    now = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
+  }
+  struct tm tm_utc {};
+  gmtime_r(&now, &tm_utc);
+  char buf[32];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+  return std::string(buf);
+}
+
+bool FlushLogFile() {
+  if (!log_file) return false;
+  fflush(log_file);
+  int fd = fileno(log_file);
+  if (fd >= 0) {
+    fsync(fd);
+  }
+  return true;
+}
+
+bool OpenLogFileWithPostfix(const std::string& postfix) {
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    ESP_LOGW(TAG, "SD mutex unavailable, cannot open log file");
+    return false;
+  }
+  if (!MountLogSd()) {
+    return false;
+  }
+  if (log_file) {
+    fclose(log_file);
+    log_file = nullptr;
+  }
+
+  const std::string filename = BuildLogFilename(postfix);
+  std::string full_path;
+  if (!SanitizeFilename(filename, &full_path)) {
+    ESP_LOGW(TAG, "Bad filename for logging: %s", filename.c_str());
+    return false;
+  }
+  log_file = fopen(full_path.c_str(), "w");
+  if (!log_file) {
+    ESP_LOGE(TAG, "Failed to open log file %s", full_path.c_str());
+    return false;
+  }
+
+  SharedState snapshot = CopyState();
+  log_config.file_start_us = esp_timer_get_time();
+  fprintf(log_file, "timestamp_iso,timestamp_ms,adc1,adc2");
+  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+    fprintf(log_file, ",temp%d", i + 1);
+  }
+  fprintf(log_file, ",bus_v,bus_i,bus_p");
+  if (log_config.use_motor) {
+    fprintf(log_file, ",adc1_cal,adc2_cal");
+  }
+  fprintf(log_file, "\n");
+  FlushLogFile();
+
+  UpdateState([&](SharedState& s) {
+    s.logging = true;
+    s.log_filename = filename;
+  });
+  return true;
+}
 
 // TinyUSB MSC descriptors (single-interface device)
 constexpr uint8_t EPNUM_MSC_OUT = 0x01;
@@ -1010,6 +1086,14 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool pass_set = false;
   bool usb_set = false;
   bool usb_value = false;
+  bool log_active_set = false;
+  bool log_active_val = false;
+  bool log_postfix_set = false;
+  std::string log_postfix;
+  bool log_use_motor_set = false;
+  bool log_use_motor_val = false;
+  bool log_duration_set = false;
+  float log_duration_val = log_config.duration_s;
   bool pid_enabled_set = false;
   bool pid_enabled_val = false;
   bool pid_kp_set = false, pid_ki_set = false, pid_kd_set = false, pid_sp_set = false, pid_sensor_set = false;
@@ -1075,6 +1159,20 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
       if (ParseBool(value, &pid_enabled_val)) {
         pid_enabled_set = true;
       }
+    } else if (key == "logging_active") {
+      if (ParseBool(value, &log_active_val)) {
+        log_active_set = true;
+      }
+    } else if (key == "logging_postfix") {
+      log_postfix = value;
+      log_postfix_set = true;
+    } else if (key == "logging_use_motor") {
+      if (ParseBool(value, &log_use_motor_val)) {
+        log_use_motor_set = true;
+      }
+    } else if (key == "logging_duration_s") {
+      log_duration_val = std::strtof(value.c_str(), nullptr);
+      log_duration_set = (log_duration_val > 0.0f);
     }
   }
 
@@ -1086,6 +1184,20 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (usb_set) {
     config->usb_mass_storage = usb_value;
     config->usb_mass_storage_from_file = true;
+  }
+  if (log_active_set) {
+    config->logging_active = log_active_val;
+  }
+  if (log_postfix_set) {
+    config->logging_postfix = log_postfix;
+  }
+  if (log_use_motor_set) {
+    config->logging_use_motor = log_use_motor_val;
+    log_config.use_motor = log_use_motor_val;
+  }
+  if (log_duration_set) {
+    config->logging_duration_s = log_duration_val;
+    log_config.duration_s = log_duration_val;
   }
   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
     pid_config.kp = pid_kp;
@@ -1099,7 +1211,7 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     UpdateState([&](SharedState& s) { s.pid_enabled = pid_enabled_val; });
     pid_config.from_file = true;
   }
-  return config->wifi_from_file || config->usb_mass_storage_from_file || pid_config.from_file;
+  return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || pid_config.from_file;
 }
 
 void LoadConfigFromSdCard(AppConfig* config) {
@@ -2097,6 +2209,12 @@ static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMo
   fprintf(f, "wifi_ssid = %s\n", cfg.wifi_ssid.c_str());
   fprintf(f, "wifi_password = %s\n", cfg.wifi_password.c_str());
   fprintf(f, "usb_mass_storage = %s\n", (current_usb_mode == UsbMode::kMsc) ? "true" : "false");
+  fprintf(f, "logging_active = %s\n", (cfg.logging_active ? "true" : "false"));
+  if (!cfg.logging_postfix.empty()) {
+    fprintf(f, "logging_postfix = %s\n", cfg.logging_postfix.c_str());
+  }
+  fprintf(f, "logging_use_motor = %s\n", (cfg.logging_use_motor ? "true" : "false"));
+  fprintf(f, "logging_duration_s = %.3f\n", cfg.logging_duration_s);
   fprintf(f, "pid_kp = %.6f\n", pid.kp);
   fprintf(f, "pid_ki = %.6f\n", pid.ki);
   fprintf(f, "pid_kd = %.6f\n", pid.kd);
@@ -2127,6 +2245,8 @@ void StopLogging() {
   });
   log_config.active = false;
   log_config.homed_once = false;
+  log_config.postfix.clear();
+  log_config.file_start_us = 0;
   if (log_task) {
     vTaskDelete(log_task);
     log_task = nullptr;
@@ -2216,6 +2336,17 @@ void LoggingTask(void*) {
       vTaskDelete(nullptr);
     }
 
+    // Rotate log every hour
+    const uint64_t now_us = esp_timer_get_time();
+    if (log_config.file_start_us > 0 && (now_us - log_config.file_start_us) >= 3'600'000'000ULL) {
+      ESP_LOGI(TAG, "Rotating log file after 1 hour");
+      if (!OpenLogFileWithPostfix(log_config.postfix)) {
+        StopLogging();
+        vTaskDelete(nullptr);
+      }
+      continue;
+    }
+
     if (log_config.use_motor) {
       EnableStepper();
       home_blocking();
@@ -2246,7 +2377,8 @@ void LoggingTask(void*) {
       vTaskDelete(nullptr);
     }
     uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
-    fprintf(log_file, "%llu,%.6f,%.6f,%.6f", (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2, avg1.voltage3);
+    const std::string iso = IsoUtcNow();
+    fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2, avg1.voltage3);
     for (int i = 0; i < avg1.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
       fprintf(log_file, ",%.2f", avg1.temps_c[i]);
     }
@@ -2255,64 +2387,28 @@ void LoggingTask(void*) {
       fprintf(log_file, ",%.6f,%.6f,%.6f", avg2.voltage1, avg2.voltage2, avg2.voltage3);
     }
     fprintf(log_file, "\n");
-    fflush(log_file);
+    FlushLogFile();
   }
 }
 
-bool StartLoggingToFile(const std::string& postfix, UsbMode current_usb_mode) {
+bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode) {
   if (current_usb_mode == UsbMode::kMsc) {
     ESP_LOGW(TAG, "Cannot start logging in MSC mode");
     return false;
   }
-  SdLockGuard guard;
-  if (!guard.locked()) {
-    ESP_LOGW(TAG, "SD mutex unavailable, cannot start logging");
-    return false;
-  }
-  if (!MountLogSd()) {
-    return false;
-  }
-  if (log_file) {
-    fclose(log_file);
-    log_file = nullptr;
-  }
-
-  const std::string filename = BuildLogFilename(postfix);
-  std::string full_path;
-  if (!SanitizeFilename(filename, &full_path)) {
-    ESP_LOGW(TAG, "Bad filename for logging: %s", filename.c_str());
-    UnmountLogSd();
-    return false;
-  }
-  log_file = fopen(full_path.c_str(), "w");
-  if (!log_file) {
-    ESP_LOGE(TAG, "Failed to open log file %s", full_path.c_str());
-    UnmountLogSd();
-    return false;
-  }
-  SharedState snapshot = CopyState();
+  const std::string postfix = SanitizePostfix(postfix_raw);
+  log_config.postfix = postfix;
   log_config.active = true;
   log_config.homed_once = false;
-  fprintf(log_file, "timestamp_ms,adc1,adc2");
-  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    fprintf(log_file, ",temp%d", i + 1);
+  if (!OpenLogFileWithPostfix(postfix)) {
+    log_config.active = false;
+    return false;
   }
-  fprintf(log_file, ",bus_v,bus_i,bus_p");
-  if (log_config.use_motor) {
-    fprintf(log_file, ",adc1_cal,adc2_cal");
-  }
-  fprintf(log_file, "\n");
-  fflush(log_file);
-
-  UpdateState([&](SharedState& s) {
-    s.logging = true;
-    s.log_filename = filename;
-  });
 
   if (log_task == nullptr) {
     xTaskCreatePinnedToCore(&LoggingTask, "log_task", 4096, nullptr, 2, &log_task, 0);
   }
-  ESP_LOGI(TAG, "Logging started: %s", full_path.c_str());
+  ESP_LOGI(TAG, "Logging started");
   return true;
 }
 
@@ -2437,12 +2533,21 @@ esp_err_t LogStartHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
 
+  app_config.logging_active = true;
+  app_config.logging_postfix = SanitizePostfix(filename);
+  app_config.logging_use_motor = use_motor;
+  app_config.logging_duration_s = duration_s;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"logging_started\"}");
 }
 
 esp_err_t LogStopHandler(httpd_req_t* req) {
   StopLogging();
+  app_config.logging_active = false;
+  app_config.logging_use_motor = false;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"logging_stopped\"}");
 }
@@ -2899,6 +3004,22 @@ extern "C" void app_main(void) {
     ESP_LOGW(TAG, "NTP sync timed out, using monotonic timestamp fallback");
   }
   StartHttpServer();
+
+  if (app_config.logging_active && usb_mode == UsbMode::kCdc) {
+    const std::string postfix = SanitizePostfix(app_config.logging_postfix);
+    log_config.postfix = postfix;
+    log_config.use_motor = app_config.logging_use_motor;
+    log_config.duration_s = app_config.logging_duration_s;
+    if (!StartLoggingToFile(postfix, usb_mode)) {
+      ESP_LOGW(TAG, "Auto-start logging failed");
+      app_config.logging_active = false;
+    } else {
+      app_config.logging_active = true;
+      app_config.logging_postfix = postfix;
+      app_config.logging_use_motor = log_config.use_motor;
+      app_config.logging_duration_s = log_config.duration_s;
+    }
+  }
 
   // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
   xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
