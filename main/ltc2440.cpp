@@ -3,6 +3,7 @@
 #include <inttypes.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 
 namespace {
@@ -67,6 +68,16 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   if (!initialized_) {
     return ESP_ERR_INVALID_STATE;
   }
+  // Enforce minimum conversion time before polling DRDY; LTC2440 full conversion
+  // can take up to ~150 ms depending on OSR. Guard with a fixed delay since we
+  // don't always trust DRDY on a shared MISO line.
+  const int64_t now_us = esp_timer_get_time();
+  const int64_t since_last = now_us - last_conv_start_us_;
+  if (last_conv_start_us_ > 0 && since_last < 180'000) {
+    const int64_t wait_us = 180'000 - since_last;
+    vTaskDelay(pdMS_TO_TICKS((wait_us + 999) / 1000));  // ceil to ms ticks
+  }
+
   // Lock the bus while we manually drive CS for DRDY and the transfer.
   esp_err_t lock = spi_device_acquire_bus(spi_handle_, portMAX_DELAY);
   if (lock != ESP_OK) {
@@ -77,7 +88,7 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   gpio_set_level(chip_select_pin_, 0);
 
   // Wait until conversion complete (DOUT/SDO goes low) to avoid reading 0xFF headers.
-  esp_err_t ready = WaitReady_(pdMS_TO_TICKS(500));
+  esp_err_t ready = WaitReady_(pdMS_TO_TICKS(800));
   if (ready != ESP_OK) {
     gpio_set_level(chip_select_pin_, 1);
     spi_device_release_bus(spi_handle_);
@@ -93,36 +104,51 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   transaction.tx_buffer = tx;
   transaction.rx_buffer = rx;
 
-  esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
-  if (ret != ESP_OK) {
-    gpio_set_level(chip_select_pin_, 1);
-    spi_device_release_bus(spi_handle_);
-    return ret;
-  }
-
-  uint8_t header = rx[0];
-  uint8_t prefix = header >> 4;
-  if (prefix == 0b0010 || prefix == 0b0001) {
-    bool negative = (header & 0x20) == 0;
-    header &= 0x1F;
-
-    int32_t result = (static_cast<int32_t>(header) << 24) |
-                     (static_cast<int32_t>(rx[1]) << 16) |
-                     (static_cast<int32_t>(rx[2]) << 8)  |
-                      static_cast<int32_t>(rx[3]);
-
-    if (negative) {
-      result |= 0xF0000000;
+  const int kMaxAttempts = 5;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
+    if (ret != ESP_OK) {
+      gpio_set_level(chip_select_pin_, 1);
+      spi_device_release_bus(spi_handle_);
+      return ret;
     }
 
-    *value = result >> 5;  // drop lowest 5 bits as in reference driver
-    gpio_set_level(chip_select_pin_, 1);
-    spi_device_release_bus(spi_handle_);
-    return ESP_OK;
+    uint8_t header = rx[0];
+    uint8_t prefix = header >> 4;
+    if (prefix == 0b0010 || prefix == 0b0001) {
+      bool negative = (header & 0x20) == 0;
+      header &= 0x1F;
+
+      int32_t result = (static_cast<int32_t>(header) << 24) |
+                       (static_cast<int32_t>(rx[1]) << 16) |
+                       (static_cast<int32_t>(rx[2]) << 8)  |
+                        static_cast<int32_t>(rx[3]);
+
+      if (negative) {
+        result |= 0xF0000000;
+      }
+
+      *value = result >> 5;  // drop lowest 5 bits as in reference driver
+      gpio_set_level(chip_select_pin_, 1);
+      last_conv_start_us_ = esp_timer_get_time();  // conversion starts when CS goes high
+      spi_device_release_bus(spi_handle_);
+      return ESP_OK;
+    }
+
+    // Busy/invalid header: raise CS, wait briefly, and retry
+    if (attempt < kMaxAttempts - 1) {
+      gpio_set_level(chip_select_pin_, 1);
+      vTaskDelay(pdMS_TO_TICKS(2));
+      gpio_set_level(chip_select_pin_, 0);
+      (void)WaitReady_(pdMS_TO_TICKS(50));
+      continue;
+    } else {
+      ESP_LOGW(TAG, "Unexpected header 0x%02X", rx[0]);
+    }
   }
 
-  ESP_LOGW(TAG, "Unexpected header 0x%02X", rx[0]);
   gpio_set_level(chip_select_pin_, 1);
+  last_conv_start_us_ = esp_timer_get_time();
   spi_device_release_bus(spi_handle_);
   return ESP_ERR_INVALID_RESPONSE;
 }

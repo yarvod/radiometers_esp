@@ -32,4 +32,5 @@ class LTC2440 {
   gpio_num_t drdy_pin_;
   int32_t adc_offset_ = 0;
   bool initialized_ = false;
+  int64_t last_conv_start_us_ = 0;
 };

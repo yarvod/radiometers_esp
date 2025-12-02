@@ -289,6 +289,8 @@ struct SharedState {
   bool homing = false;
   bool logging = false;
   std::string log_filename;
+  bool log_use_motor = false;
+  float log_duration_s = 1.0f;
   bool pid_enabled = false;
   float pid_kp = 1.0f;
   float pid_ki = 0.0f;
@@ -394,7 +396,12 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
   log_config.file_start_us = esp_timer_get_time();
   fprintf(log_file, "timestamp_iso,timestamp_ms,adc1,adc2");
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    fprintf(log_file, ",temp%d", i + 1);
+    const std::string& label = snapshot.temp_labels[i];
+    if (!label.empty()) {
+      fprintf(log_file, ",%s", label.c_str());
+    } else {
+      fprintf(log_file, ",temp%d", i + 1);
+    }
   }
   fprintf(log_file, ",bus_v,bus_i,bus_p");
   if (log_config.use_motor) {
@@ -687,6 +694,8 @@ constexpr char INDEX_HTML[] = R"rawliteral(
   </div>
 
 <script>
+    let measurementsInitialized = false;
+
     function setValueIfIdle(id, value) {
       const el = document.getElementById(id);
       if (el && document.activeElement !== el) {
@@ -705,8 +714,8 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
       setValueIfIdle('heaterPower', data.heaterPower?.toFixed(1) ?? data.heaterPower ?? 0);
-      const list = document.getElementById('tempList');
-      const labels = Array.isArray(data.tempLabels) ? data.tempLabels : [];
+    const list = document.getElementById('tempList');
+    const labels = Array.isArray(data.tempLabels) ? data.tempLabels : [];
       if (Array.isArray(data.tempSensors) && data.tempSensors.length > 0) {
         let html = '';
         data.tempSensors.forEach((t, idx) => {
@@ -727,6 +736,15 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         logStatus.textContent = 'Logging to ' + (data.logFilename || '');
       } else {
         logStatus.textContent = 'Idle';
+      }
+      if (!measurementsInitialized) {
+        setValueIfIdle('logFilename', data.logFilename || '');
+        const logUseMotorEl = document.getElementById('logUseMotor');
+        if (logUseMotorEl && document.activeElement !== logUseMotorEl) {
+          logUseMotorEl.checked = !!data.logUseMotor;
+        }
+        setValueIfIdle('logDuration', (data.logDuration ?? 1).toFixed(1));
+        measurementsInitialized = true;
       }
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
@@ -2024,6 +2042,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddItemToObject(root, "tempLabels", label_array);
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
+  cJSON_AddBoolToObject(root, "logUseMotor", snapshot.log_use_motor);
+  cJSON_AddNumberToObject(root, "logDuration", snapshot.log_duration_s);
   cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
   cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
   cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
@@ -2370,11 +2390,11 @@ void LoggingTask(void*) {
       have_cal = collect_avg(log_config.duration_s, current.temp_sensor_count, &avg2);
     }
 
-    SdLockGuard guard;
+    SdLockGuard guard(pdMS_TO_TICKS(2000));
     if (!guard.locked()) {
-      ESP_LOGW(TAG, "SD mutex unavailable, stopping logging");
-      StopLogging();
-      vTaskDelete(nullptr);
+      ESP_LOGW(TAG, "SD mutex unavailable, retrying logging write");
+      vTaskDelay(pdMS_TO_TICKS(200));
+      continue;
     }
     uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
     const std::string iso = IsoUtcNow();
@@ -2400,6 +2420,9 @@ bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode
   log_config.postfix = postfix;
   log_config.active = true;
   log_config.homed_once = false;
+  if (log_config.duration_s <= 0.0f) {
+    log_config.duration_s = 1.0f;
+  }
   if (!OpenLogFileWithPostfix(postfix)) {
     log_config.active = false;
     return false;
@@ -2409,6 +2432,11 @@ bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode
     xTaskCreatePinnedToCore(&LoggingTask, "log_task", 4096, nullptr, 2, &log_task, 0);
   }
   ESP_LOGI(TAG, "Logging started");
+  UpdateState([&](SharedState& s) {
+    s.logging = true;
+    s.log_use_motor = log_config.use_motor;
+    s.log_duration_s = log_config.duration_s;
+  });
   return true;
 }
 
@@ -2537,6 +2565,11 @@ esp_err_t LogStartHandler(httpd_req_t* req) {
   app_config.logging_postfix = SanitizePostfix(filename);
   app_config.logging_use_motor = use_motor;
   app_config.logging_duration_s = duration_s;
+  UpdateState([&](SharedState& s) {
+    s.logging = true;
+    s.log_use_motor = use_motor;
+    s.log_duration_s = duration_s;
+  });
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
@@ -2548,6 +2581,10 @@ esp_err_t LogStopHandler(httpd_req_t* req) {
   app_config.logging_active = false;
   app_config.logging_use_motor = false;
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  UpdateState([](SharedState& s) {
+    s.logging = false;
+    s.log_use_motor = false;
+  });
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"logging_stopped\"}");
 }
@@ -3018,6 +3055,12 @@ extern "C" void app_main(void) {
       app_config.logging_postfix = postfix;
       app_config.logging_use_motor = log_config.use_motor;
       app_config.logging_duration_s = log_config.duration_s;
+      UpdateState([&](SharedState& s) {
+        s.logging = true;
+        s.log_filename = postfix;
+        s.log_use_motor = log_config.use_motor;
+        s.log_duration_s = log_config.duration_s;
+      });
     }
   }
 
