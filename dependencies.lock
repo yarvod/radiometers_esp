@@ -1,4 +1,15 @@
 dependencies:
+  espressif/ds18b20:
+    component_hash: 9792f38a20eb2fe7435cba349e3b4b7085381f05400233aacd849ced69e2207f
+    dependencies:
+    - name: espressif/onewire_bus
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.0.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.2.0
   espressif/esp_tinyusb:
     component_hash: 6a50305bc61c7a361da8c0833642be824e92dacb0a6001719a832a4e96e471bf
     dependencies:
@@ -13,6 +24,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.7.6~2
+  espressif/onewire_bus:
+    component_hash: 11729fd9a5de80225177a61e9cd77de91683b8ec300e83710d5327b666dbe884
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.4
   espressif/tinyusb:
     component_hash: 5ea9d3b6d6b0734a0a0b3491967aa0e1bece2974132294dbda5dd2839b247bfa
     dependencies:
@@ -33,8 +54,9 @@ dependencies:
       type: idf
     version: 5.5.1
 direct_dependencies:
+- espressif/ds18b20
 - espressif/esp_tinyusb
 - idf
-manifest_hash: 2ca201f07407a36cbce82da3c6ad3b49407599f657f803bf03e4405aa0acbbca
+manifest_hash: 507d147298c19c153922021a3491d12a0125e57590fd754fa06cbd5d4cc0e4fb
 target: esp32s3
 version: 2.0.0

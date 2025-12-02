@@ -17,6 +17,8 @@ idf_component_register(
         esp_tinyusb
         sdmmc
         fatfs
+        ds18b20
+        onewire_bus
     INCLUDE_DIRS "."
 )
 
