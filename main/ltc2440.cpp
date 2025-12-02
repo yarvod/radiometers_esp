@@ -8,7 +8,8 @@ namespace {
 constexpr char TAG[] = "LTC2440";
 }
 
-LTC2440::LTC2440(gpio_num_t chip_select_pin) : chip_select_pin_(chip_select_pin) {}
+LTC2440::LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin)
+    : chip_select_pin_(chip_select_pin), drdy_pin_(drdy_pin) {}
 
 esp_err_t LTC2440::Init(spi_host_device_t host, int clock_hz) {
   spi_device_interface_config_t devcfg = {};
@@ -27,10 +28,31 @@ esp_err_t LTC2440::Init(spi_host_device_t host, int clock_hz) {
   return ret;
 }
 
+esp_err_t LTC2440::WaitReady_(TickType_t timeout_ticks) {
+  if (drdy_pin_ == GPIO_NUM_NC) {
+    return ESP_OK;
+  }
+  const TickType_t start = xTaskGetTickCount();
+  while (gpio_get_level(drdy_pin_) != 0) {
+    if ((xTaskGetTickCount() - start) > timeout_ticks) {
+      return ESP_ERR_TIMEOUT;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return ESP_OK;
+}
+
 esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   if (!initialized_) {
     return ESP_ERR_INVALID_STATE;
   }
+  // Wait until conversion complete (DOUT/SDO goes low) to avoid reading 0xFF headers.
+  esp_err_t ready = WaitReady_(pdMS_TO_TICKS(300));
+  if (ready != ESP_OK) {
+    ESP_LOGW(TAG, "ADC not ready (timeout)");
+    return ready;
+  }
+
   uint8_t tx[4] = {0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t rx[4] = {0, 0, 0, 0};
 
@@ -39,32 +61,37 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   transaction.tx_buffer = tx;
   transaction.rx_buffer = rx;
 
-  esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
-  if (ret != ESP_OK) {
-    return ret;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
+    if (ret != ESP_OK) {
+      return ret;
+    }
+
+    uint8_t header = rx[0];
+    uint8_t prefix = header >> 4;
+    if (prefix == 0b0010 || prefix == 0b0001) {
+      bool negative = (header & 0x20) == 0;
+      header &= 0x1F;
+
+      int32_t result = (static_cast<int32_t>(header) << 24) |
+                       (static_cast<int32_t>(rx[1]) << 16) |
+                       (static_cast<int32_t>(rx[2]) << 8) |
+                       static_cast<int32_t>(rx[3]);
+
+      if (negative) {
+        result |= 0xF0000000;
+      }
+
+      *value = result >> 5;  // drop lowest 5 bits as in reference driver
+      return ESP_OK;
+    }
+
+    // Busy or bad header; brief delay before retry to let conversion settle.
+    vTaskDelay(pdMS_TO_TICKS(2));
   }
 
-  uint8_t header = rx[0];
-  uint8_t prefix = header >> 4;
-  if (prefix != 0b0010 && prefix != 0b0001) {
-    ESP_LOGW(TAG, "Unexpected header 0x%02X", header);
-    return ESP_ERR_INVALID_RESPONSE;
-  }
-
-  bool negative = (header & 0x20) == 0;
-  header &= 0x1F;
-
-  int32_t result = (static_cast<int32_t>(header) << 24) |
-                   (static_cast<int32_t>(rx[1]) << 16) |
-                   (static_cast<int32_t>(rx[2]) << 8) |
-                   static_cast<int32_t>(rx[3]);
-
-  if (negative) {
-    result |= 0xF0000000;
-  }
-
-  *value = result >> 5;  // drop lowest 5 bits as in reference driver
-  return ESP_OK;
+  ESP_LOGW(TAG, "Unexpected header 0x%02X", rx[0]);
+  return ESP_ERR_INVALID_RESPONSE;
 }
 
 esp_err_t LTC2440::Read(int32_t* value) {

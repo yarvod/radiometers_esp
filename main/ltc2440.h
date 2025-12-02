@@ -8,7 +8,7 @@
 
 class LTC2440 {
  public:
-  explicit LTC2440(gpio_num_t chip_select_pin);
+  explicit LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin = GPIO_NUM_NC);
 
   // Initialize device on already-configured SPI bus.
   esp_err_t Init(spi_host_device_t host, int clock_hz = 3'000'000);
@@ -22,10 +22,12 @@ class LTC2440 {
   int32_t offset() const { return adc_offset_; }
 
  private:
+  esp_err_t WaitReady_(TickType_t timeout_ticks);
   esp_err_t ReadRaw_(int32_t* value);
 
   spi_device_handle_t spi_handle_{nullptr};
   gpio_num_t chip_select_pin_;
+  gpio_num_t drdy_pin_;
   int32_t adc_offset_ = 0;
   bool initialized_ = false;
 };

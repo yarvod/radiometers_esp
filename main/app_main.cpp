@@ -79,6 +79,7 @@ constexpr gpio_num_t RELAY_PIN = GPIO_NUM_17;
 constexpr gpio_num_t STEPPER_EN = GPIO_NUM_35;
 constexpr gpio_num_t STEPPER_DIR = GPIO_NUM_36;
 constexpr gpio_num_t STEPPER_STEP = GPIO_NUM_37;
+constexpr int ADC_SPI_FREQ_HZ = 1'000'000;
 
 constexpr float VREF = 4.096f;  // ±Vref/2 range, matches original sketch
 constexpr float ADC_SCALE = (VREF / 2.0f) / static_cast<float>(1 << 23);
@@ -202,9 +203,9 @@ enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };
 UsbMode usb_mode = UsbMode::kCdc;
 
 // Devices
-LTC2440 adc1(ADC_CS1);
-LTC2440 adc2(ADC_CS2);
-LTC2440 adc3(ADC_CS3);
+LTC2440 adc1(ADC_CS1, ADC_MISO);
+LTC2440 adc2(ADC_CS2, ADC_MISO);
+LTC2440 adc3(ADC_CS3, ADC_MISO);
 sdmmc_card_t* sd_card = nullptr;
 sdmmc_card_t* log_sd_card = nullptr;
 FILE* log_file = nullptr;
@@ -937,12 +938,18 @@ void LoadConfigFromSdCard(AppConfig* config) {
   if (parsed) {
     if (config->wifi_from_file) {
       ESP_LOGI(TAG, "Wi-Fi config loaded from config.txt (SSID: %s)", config->wifi_ssid.c_str());
+    } else {
+      // Keep defaults if Wi-Fi not found/invalid in file.
+      config->wifi_ssid = DEFAULT_WIFI_SSID;
+      config->wifi_password = DEFAULT_WIFI_PASS;
     }
     if (config->usb_mass_storage_from_file) {
       ESP_LOGI(TAG, "usb_mass_storage=%s (config.txt)", config->usb_mass_storage ? "true" : "false");
     }
   } else {
     ESP_LOGW(TAG, "config.txt present but values are missing/invalid, using defaults");
+    config->wifi_ssid = DEFAULT_WIFI_SSID;
+    config->wifi_password = DEFAULT_WIFI_PASS;
   }
 }
 
@@ -2364,9 +2371,9 @@ extern "C" void app_main(void) {
     ESP_LOGW(TAG, "DS18B20 init failed or no sensors found");
   }
   ESP_ERROR_CHECK(InitSpiBus());
-  ESP_ERROR_CHECK(adc1.Init(SPI2_HOST));
-  ESP_ERROR_CHECK(adc2.Init(SPI2_HOST));
-  ESP_ERROR_CHECK(adc3.Init(SPI2_HOST));
+  ESP_ERROR_CHECK(adc1.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
+  ESP_ERROR_CHECK(adc2.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
+  ESP_ERROR_CHECK(adc3.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
   esp_err_t ina_err = InitIna219();
   if (ina_err != ESP_OK) {
     ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));
