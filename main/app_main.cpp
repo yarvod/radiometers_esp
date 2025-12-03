@@ -2286,6 +2286,7 @@ void LoggingTask(void*) {
 
   auto home_blocking = [&]() {
     UpdateState([](SharedState& s) { s.homing = true; });
+    EnableStepper();
     gpio_set_level(STEPPER_DIR, 0);
     int steps = 0;
     const int max_steps = 20000;
@@ -2296,6 +2297,7 @@ void LoggingTask(void*) {
       esp_rom_delay_us(1000);
       steps++;
     }
+    DisableStepper();
     UpdateState([](SharedState& s) {
       s.stepper_position = 0;
       s.stepper_target = 0;
@@ -2306,6 +2308,7 @@ void LoggingTask(void*) {
 
   auto move_blocking = [&](int steps, bool forward) {
     UpdateState([](SharedState& s) { s.homing = true; });
+    EnableStepper();
     gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
     for (int i = 0; i < steps; ++i) {
       gpio_set_level(STEPPER_STEP, 1);
@@ -2313,6 +2316,7 @@ void LoggingTask(void*) {
       gpio_set_level(STEPPER_STEP, 0);
       esp_rom_delay_us(1000);
     }
+    DisableStepper();
     UpdateState([&](SharedState& s) {
       s.homing = false;
       s.stepper_position += forward ? steps : -steps;
