@@ -1523,7 +1523,7 @@ void InitHeaterPwm() {
   t.speed_mode = LEDC_LOW_SPEED_MODE;
   t.duty_resolution = LEDC_TIMER_10_BIT;
   t.timer_num = LEDC_TIMER_0;
-  t.freq_hz = 5000;
+  t.freq_hz = 1000;
   t.clk_cfg = LEDC_AUTO_CLK;
   ESP_ERROR_CHECK(ledc_timer_config(&t));
 
