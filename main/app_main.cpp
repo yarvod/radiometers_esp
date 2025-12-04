@@ -1523,7 +1523,7 @@ void InitHeaterPwm() {
   t.speed_mode = LEDC_LOW_SPEED_MODE;
   t.duty_resolution = LEDC_TIMER_10_BIT;
   t.timer_num = LEDC_TIMER_0;
-  t.freq_hz = 1000;
+  t.freq_hz = 5000;
   t.clk_cfg = LEDC_AUTO_CLK;
   ESP_ERROR_CHECK(ledc_timer_config(&t));
 
@@ -1539,7 +1539,7 @@ void InitHeaterPwm() {
 void HeaterSetPowerPercent(float p) {
   if (p < 0.0f) p = 0.0f;
   if (p > 100.0f) p = 100.0f;
-  const uint32_t duty = static_cast<uint32_t>(p * 1023.0f / 100.0f);
+  const uint32_t duty = static_cast<uint32_t>(p * 1023.0f / 100.0f);  // 10-bit scale
   ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
   UpdateState([&](SharedState& s) { s.heater_power = p; });
