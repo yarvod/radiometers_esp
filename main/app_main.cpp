@@ -120,6 +120,9 @@ constexpr int WIFI_FAIL_BIT = BIT1;
 EventGroupHandle_t wifi_event_group = nullptr;
 int retry_count = 0;
 bool time_synced = false;
+bool wifi_inited = false;
+esp_netif_t* wifi_netif_sta = nullptr;
+esp_netif_t* wifi_netif_ap = nullptr;
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
@@ -247,6 +250,7 @@ struct AppConfig {
   std::string wifi_ssid = DEFAULT_WIFI_SSID;
   std::string wifi_password = DEFAULT_WIFI_PASS;
   bool wifi_from_file = false;
+  bool wifi_ap_mode = false;
   bool usb_mass_storage = false;
   bool usb_mass_storage_from_file = false;
   bool logging_active = false;
@@ -575,6 +579,26 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       </div>
 
       <div class="control-panel">
+        <h3>Wi-Fi</h3>
+        <div class="form-group">
+          <label for="wifiMode">Mode</label>
+          <select id="wifiMode">
+            <option value="sta">Connect to Wi‑Fi</option>
+            <option value="ap">Share own Wi‑Fi</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="wifiSsid">SSID</label>
+          <input type="text" id="wifiSsid" value="">
+        </div>
+        <div class="form-group">
+          <label for="wifiPassword">Password</label>
+          <input type="text" id="wifiPassword" value="">
+        </div>
+        <button class="btn" onclick="applyWifi()">Apply Wi‑Fi</button>
+      </div>
+
+      <div class="control-panel">
         <h3>Measurements</h3>
         <div class="form-group">
           <label for="logFilename">Filename (on SD)</label>
@@ -737,15 +761,20 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       } else {
         logStatus.textContent = 'Idle';
       }
-      if (!measurementsInitialized) {
-        setValueIfIdle('logFilename', data.logFilename || '');
-        const logUseMotorEl = document.getElementById('logUseMotor');
-        if (logUseMotorEl && document.activeElement !== logUseMotorEl) {
-          logUseMotorEl.checked = !!data.logUseMotor;
-        }
-        setValueIfIdle('logDuration', (data.logDuration ?? 1).toFixed(1));
-        measurementsInitialized = true;
+    if (!measurementsInitialized) {
+      setValueIfIdle('logFilename', data.logFilename || '');
+      const logUseMotorEl = document.getElementById('logUseMotor');
+      if (logUseMotorEl && document.activeElement !== logUseMotorEl) {
+        logUseMotorEl.checked = !!data.logUseMotor;
       }
+      setValueIfIdle('logDuration', (data.logDuration ?? 1).toFixed(1));
+      // Wi-Fi defaults
+      const wifiModeEl = document.getElementById('wifiMode');
+      if (wifiModeEl) wifiModeEl.value = data.wifiApMode ? 'ap' : 'sta';
+      setValueIfIdle('wifiSsid', data.wifiSsid || '');
+      setValueIfIdle('wifiPassword', data.wifiPassword || '');
+      measurementsInitialized = true;
+    }
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
@@ -942,6 +971,24 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       .catch(() => refreshData());
     }
 
+    function applyWifi() {
+      const mode = document.getElementById('wifiMode').value;
+      const ssid = document.getElementById('wifiSsid').value;
+      const password = document.getElementById('wifiPassword').value;
+      fetch('/wifi/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, ssid, password })
+      }).then(res => {
+        if (!res.ok) throw new Error('Failed to apply Wi-Fi');
+        return res.json();
+      }).then(() => {
+        alert('Wi‑Fi settings applied. Device may reconnect or switch mode.');
+      }).catch(err => {
+        alert('Wi‑Fi apply failed: ' + err.message);
+      });
+    }
+
     function applyPid() {
       const payload = {
         setpoint: parseFloat(document.getElementById('pidSetpoint').value),
@@ -1104,6 +1151,8 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool pass_set = false;
   bool usb_set = false;
   bool usb_value = false;
+  bool wifi_ap_mode_set = false;
+  bool wifi_ap_mode_val = false;
   bool log_active_set = false;
   bool log_active_val = false;
   bool log_postfix_set = false;
@@ -1152,6 +1201,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
       } else {
         ESP_LOGW(TAG, "Invalid wifi_password in config.txt");
       }
+    } else if (key == "wifi_ap_mode") {
+      if (ParseBool(value, &wifi_ap_mode_val)) {
+        wifi_ap_mode_set = true;
+      }
     } else if (key == "usb_mass_storage") {
       if (ParseBool(value, &usb_value)) {
         usb_set = true;
@@ -1197,6 +1250,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (ssid_set && pass_set) {
     config->wifi_ssid = ssid;
     config->wifi_password = password;
+    config->wifi_from_file = true;
+  }
+  if (wifi_ap_mode_set) {
+    config->wifi_ap_mode = wifi_ap_mode_val;
     config->wifi_from_file = true;
   }
   if (usb_set) {
@@ -1367,20 +1424,32 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
   }
 }
 
-void InitWifi(const std::string& ssid, const std::string& password) {
-  wifi_event_group = xEventGroupCreate();
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_t* netif = esp_netif_create_default_wifi_sta();
-  if (netif && strlen(HOSTNAME) > 0) {
-    esp_netif_set_hostname(netif, HOSTNAME);
+void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode) {
+  if (!wifi_event_group) {
+    wifi_event_group = xEventGroupCreate();
+  } else {
+    xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
   }
 
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+  if (!wifi_inited) {
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_netif_sta = esp_netif_create_default_wifi_sta();
+    wifi_netif_ap = esp_netif_create_default_wifi_ap();
+    if (wifi_netif_sta && strlen(HOSTNAME) > 0) {
+      esp_netif_set_hostname(wifi_netif_sta, HOSTNAME);
+    }
 
-  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEventHandler, nullptr));
-  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEventHandler, nullptr));
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEventHandler, nullptr));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEventHandler, nullptr));
+    wifi_inited = true;
+  } else {
+    esp_wifi_stop();
+  }
+
+  retry_count = 0;
 
   wifi_config_t wifi_config = {};
   std::strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid), ssid.c_str(), sizeof(wifi_config.sta.ssid) - 1);
@@ -1390,11 +1459,25 @@ void InitWifi(const std::string& ssid, const std::string& password) {
   wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
   wifi_config.sta.pmf_cfg = {.capable = true, .required = false};
 
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  wifi_config_t ap_config = {};
+  const char* ap_ssid = ap_mode ? ssid.c_str() : "esp";
+  const char* ap_pass = ap_mode ? password.c_str() : "12345678";
+  std::strncpy(reinterpret_cast<char*>(ap_config.ap.ssid), ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+  std::strncpy(reinterpret_cast<char*>(ap_config.ap.password), ap_pass, sizeof(ap_config.ap.password) - 1);
+  ap_config.ap.ssid_len = strlen(reinterpret_cast<char*>(ap_config.ap.ssid));
+  ap_config.ap.channel = 1;
+  ap_config.ap.authmode = (strlen(ap_pass) >= 8) ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
+  ap_config.ap.max_connection = 4;
+
+  wifi_mode_t mode = ap_mode ? WIFI_MODE_APSTA : WIFI_MODE_STA;
+  ESP_ERROR_CHECK(esp_wifi_set_mode(mode));
   if (USE_CUSTOM_MAC) {
     ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CUSTOM_MAC));
   }
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+  if (mode == WIFI_MODE_APSTA) {
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+  }
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
@@ -1404,7 +1487,17 @@ void InitWifi(const std::string& ssid, const std::string& password) {
   if (bits & WIFI_CONNECTED_BIT) {
     ESP_LOGI(TAG, "Connected to SSID:%s", ssid.c_str());
   } else {
-    ESP_LOGE(TAG, "Failed to connect to SSID:%s", ssid.c_str());
+    ESP_LOGW(TAG, "Failed to connect to SSID:%s, starting AP fallback", ssid.c_str());
+    // Fallback to AP-only with default creds
+    wifi_config_t fallback_ap = {};
+    std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.ssid), "esp", sizeof(fallback_ap.ap.ssid) - 1);
+    std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.password), "12345678", sizeof(fallback_ap.ap.password) - 1);
+    fallback_ap.ap.ssid_len = strlen(reinterpret_cast<char*>(fallback_ap.ap.ssid));
+    fallback_ap.ap.channel = 1;
+    fallback_ap.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+    fallback_ap.ap.max_connection = 4;
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &fallback_ap));
   }
 }
 
@@ -2044,6 +2137,9 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddBoolToObject(root, "logUseMotor", snapshot.log_use_motor);
   cJSON_AddNumberToObject(root, "logDuration", snapshot.log_duration_s);
+  cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
+  cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
+  cJSON_AddStringToObject(root, "wifiPassword", app_config.wifi_password.c_str());
   cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
   cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
   cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
@@ -2051,6 +2147,7 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "pidKi", snapshot.pid_ki);
   cJSON_AddNumberToObject(root, "pidKd", snapshot.pid_kd);
   cJSON_AddNumberToObject(root, "pidOutput", snapshot.pid_output);
+  cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
@@ -2233,6 +2330,7 @@ static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMo
   fprintf(f, "# Config generated by device\n");
   fprintf(f, "wifi_ssid = %s\n", cfg.wifi_ssid.c_str());
   fprintf(f, "wifi_password = %s\n", cfg.wifi_password.c_str());
+  fprintf(f, "wifi_ap_mode = %s\n", (cfg.wifi_ap_mode ? "true" : "false"));
   fprintf(f, "usb_mass_storage = %s\n", (current_usb_mode == UsbMode::kMsc) ? "true" : "false");
   fprintf(f, "logging_active = %s\n", (cfg.logging_active ? "true" : "false"));
   if (!cfg.logging_postfix.empty()) {
@@ -2911,11 +3009,59 @@ esp_err_t UsbModeSetHandler(httpd_req_t* req) {
   return ESP_OK;
 }
 
+esp_err_t WifiApplyHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 160);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  cJSON* mode_item = cJSON_GetObjectItem(root, "mode");
+  cJSON* ssid_item = cJSON_GetObjectItem(root, "ssid");
+  cJSON* pass_item = cJSON_GetObjectItem(root, "password");
+  std::string mode = (mode_item && cJSON_IsString(mode_item) && mode_item->valuestring) ? mode_item->valuestring : "sta";
+  std::string ssid = (ssid_item && cJSON_IsString(ssid_item) && ssid_item->valuestring) ? ssid_item->valuestring : "";
+  std::string pass = (pass_item && cJSON_IsString(pass_item) && pass_item->valuestring) ? pass_item->valuestring : "";
+  cJSON_Delete(root);
+
+  if (ssid.empty() || ssid.size() >= WIFI_SSID_MAX_LEN) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid SSID");
+    return ESP_FAIL;
+  }
+  if (pass.size() >= WIFI_PASSWORD_MAX_LEN) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid password");
+    return ESP_FAIL;
+  }
+
+  app_config.wifi_ssid = ssid;
+  app_config.wifi_password = pass;
+  app_config.wifi_ap_mode = (mode == "ap");
+  app_config.wifi_from_file = true;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+
+  InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"wifi_applied\"}");
+}
+
 httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 24;
+  config.max_uri_handlers = 26;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -2934,6 +3080,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t stepper_find_zero_uri = {.uri = "/stepper/find_zero", .method = HTTP_POST, .handler = StepperFindZeroHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
+  httpd_uri_t wifi_apply_uri = {.uri = "/wifi/apply", .method = HTTP_POST, .handler = WifiApplyHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
   httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
   httpd_uri_t log_start_uri = {.uri = "/log/start", .method = HTTP_POST, .handler = LogStartHandler, .user_ctx = nullptr};
@@ -2956,6 +3103,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &stepper_find_zero_uri);
   httpd_register_uri_handler(http_server, &usb_mode_get_uri);
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
+  httpd_register_uri_handler(http_server, &wifi_apply_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
   httpd_register_uri_handler(http_server, &fan_set_uri);
   httpd_register_uri_handler(http_server, &log_start_uri);
@@ -3050,7 +3198,7 @@ extern "C" void app_main(void) {
     s.pid_setpoint = pid_config.setpoint;
     s.pid_sensor_index = pid_config.sensor_index;
   });
-  InitWifi(app_config.wifi_ssid, app_config.wifi_password);
+  InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
   StartSntp();
   if (WaitForTimeSyncMs(8000)) {
     ESP_LOGI(TAG, "Time synced via NTP");
