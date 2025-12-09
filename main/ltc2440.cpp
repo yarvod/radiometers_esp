@@ -90,11 +90,11 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   // Wait until conversion complete (DOUT/SDO goes low) to avoid reading 0xFF headers.
   esp_err_t ready = WaitReady_(pdMS_TO_TICKS(800));
   if (ready != ESP_OK) {
-    gpio_set_level(chip_select_pin_, 1);
-    spi_device_release_bus(spi_handle_);
-    ESP_LOGW(TAG, "ADC not ready (timeout)");
-    return ready;
+    // Try to proceed anyway after a brief delay; sometimes DRDY not seen on shared MISO.
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
+  // Give a short guard time after ready before clocking out bits.
+  vTaskDelay(pdMS_TO_TICKS(2));
 
   uint8_t tx[4] = {0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t rx[4] = {0, 0, 0, 0};
@@ -104,7 +104,7 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   transaction.tx_buffer = tx;
   transaction.rx_buffer = rx;
 
-  const int kMaxAttempts = 5;
+  const int kMaxAttempts = 6;
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
     esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
     if (ret != ESP_OK) {
@@ -138,9 +138,9 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
     // Busy/invalid header: raise CS, wait briefly, and retry
     if (attempt < kMaxAttempts - 1) {
       gpio_set_level(chip_select_pin_, 1);
-      vTaskDelay(pdMS_TO_TICKS(2));
+      vTaskDelay(pdMS_TO_TICKS(5));
       gpio_set_level(chip_select_pin_, 0);
-      (void)WaitReady_(pdMS_TO_TICKS(50));
+      (void)WaitReady_(pdMS_TO_TICKS(200));
       continue;
     } else {
       ESP_LOGW(TAG, "Unexpected header 0x%02X", rx[0]);
