@@ -2,7 +2,7 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "ltc2440.cpp"
-        "onewire_ds18b20.cpp"
+        "onewire_m1820.cpp"
        
     PRIV_REQUIRES
         esp_wifi
@@ -17,7 +17,6 @@ idf_component_register(
         esp_tinyusb
         sdmmc
         fatfs
-        ds18b20
         onewire_bus
     INCLUDE_DIRS "."
 )

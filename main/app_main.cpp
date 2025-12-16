@@ -41,7 +41,7 @@
 #include "class/msc/msc.h"
 #include "tusb_msc_storage.h"
 #include "esp_rom_sys.h"
-#include "onewire_ds18b20.h"
+#include "onewire_m1820.h"
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -76,8 +76,8 @@ constexpr gpio_num_t FAN2_TACH = GPIO_NUM_21;
 // Temperature (1-Wire)
 constexpr gpio_num_t TEMP_1WIRE = GPIO_NUM_18;
 constexpr int MAX_TEMP_SENSORS = 8;
-constexpr uint64_t TEMP_ADDR_RAD = 0x77062223A096AD28ULL;
-constexpr uint64_t TEMP_ADDR_LOAD = 0xE80000105FF4E228ULL;
+[[maybe_unused]] constexpr uint64_t TEMP_ADDR_RAD = 0x77062223A096AD28ULL;
+[[maybe_unused]] constexpr uint64_t TEMP_ADDR_LOAD = 0xE80000105FF4E228ULL;
 
 // Hall sensor
 constexpr gpio_num_t MT_HALL_SEN = GPIO_NUM_3;
@@ -291,6 +291,7 @@ struct SharedState {
   int temp_sensor_count = 0;
   std::array<float, MAX_TEMP_SENSORS> temps_c{};
   std::array<std::string, MAX_TEMP_SENSORS> temp_labels{};
+  std::array<std::string, MAX_TEMP_SENSORS> temp_addresses{};
   bool homing = false;
   bool logging = false;
   std::string log_filename;
@@ -519,6 +520,7 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     .files-panel { background: #f4f4ff; padding: 20px; border-radius: 8px; margin-top: 20px; }
     .file-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
     .file-name { word-break: break-all; }
+    .temp-label { font-weight: 600; cursor: help; text-decoration: underline dotted; }
   </style>
 </head>
 <body>
@@ -743,16 +745,17 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       setValueIfIdle('heaterPower', data.heaterPower?.toFixed(1) ?? data.heaterPower ?? 0);
     const list = document.getElementById('tempList');
     const labels = Array.isArray(data.tempLabels) ? data.tempLabels : [];
+    const addresses = Array.isArray(data.tempAddresses) ? data.tempAddresses : [];
       if (Array.isArray(data.tempSensors) && data.tempSensors.length > 0) {
         let html = '';
         data.tempSensors.forEach((t, idx) => {
-          const name = labels[idx] || `Sensor ${idx + 1}`;
+          const name = labels[idx] || `t${idx + 1}`;
+          const addr = addresses[idx] || '';
+          const title = addr ? ` title="1-Wire ${addr}"` : '';
+          const labelHtml = `<span class="temp-label"${title}>${name}</span>`;
           const text = Number.isFinite(t) ? `${t.toFixed(2)} °C` : '--.- °C';
-          if (idx === 0) {
-            html += `<div class="voltage">${name}: ${text}</div>`;
-          } else {
-            html += `<div>${name}: ${text}</div>`;
-          }
+          const classAttr = idx === 0 ? ' class="voltage"' : '';
+          html += `<div${classAttr}>${labelHtml}: ${text}</div>`;
         });
         list.innerHTML = html;
       } else {
@@ -808,7 +811,10 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       for (let i = 0; i < count; i++) {
         const opt = document.createElement('option');
         opt.value = i;
-        opt.textContent = labels[i] || `Sensor ${i + 1}`;
+        const label = labels[i] || `t${i + 1}`;
+        const addr = addresses[i] || '';
+        opt.textContent = addr ? `${label} (${addr})` : label;
+        if (addr) opt.title = `1-Wire ${addr}`;
         if (i === currentSensor) opt.selected = true;
         sensorSelect.appendChild(opt);
       }
@@ -1561,26 +1567,32 @@ esp_err_t InitSpiBus() {
   return spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
 }
 
-std::array<std::string, MAX_TEMP_SENSORS> BuildTempLabels(int count) {
+struct TempMeta {
   std::array<std::string, MAX_TEMP_SENSORS> labels{};
-  uint64_t addrs[MAX_TEMP_SENSORS] = {};
-  const int addr_count = Ds18b20GetAddresses(addrs, MAX_TEMP_SENSORS);
+  std::array<std::string, MAX_TEMP_SENSORS> addresses{};
+};
 
-  bool plate_assigned = false;
-  for (int i = 0; i < count && i < addr_count; ++i) {
-    const uint64_t addr = addrs[i];
-    if (addr == TEMP_ADDR_RAD) {
-      labels[i] = "rad";
-    } else if (addr == TEMP_ADDR_LOAD) {
-      labels[i] = "load";
-    } else if (!plate_assigned) {
-      labels[i] = "plate";
-      plate_assigned = true;
-    } else {
-      labels[i] = "temp" + std::to_string(i + 1);
+std::string FormatOneWireAddress(uint64_t address) {
+  char buf[20];
+  std::snprintf(buf, sizeof(buf), "0x%016llX", static_cast<unsigned long long>(address));
+  return std::string(buf);
+}
+
+TempMeta BuildTempMeta(int count) {
+  TempMeta meta{};
+  uint64_t addrs[MAX_TEMP_SENSORS] = {};
+  const int addr_count = M1820GetAddresses(addrs, MAX_TEMP_SENSORS);
+  const int capped_count = std::min(count, MAX_TEMP_SENSORS);
+
+  for (int i = 0; i < capped_count; ++i) {
+    meta.labels[i] = "t" + std::to_string(i + 1);
+  }
+  for (int i = 0; i < std::min(addr_count, MAX_TEMP_SENSORS); ++i) {
+    if (addrs[i] != 0) {
+      meta.addresses[i] = FormatOneWireAddress(addrs[i]);
     }
   }
-  return labels;
+  return meta;
 }
 
 void InitGpios() {
@@ -1997,12 +2009,16 @@ void TempTask(void*) {
   std::array<float, MAX_TEMP_SENSORS> temps{};
   while (true) {
     int count = 0;
-    if (Ds18b20ReadTemperatures(temps.data(), MAX_TEMP_SENSORS, &count)) {
-      const auto labels = BuildTempLabels(count);
+    if (M1820ReadTemperatures(temps.data(), MAX_TEMP_SENSORS, &count)) {
+      const auto meta = BuildTempMeta(count);
       UpdateState([&](SharedState& s) {
         s.temp_sensor_count = count;
         s.temps_c = temps;
-        s.temp_labels = labels;
+        s.temp_labels = meta.labels;
+        s.temp_addresses = meta.addresses;
+        if (count > 0 && (s.pid_sensor_index >= count || s.pid_sensor_index < 0)) {
+          s.pid_sensor_index = 0;
+        }
       });
       if (count > 0) {
         ESP_LOGI(TAG, "Temps (%d):", count);
@@ -2011,7 +2027,7 @@ void TempTask(void*) {
         }
       }
     } else {
-      ESP_LOGW(TAG, "Ds18b20ReadTemperatures failed");
+      ESP_LOGW(TAG, "M1820ReadTemperatures failed");
       StartErrorBlink();
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -2155,6 +2171,12 @@ esp_err_t DataHandler(httpd_req_t* req) {
     }
   }
   cJSON_AddItemToObject(root, "tempLabels", label_array);
+  cJSON* addr_array = cJSON_CreateArray();
+  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+    const std::string& addr = snapshot.temp_addresses[i];
+    cJSON_AddItemToArray(addr_array, cJSON_CreateString(addr.c_str()));
+  }
+  cJSON_AddItemToObject(root, "tempAddresses", addr_array);
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddBoolToObject(root, "logUseMotor", snapshot.log_use_motor);
@@ -2977,6 +2999,13 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   }
   cJSON_Delete(root);
 
+  SharedState snapshot = CopyState();
+  if (snapshot.temp_sensor_count > 0) {
+    sensor = std::clamp(sensor, 0, snapshot.temp_sensor_count - 1);
+  } else if (sensor < 0) {
+    sensor = 0;
+  }
+
   pid_config.kp = kp;
   pid_config.ki = ki;
   pid_config.kd = kd;
@@ -3234,9 +3263,9 @@ extern "C" void app_main(void) {
   InitGpios();
   InitHeaterPwm();
   InitFanPwm();
-  bool temp_ok = Ds18b20Init(TEMP_1WIRE);
+  bool temp_ok = M1820Init(TEMP_1WIRE);
   if (!temp_ok) {
-    ESP_LOGW(TAG, "DS18B20 init failed or no sensors found");
+    ESP_LOGW(TAG, "M1820 init failed or no sensors found");
     StartErrorBlink();
     init_ok = false;
   }

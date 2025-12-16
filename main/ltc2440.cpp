@@ -104,7 +104,7 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   transaction.tx_buffer = tx;
   transaction.rx_buffer = rx;
 
-  const int kMaxAttempts = 6;
+  const int kMaxAttempts = 8;
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
     esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
     if (ret != ESP_OK) {
@@ -138,7 +138,9 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
     // Busy/invalid header: raise CS, wait briefly, and retry
     if (attempt < kMaxAttempts - 1) {
       gpio_set_level(chip_select_pin_, 1);
-      vTaskDelay(pdMS_TO_TICKS(5));
+      // 0xFF or 0x3x often means "not ready yet" on a shared MISO line; wait longer.
+      const TickType_t wait_ms = (header == 0xFF || prefix == 0b0011) ? 10 : 5;
+      vTaskDelay(pdMS_TO_TICKS(wait_ms));
       gpio_set_level(chip_select_pin_, 0);
       (void)WaitReady_(pdMS_TO_TICKS(200));
       continue;
