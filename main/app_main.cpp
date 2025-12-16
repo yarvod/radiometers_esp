@@ -257,6 +257,7 @@ struct AppConfig {
   std::string logging_postfix;
   bool logging_use_motor = false;
   float logging_duration_s = 1.0f;
+  int stepper_speed_us = 1000;
 };
 
 AppConfig app_config{};
@@ -305,10 +306,11 @@ struct SharedState {
   bool stepper_enabled = false;
   bool stepper_moving = false;
   bool stepper_direction_forward = true;
-  int stepper_speed_us = 500;
+  int stepper_speed_us = 1000;
   int stepper_target = 0;
   int stepper_position = 0;
   int64_t last_step_timestamp_us = 0;
+  bool stepper_abort = false;
   uint64_t last_update_ms = 0;
   bool calibrating = false;
   bool usb_msc_mode = false;
@@ -326,6 +328,7 @@ SharedState CopyState();
 void UpdateState(const std::function<void(SharedState&)>& updater);
 bool MountLogSd();
 void UnmountLogSd();
+static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
 
 // Devices
 LTC2440 adc1(ADC_CS1, ADC_MISO);
@@ -677,8 +680,8 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         
         <div class="form-group">
           <label for="speed">Speed (microseconds delay):</label>
-          <input type="number" id="speed" value="1000" min="50" max="2000">
-          <div class="speed-info">Lower value = faster speed (50-2000 microseconds)</div>
+          <input type="number" id="speed" value="1000" step="1">
+          <div class="speed-info">Lower value = faster speed. Значение берётся из веб-инпута без ограничений и сохраняется в config.txt.</div>
         </div>
         
         <button class="btn btn-stepper" onclick="enableStepper()">Enable Motor</button>
@@ -779,17 +782,18 @@ constexpr char INDEX_HTML[] = R"rawliteral(
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
       document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes' : 'No';
+      setValueIfIdle('speed', data.stepperSpeedUs ?? '');
       document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
       const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
       document.getElementById('usbModeLabel').textContent = modeLabel;
       const usbModeSelect = document.getElementById('usbModeSelect');
       usbModeSelect.value = data.usbMode === 'msc' ? 'msc' : 'cdc';
       usbModeSelect.disabled = !data.usbMscBuilt && data.usbMode !== 'msc';
+      const usbErrorEl = document.getElementById('usbError');
       if (!data.usbMscBuilt) {
         usbErrorEl.textContent = 'Прошивка собрана без MSC. Сборка с CONFIG_TINYUSB_MSC_ENABLED=y обязательна.';
         usbErrorEl.style.display = 'block';
       }
-      const usbErrorEl = document.getElementById('usbError');
       if (data.usbError) {
         usbErrorEl.textContent = data.usbError;
         usbErrorEl.style.display = 'block';
@@ -1161,6 +1165,8 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool log_use_motor_val = false;
   bool log_duration_set = false;
   float log_duration_val = log_config.duration_s;
+  bool stepper_speed_set = false;
+  int stepper_speed_val = config->stepper_speed_us;
   bool pid_enabled_set = false;
   bool pid_enabled_val = false;
   bool pid_kp_set = false, pid_ki_set = false, pid_kd_set = false, pid_sp_set = false, pid_sensor_set = false;
@@ -1244,6 +1250,13 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     } else if (key == "logging_duration_s") {
       log_duration_val = std::strtof(value.c_str(), nullptr);
       log_duration_set = (log_duration_val > 0.0f);
+    } else if (key == "stepper_speed_us") {
+      stepper_speed_val = std::atoi(value.c_str());
+      if (stepper_speed_val > 0) {
+        stepper_speed_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid stepper_speed_us in config.txt");
+      }
     }
   }
 
@@ -1273,6 +1286,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (log_duration_set) {
     config->logging_duration_s = log_duration_val;
     log_config.duration_s = log_duration_val;
+  }
+  if (stepper_speed_set) {
+    config->stepper_speed_us = stepper_speed_val;
+    UpdateState([&](SharedState& s) { s.stepper_speed_us = stepper_speed_val; });
   }
   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
     pid_config.kp = pid_kp;
@@ -1840,16 +1857,18 @@ void DisableStepper() {
 void StopStepper() {
   UpdateState([](SharedState& s) {
     s.stepper_moving = false;
+    s.stepper_abort = true;
+    s.homing = false;
   });
 }
 
 void StartStepperMove(int steps, bool forward, int speed_us) {
-  // Clamp speed to avoid starving CPU/idle (min 1000 us)
-  const int clamped_speed = std::clamp(speed_us, 1000, 2000);
+  const int clamped_speed = std::max(speed_us, 1);
   UpdateState([=](SharedState& s) {
     if (!s.stepper_enabled) {
       return;
     }
+    s.stepper_abort = false;
     s.stepper_direction_forward = forward;
     s.stepper_speed_us = clamped_speed;
     s.stepper_target = s.stepper_position + (forward ? steps : -steps);
@@ -1864,11 +1883,11 @@ void StepperTask(void*) {
   const TickType_t idle_delay_idle = pdMS_TO_TICKS(5);
   while (true) {
     SharedState snapshot = CopyState();
-    if (snapshot.homing) {
+    if (snapshot.homing && !snapshot.stepper_abort) {
       vTaskDelay(idle_delay_idle);
       continue;
     }
-    if (snapshot.stepper_enabled && snapshot.stepper_moving) {
+    if (snapshot.stepper_enabled && snapshot.stepper_moving && !snapshot.stepper_abort) {
       // Reassert direction each loop to avoid spurious flips from noise
       gpio_set_level(STEPPER_DIR, snapshot.stepper_direction_forward ? 1 : 0);
 
@@ -1892,6 +1911,10 @@ void StepperTask(void*) {
         // Yield after step to let lower-priority/idle run
         vTaskDelay(idle_delay_active);
       }
+    } else if (snapshot.stepper_abort) {
+      UpdateState([](SharedState& s) {
+        s.stepper_moving = false;
+      });
     }
     vTaskDelay(snapshot.stepper_moving ? idle_delay_active : idle_delay_idle);
   }
@@ -1970,7 +1993,6 @@ void FanTachTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
-
 void TempTask(void*) {
   std::array<float, MAX_TEMP_SENSORS> temps{};
   while (true) {
@@ -2152,6 +2174,7 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
+  cJSON_AddNumberToObject(root, "stepperSpeedUs", snapshot.stepper_speed_us);
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddStringToObject(root, "usbMode", snapshot.usb_msc_mode ? "msc" : "cdc");
   cJSON_AddBoolToObject(root, "usbMscBuilt", CONFIG_TINYUSB_MSC_ENABLED);
@@ -2210,11 +2233,13 @@ esp_err_t StepperMoveHandler(httpd_req_t* req) {
   const char* direction_str = cJSON_GetObjectItem(root, "direction") && cJSON_GetObjectItem(root, "direction")->valuestring
                                   ? cJSON_GetObjectItem(root, "direction")->valuestring
                                   : "forward";
-  int speed = cJSON_GetObjectItem(root, "speed") ? cJSON_GetObjectItem(root, "speed")->valueint : 500;
+  int speed = cJSON_GetObjectItem(root, "speed") ? cJSON_GetObjectItem(root, "speed")->valueint : app_config.stepper_speed_us;
   cJSON_Delete(root);
 
   steps = std::clamp(steps, 1, 10000);
-  speed = std::clamp(speed, 50, 2000);
+  if (speed <= 0) {
+    speed = 1;
+  }
 
   SharedState snapshot = CopyState();
   if (!snapshot.stepper_enabled) {
@@ -2224,6 +2249,8 @@ esp_err_t StepperMoveHandler(httpd_req_t* req) {
 
   bool forward = std::strcmp(direction_str, "forward") == 0;
   StartStepperMove(steps, forward, speed);
+  app_config.stepper_speed_us = speed;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"movement_started\"}");
@@ -2245,12 +2272,20 @@ esp_err_t StepperZeroHandler(httpd_req_t* req) {
 }
 
 void FindZeroTask(void*) {
+  UpdateState([](SharedState& s) { s.stepper_abort = false; });
+  const bool hall_initial = IsHallTriggered();
+  ESP_LOGI(TAG, "FindZero: start, hall_triggered=%s", hall_initial ? "yes" : "no");
   UpdateState([](SharedState& s) { s.homing = true; });
-  const int step_delay_us = 1000;
+  SharedState snapshot = CopyState();
+  const int step_delay_us = std::max(snapshot.stepper_speed_us, 1);
   int steps = 0;
   const int max_steps = 20000;
   gpio_set_level(STEPPER_DIR, 0);
   while (!IsHallTriggered() && steps < max_steps) {
+    if (CopyState().stepper_abort) {
+      ESP_LOGW(TAG, "FindZero: aborted by user after %d steps", steps);
+      break;
+    }
     gpio_set_level(STEPPER_STEP, 1);
     esp_rom_delay_us(4);
     gpio_set_level(STEPPER_STEP, 0);
@@ -2261,11 +2296,18 @@ void FindZeroTask(void*) {
     esp_rom_delay_us(step_delay_us);
     steps++;
   }
+  const bool hall_after = IsHallTriggered();
+  if (hall_after) {
+    ESP_LOGI(TAG, "FindZero: hall detected after %d steps", steps);
+  } else {
+    ESP_LOGW(TAG, "FindZero: hall NOT detected, stopped after %d steps", steps);
+  }
   UpdateState([](SharedState& s) {
     s.stepper_position = 0;
     s.stepper_target = 0;
     s.stepper_moving = false;
     s.homing = false;
+    s.stepper_abort = false;
   });
   find_zero_task = nullptr;
   vTaskDelete(nullptr);
@@ -2338,6 +2380,7 @@ static bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMo
   }
   fprintf(f, "logging_use_motor = %s\n", (cfg.logging_use_motor ? "true" : "false"));
   fprintf(f, "logging_duration_s = %.3f\n", cfg.logging_duration_s);
+  fprintf(f, "stepper_speed_us = %d\n", cfg.stepper_speed_us);
   fprintf(f, "pid_kp = %.6f\n", pid.kp);
   fprintf(f, "pid_ki = %.6f\n", pid.ki);
   fprintf(f, "pid_kd = %.6f\n", pid.kd);
@@ -2388,11 +2431,16 @@ void LoggingTask(void*) {
     gpio_set_level(STEPPER_DIR, 0);
     int steps = 0;
     const int max_steps = 20000;
+    const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
     while (!IsHallTriggered() && steps < max_steps) {
+      if (CopyState().stepper_abort) {
+        ESP_LOGW(TAG, "Logging home aborted after %d steps", steps);
+        break;
+      }
       gpio_set_level(STEPPER_STEP, 1);
       esp_rom_delay_us(4);
       gpio_set_level(STEPPER_STEP, 0);
-      esp_rom_delay_us(1000);
+      esp_rom_delay_us(step_delay_us);
       steps++;
     }
     DisableStepper();
@@ -2408,11 +2456,16 @@ void LoggingTask(void*) {
     UpdateState([](SharedState& s) { s.homing = true; });
     EnableStepper();
     gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
+    const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
     for (int i = 0; i < steps; ++i) {
+      if (CopyState().stepper_abort) {
+        ESP_LOGW(TAG, "Logging move aborted after %d/%d steps", i, steps);
+        break;
+      }
       gpio_set_level(STEPPER_STEP, 1);
       esp_rom_delay_us(4);
       gpio_set_level(STEPPER_STEP, 0);
-      esp_rom_delay_us(1000);
+      esp_rom_delay_us(step_delay_us);
     }
     DisableStepper();
     UpdateState([&](SharedState& s) {
@@ -2480,11 +2533,21 @@ void LoggingTask(void*) {
     if (log_config.use_motor) {
       EnableStepper();
       home_blocking();
+      if (CopyState().stepper_abort) {
+        ESP_LOGW(TAG, "Logging aborted during homing");
+        StopLogging();
+        vTaskDelete(nullptr);
+      }
     } else if (!log_config.homed_once) {
       EnableStepper();
       home_blocking();
       DisableStepper();
       log_config.homed_once = true;
+      if (CopyState().stepper_abort) {
+        ESP_LOGW(TAG, "Logging aborted during initial homing");
+        StopLogging();
+        vTaskDelete(nullptr);
+      }
     }
 
     SharedState avg1{};
@@ -3197,6 +3260,7 @@ extern "C" void app_main(void) {
     s.pid_kd = pid_config.kd;
     s.pid_setpoint = pid_config.setpoint;
     s.pid_sensor_index = pid_config.sensor_index;
+    s.stepper_speed_us = app_config.stepper_speed_us;
   });
   InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
   StartSntp();
