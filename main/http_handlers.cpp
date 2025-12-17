@@ -480,7 +480,8 @@ void LoggingTask(void*) {
           vTaskDelete(nullptr);
         }
       }
-      EnableStepper();
+      // Между движениями держим мотор отключенным, включая только в move_blocking
+      DisableStepper();
     } else if (!log_config.homed_once) {
       EnableStepper();
       home_blocking();
