@@ -341,6 +341,8 @@ void StopLogging() {
   UpdateState([](SharedState& s) {
     s.logging = false;
     s.log_filename.clear();
+    s.stepper_abort = true;
+    s.stepper_moving = false;
   });
   log_config.active = false;
   log_config.homed_once = false;
@@ -350,12 +352,14 @@ void StopLogging() {
     vTaskDelete(log_task);
     log_task = nullptr;
   }
+  DisableStepper();
 }
 
 void LoggingTask(void*) {
   const int steps_180 = 200;  // adjust to your mechanics (microsteps for 180 degrees)
 
   auto home_blocking = [&]() {
+    UpdateState([](SharedState& s) { s.stepper_abort = false; });
     UpdateState([](SharedState& s) { s.homing = true; });
     EnableStepper();
     gpio_set_level(STEPPER_DIR, 0);
@@ -383,7 +387,7 @@ void LoggingTask(void*) {
   };
 
   auto move_blocking = [&](int steps, bool forward) {
-    UpdateState([](SharedState& s) { s.homing = true; });
+    UpdateState([](SharedState& s) { s.homing = true; s.stepper_abort = false; });
     EnableStepper();
     gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
     const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
@@ -442,6 +446,10 @@ void LoggingTask(void*) {
     return true;
   };
 
+  SharedState pending_base{};
+  bool has_pending_base = false;
+  bool at_zero = true;
+
   while (true) {
     SharedState current = CopyState();
     if (!current.logging || !log_file) {
@@ -461,13 +469,18 @@ void LoggingTask(void*) {
     }
 
     if (log_config.use_motor) {
-      EnableStepper();
-      home_blocking();
-      if (CopyState().stepper_abort) {
-        ESP_LOGW(TAG, "Logging aborted during homing");
-        StopLogging();
-        vTaskDelete(nullptr);
+      if (!log_config.homed_once) {
+        EnableStepper();
+        home_blocking();
+        DisableStepper();
+        log_config.homed_once = true;
+        if (CopyState().stepper_abort) {
+          ESP_LOGW(TAG, "Logging aborted during homing");
+          StopLogging();
+          vTaskDelete(nullptr);
+        }
       }
+      EnableStepper();
     } else if (!log_config.homed_once) {
       EnableStepper();
       home_blocking();
@@ -480,22 +493,72 @@ void LoggingTask(void*) {
       }
     }
 
+    if (log_config.use_motor) {
+      SharedState avg{};
+      if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg)) {
+        ESP_LOGW(TAG, "Logging: no samples collected, retrying");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        continue;
+      }
+
+      if (at_zero) {
+        // Сохраняем базу, уходим назад на 200
+        pending_base = avg;
+        has_pending_base = true;
+        move_blocking(steps_180, false);
+        if (CopyState().stepper_abort) {
+          ESP_LOGW(TAG, "Logging aborted during stepper move");
+          StopLogging();
+          vTaskDelete(nullptr);
+        }
+        at_zero = false;
+        continue;
+      }
+
+      // Мы в -200 (или смещённом), это калибровочный замер
+      if (!has_pending_base) {
+        ESP_LOGW(TAG, "Logging: got cal without base, skipping");
+      } else {
+        SdLockGuard guard(pdMS_TO_TICKS(2000));
+        if (!guard.locked()) {
+          ESP_LOGW(TAG, "SD mutex unavailable, retrying logging write");
+          vTaskDelay(pdMS_TO_TICKS(200));
+          continue;
+        }
+        uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
+        const std::string iso = IsoUtcNow();
+        fprintf(log_file, "%s,%llu,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, pending_base.voltage1, pending_base.voltage2);
+        for (int i = 0; i < pending_base.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+          fprintf(log_file, ",%.2f", pending_base.temps_c[i]);
+        }
+        fprintf(log_file, ",%.3f,%.3f,%.3f", pending_base.ina_bus_voltage, pending_base.ina_current, pending_base.ina_power);
+        fprintf(log_file, ",%.6f,%.6f", avg.voltage1, avg.voltage2);
+        fprintf(log_file, "\n");
+        FlushLogFile();
+        ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+      }
+
+      // Вернуться вперёд на 200 и продолжить цикл
+      move_blocking(steps_180, true);
+      if (CopyState().stepper_abort) {
+        ESP_LOGW(TAG, "Logging aborted during stepper move");
+        StopLogging();
+        vTaskDelete(nullptr);
+      }
+      at_zero = true;
+      has_pending_base = false;
+      continue;
+    }
+
+    // Без мотора — обычный замер
     SharedState avg1{};
     if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg1)) {
       ESP_LOGW(TAG, "Logging: no samples collected, retrying");
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
-
     bool have_cal = false;
     SharedState avg2{};
-    if (log_config.use_motor) {
-      move_blocking(steps_180, false);
-      have_cal = collect_avg(log_config.duration_s, current.temp_sensor_count, &avg2);
-      if (!have_cal) {
-        ESP_LOGW(TAG, "Logging: cal samples unavailable, skipping cal block this cycle");
-      }
-    }
 
     SdLockGuard guard(pdMS_TO_TICKS(2000));
     if (!guard.locked()) {
@@ -537,7 +600,7 @@ bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode
   }
 
   if (log_task == nullptr) {
-    xTaskCreatePinnedToCore(&LoggingTask, "log_task", 4096, nullptr, 2, &log_task, 0);
+    xTaskCreatePinnedToCore(&LoggingTask, "log_task", 6144, nullptr, 2, &log_task, 0);
   }
   ESP_LOGI(TAG, "Logging started");
   UpdateState([&](SharedState& s) {
