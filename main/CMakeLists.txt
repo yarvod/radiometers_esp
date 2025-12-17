@@ -1,6 +1,9 @@
 idf_component_register(
     SRCS
         "app_main.cpp"
+        "app_state.cpp"
+        "http_handlers.cpp"
+        "web_ui.cpp"
         "ltc2440.cpp"
         "onewire_m1820.cpp"
        
