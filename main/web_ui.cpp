@@ -48,6 +48,12 @@ const char INDEX_HTML[] = R"rawliteral(
     .tab-button.active { background: #3498db; color: #fff; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
+    .charts { margin: 16px 0; border: 1px solid #dde; border-radius: 8px; padding: 12px; background: #fafafa; }
+    .chart-row { display: flex; flex-wrap: wrap; gap: 12px; }
+    .chart-box { flex: 1; min-width: 320px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.03); }
+    .chart-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; }
+    .chart-controls input { width: 140px; }
+    canvas.chart { width: 100%; height: 240px; }
   </style>
 </head>
 <body>
@@ -88,6 +94,27 @@ const char INDEX_HTML[] = R"rawliteral(
         </div>
       </div>
     </div>
+
+    <details class="charts" open>
+      <summary><strong>Мониторинг графиков</strong> (аккумулируется в браузере)</summary>
+      <div class="chart-controls">
+        <label for="monitorDuration">Окно, секунд (0 — без лимита):</label>
+        <input type="number" id="monitorDuration" value="60" min="0" step="10">
+        <button class="btn btn-small" id="monitorStartBtn">Запустить монитор</button>
+        <button class="btn btn-small btn-stop" id="monitorStopBtn" disabled>Остановить</button>
+        <span id="monitorStatus" class="note">Выключен</span>
+      </div>
+      <div class="chart-row">
+        <div class="chart-box">
+          <h4>ADC (от времени)</h4>
+          <canvas id="chartAdc" class="chart"></canvas>
+        </div>
+        <div class="chart-box">
+          <h4>Температуры (от времени)</h4>
+          <canvas id="chartTemp" class="chart"></canvas>
+        </div>
+      </div>
+    </details>
     
     <div class="tabs">
       <div class="tab-buttons">
@@ -270,12 +297,187 @@ const char INDEX_HTML[] = R"rawliteral(
     let measurementsInitialized = false;
     const selectedFiles = new Set();
     let cachedFiles = [];
+    const monitorState = {
+      enabled: false,
+      durationMs: 60000,
+      adc: {v1: [], v2: [], v3: []},
+      temps: {}
+    };
 
     function setValueIfIdle(id, value) {
       const el = document.getElementById(id);
       if (el && document.activeElement !== el) {
         el.value = value;
       }
+    }
+
+    function pruneSeries(series, now) {
+      if (monitorState.durationMs <= 0) return series;
+      const cutoff = now - monitorState.durationMs;
+      let idx = 0;
+      while (idx < series.length && series[idx].t < cutoff) idx++;
+      if (idx > 0) {
+        series.splice(0, idx);
+      }
+      return series;
+    }
+
+    function addMonitorSample(data) {
+      if (!monitorState.enabled) return;
+      const now = Date.now();
+      monitorState.adc.v1.push({t: now, v: data.voltage1});
+      monitorState.adc.v2.push({t: now, v: data.voltage2});
+      monitorState.adc.v3.push({t: now, v: data.voltage3});
+      pruneSeries(monitorState.adc.v1, now);
+      pruneSeries(monitorState.adc.v2, now);
+      pruneSeries(monitorState.adc.v3, now);
+
+      const temps = Array.isArray(data.tempSensors) ? data.tempSensors : [];
+      temps.forEach((val, idx) => {
+        if (!monitorState.temps[idx]) monitorState.temps[idx] = [];
+        monitorState.temps[idx].push({t: now, v: val});
+        pruneSeries(monitorState.temps[idx], now);
+      });
+      // Prune old sensor slots if window expired
+      Object.keys(monitorState.temps).forEach(key => {
+        const arr = monitorState.temps[key];
+        pruneSeries(arr, now);
+        if (arr.length === 0 && temps.length < Number(key)) {
+          delete monitorState.temps[key];
+        }
+      });
+      renderCharts();
+    }
+
+    function renderCharts() {
+      renderAdcChart();
+      renderTempChart();
+      const statusEl = document.getElementById('monitorStatus');
+      if (statusEl) {
+        const totalSamples = monitorState.adc.v1.length;
+        statusEl.textContent = monitorState.enabled
+          ? `Работает, точек: ${totalSamples}, окно: ${monitorState.durationMs <= 0 ? '∞' : (monitorState.durationMs/1000 + ' c')}`
+          : 'Выключен';
+      }
+    }
+
+    function drawChart(canvasId, series, opts = {}) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const width = canvas.clientWidth || 600;
+      const height = 240;
+      canvas.width = width;
+      canvas.height = height;
+      ctx.clearRect(0, 0, width, height);
+
+      const padding = {left: 50, right: 10, top: 20, bottom: 28};
+      const allPoints = series.flatMap(s => s.data);
+      if (allPoints.length < 2) {
+        ctx.fillStyle = '#888';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('Недостаточно данных', padding.left, height / 2);
+        return;
+      }
+      const minT = Math.min(...allPoints.map(p => p.t));
+      const maxT = Math.max(...allPoints.map(p => p.t));
+      let minV = Math.min(...allPoints.map(p => p.v));
+      let maxV = Math.max(...allPoints.map(p => p.v));
+      if (minV === maxV) {
+        minV -= 1;
+        maxV += 1;
+      }
+      const xScale = (width - padding.left - padding.right) / Math.max(1, (maxT - minT));
+      const yScale = (height - padding.top - padding.bottom) / (maxV - minV);
+
+      // Axes
+      ctx.strokeStyle = '#ccc';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, padding.top);
+      ctx.lineTo(padding.left, height - padding.bottom);
+      ctx.lineTo(width - padding.right, height - padding.bottom);
+      ctx.stroke();
+
+      const formatTime = t => {
+        const d = new Date(t);
+        return d.toLocaleTimeString();
+      };
+
+      // Ticks (simple: min and max)
+      ctx.fillStyle = '#666';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(minV.toFixed(3), 4, height - padding.bottom);
+      ctx.fillText(maxV.toFixed(3), 4, padding.top + 12);
+      ctx.fillText(formatTime(minT), padding.left, height - 4);
+      ctx.fillText(formatTime(maxT), width - padding.right - 80, height - 4);
+
+      // Series
+      series.forEach((s, idx) => {
+        if (!s.data.length) return;
+        ctx.strokeStyle = s.color || ['#2980b9', '#27ae60', '#e67e22', '#8e44ad'][idx % 4];
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        s.data.forEach((p, i) => {
+          const x = padding.left + (p.t - minT) * xScale;
+          const y = height - padding.bottom - (p.v - minV) * yScale;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+
+      // Legend
+      let lx = padding.left;
+      let ly = padding.top - 8;
+      series.forEach((s, idx) => {
+        ctx.fillStyle = s.color || ['#2980b9', '#27ae60', '#e67e22', '#8e44ad'][idx % 4];
+        ctx.fillRect(lx, ly, 12, 12);
+        ctx.fillStyle = '#333';
+        ctx.fillText(s.label, lx + 16, ly + 10);
+        lx += ctx.measureText(s.label).width + 40;
+      });
+    }
+
+    function renderAdcChart() {
+      const series = [];
+      if (monitorState.adc.v1.length) series.push({label: 'ADC1', color: '#2980b9', data: monitorState.adc.v1});
+      if (monitorState.adc.v2.length) series.push({label: 'ADC2', color: '#27ae60', data: monitorState.adc.v2});
+      if (monitorState.adc.v3.length) series.push({label: 'ADC3', color: '#e67e22', data: monitorState.adc.v3});
+      drawChart('chartAdc', series);
+    }
+
+    function renderTempChart() {
+      const series = [];
+      Object.keys(monitorState.temps).forEach((key, idx) => {
+        const arr = monitorState.temps[key];
+        if (arr && arr.length) {
+          series.push({label: `T${Number(key) + 1}`, color: ['#8e44ad', '#16a085', '#c0392b', '#34495e'][idx % 4], data: arr});
+        }
+      });
+      drawChart('chartTemp', series);
+    }
+
+    function startMonitor() {
+      monitorState.enabled = true;
+      monitorState.adc = {v1: [], v2: [], v3: []};
+      monitorState.temps = {};
+      const durInput = document.getElementById('monitorDuration');
+      const val = Number(durInput?.value || 60);
+      monitorState.durationMs = (Number.isFinite(val) && val > 0) ? val * 1000 : 0;
+      const stopBtn = document.getElementById('monitorStopBtn');
+      const startBtn = document.getElementById('monitorStartBtn');
+      if (stopBtn) stopBtn.disabled = false;
+      if (startBtn) startBtn.disabled = true;
+      renderCharts();
+    }
+
+    function stopMonitor() {
+      monitorState.enabled = false;
+      const stopBtn = document.getElementById('monitorStopBtn');
+      const startBtn = document.getElementById('monitorStartBtn');
+      if (stopBtn) stopBtn.disabled = true;
+      if (startBtn) startBtn.disabled = false;
+      renderCharts();
     }
 
     function updateData(data) {
@@ -356,6 +558,7 @@ const char INDEX_HTML[] = R"rawliteral(
       setValueIfIdle('pidKp', (data.pidKp ?? 0).toFixed(4));
       setValueIfIdle('pidKi', (data.pidKi ?? 0).toFixed(4));
       setValueIfIdle('pidKd', (data.pidKd ?? 0).toFixed(4));
+      addMonitorSample(data);
     }
     
     function setupTabs() {
@@ -764,6 +967,10 @@ const char INDEX_HTML[] = R"rawliteral(
     if (deleteSelectedBtn) {
       deleteSelectedBtn.addEventListener('click', deleteSelectedFiles);
     }
+    const startMonitorBtn = document.getElementById('monitorStartBtn');
+    const stopMonitorBtn = document.getElementById('monitorStopBtn');
+    if (startMonitorBtn) startMonitorBtn.addEventListener('click', startMonitor);
+    if (stopMonitorBtn) stopMonitorBtn.addEventListener('click', stopMonitor);
     setupTabs();
 
     // Auto-refresh every 2 seconds
