@@ -54,6 +54,10 @@ const char INDEX_HTML[] = R"rawliteral(
     .chart-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; }
     .chart-controls input { width: 140px; }
     canvas.chart { width: 100%; height: 240px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+    .legend-item { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; padding: 4px 8px; border-radius: 4px; }
+    .legend-item.disabled { opacity: 0.4; text-decoration: line-through; }
+    .legend-color { width: 14px; height: 14px; border-radius: 3px; }
   </style>
 </head>
 <body>
@@ -108,10 +112,12 @@ const char INDEX_HTML[] = R"rawliteral(
         <div class="chart-box">
           <h4>ADC (от времени)</h4>
           <canvas id="chartAdc" class="chart"></canvas>
+          <div id="legendAdc" class="legend"></div>
         </div>
         <div class="chart-box">
           <h4>Температуры (от времени)</h4>
           <canvas id="chartTemp" class="chart"></canvas>
+          <div id="legendTemp" class="legend"></div>
         </div>
       </div>
     </details>
@@ -301,7 +307,11 @@ const char INDEX_HTML[] = R"rawliteral(
       enabled: false,
       durationMs: 60000,
       adc: {v1: [], v2: [], v3: []},
-      temps: {}
+      temps: {},
+      visible: {
+        adc: {ADC1: true, ADC2: true, ADC3: true},
+        temps: {}
+      }
     };
 
     function setValueIfIdle(id, value) {
@@ -335,6 +345,7 @@ const char INDEX_HTML[] = R"rawliteral(
       const temps = Array.isArray(data.tempSensors) ? data.tempSensors : [];
       temps.forEach((val, idx) => {
         if (!monitorState.temps[idx]) monitorState.temps[idx] = [];
+        if (monitorState.visible.temps[idx] === undefined) monitorState.visible.temps[idx] = true;
         monitorState.temps[idx].push({t: now, v: val});
         pruneSeries(monitorState.temps[idx], now);
       });
@@ -359,6 +370,25 @@ const char INDEX_HTML[] = R"rawliteral(
           ? `Работает, точек: ${totalSamples}, окно: ${monitorState.durationMs <= 0 ? '∞' : (monitorState.durationMs/1000 + ' c')}`
           : 'Выключен';
       }
+    }
+
+    function niceTicks(min, max, count) {
+      const span = max - min;
+      if (span === 0) return [min, max];
+      const step0 = span / Math.max(1, count - 1);
+      const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+      const norm = step0 / mag;
+      let step = mag;
+      if (norm > 5) step = 10 * mag;
+      else if (norm > 2) step = 5 * mag;
+      else if (norm > 1) step = 2 * mag;
+      const tickMin = Math.floor(min / step) * step;
+      const tickMax = Math.ceil(max / step) * step;
+      const ticks = [];
+      for (let v = tickMin; v <= tickMax + step * 0.5; v += step) {
+        ticks.push(v);
+      }
+      return ticks;
     }
 
     function drawChart(canvasId, series, opts = {}) {
@@ -390,25 +420,43 @@ const char INDEX_HTML[] = R"rawliteral(
       const xScale = (width - padding.left - padding.right) / Math.max(1, (maxT - minT));
       const yScale = (height - padding.top - padding.bottom) / (maxV - minV);
 
-      // Axes
-      ctx.strokeStyle = '#ccc';
+      const formatTime = t => {
+        const d = new Date(t);
+        return d.toLocaleTimeString();
+      };
+      const xTicks = 5;
+      const yTicks = niceTicks(minV, maxV, 5);
+
+      // Grid + axes
+      ctx.strokeStyle = '#e0e0e0';
       ctx.lineWidth = 1;
+      yTicks.forEach(v => {
+        const y = height - padding.bottom - (v - minV) * yScale;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+        ctx.fillStyle = '#666';
+        ctx.font = '12px sans-serif';
+        ctx.fillText(v.toFixed(3), 4, y + 4);
+      });
+      for (let i = 0; i <= xTicks; i++) {
+        const t = minT + (span => span !== undefined ? span : (maxT - minT))(maxT - minT) * (i / xTicks);
+        const x = padding.left + (t - minT) * xScale;
+        ctx.beginPath();
+        ctx.moveTo(x, padding.top);
+        ctx.lineTo(x, height - padding.bottom);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = '#bbb';
       ctx.beginPath();
       ctx.moveTo(padding.left, padding.top);
       ctx.lineTo(padding.left, height - padding.bottom);
       ctx.lineTo(width - padding.right, height - padding.bottom);
       ctx.stroke();
 
-      const formatTime = t => {
-        const d = new Date(t);
-        return d.toLocaleTimeString();
-      };
-
-      // Ticks (simple: min and max)
       ctx.fillStyle = '#666';
       ctx.font = '12px sans-serif';
-      ctx.fillText(minV.toFixed(3), 4, height - padding.bottom);
-      ctx.fillText(maxV.toFixed(3), 4, padding.top + 12);
       ctx.fillText(formatTime(minT), padding.left, height - 4);
       ctx.fillText(formatTime(maxT), width - padding.right - 80, height - 4);
 
@@ -426,35 +474,66 @@ const char INDEX_HTML[] = R"rawliteral(
         ctx.stroke();
       });
 
-      // Legend
-      let lx = padding.left;
-      let ly = padding.top - 8;
-      series.forEach((s, idx) => {
-        ctx.fillStyle = s.color || ['#2980b9', '#27ae60', '#e67e22', '#8e44ad'][idx % 4];
-        ctx.fillRect(lx, ly, 12, 12);
-        ctx.fillStyle = '#333';
-        ctx.fillText(s.label, lx + 16, ly + 10);
-        lx += ctx.measureText(s.label).width + 40;
+      // Legend drawn outside (HTML)
+    }
+
+    function renderLegend(containerId, items, group) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      container.innerHTML = '';
+      items.forEach(item => {
+        const el = document.createElement('div');
+        el.className = 'legend-item' + (item.visible ? '' : ' disabled');
+        el.onclick = () => toggleSeries(group, item.key);
+        const color = document.createElement('div');
+        color.className = 'legend-color';
+        color.style.background = item.color;
+        const label = document.createElement('span');
+        label.textContent = item.label;
+        el.appendChild(color);
+        el.appendChild(label);
+        container.appendChild(el);
       });
+    }
+
+    function toggleSeries(group, key) {
+      if (!monitorState.visible[group]) monitorState.visible[group] = {};
+      const current = monitorState.visible[group][key] !== false;
+      monitorState.visible[group][key] = !current;
+      renderCharts();
     }
 
     function renderAdcChart() {
       const series = [];
-      if (monitorState.adc.v1.length) series.push({label: 'ADC1', color: '#2980b9', data: monitorState.adc.v1});
-      if (monitorState.adc.v2.length) series.push({label: 'ADC2', color: '#27ae60', data: monitorState.adc.v2});
-      if (monitorState.adc.v3.length) series.push({label: 'ADC3', color: '#e67e22', data: monitorState.adc.v3});
+      const vis = monitorState.visible.adc;
+      if (monitorState.adc.v1.length && vis.ADC1 !== false) series.push({key: 'ADC1', label: 'ADC1', color: '#2980b9', data: monitorState.adc.v1});
+      if (monitorState.adc.v2.length && vis.ADC2 !== false) series.push({key: 'ADC2', label: 'ADC2', color: '#27ae60', data: monitorState.adc.v2});
+      if (monitorState.adc.v3.length && vis.ADC3 !== false) series.push({key: 'ADC3', label: 'ADC3', color: '#e67e22', data: monitorState.adc.v3});
       drawChart('chartAdc', series);
+      renderLegend('legendAdc', [
+        {key: 'ADC1', label: 'ADC1', color: '#2980b9', visible: vis.ADC1 !== false},
+        {key: 'ADC2', label: 'ADC2', color: '#27ae60', visible: vis.ADC2 !== false},
+        {key: 'ADC3', label: 'ADC3', color: '#e67e22', visible: vis.ADC3 !== false},
+      ], 'adc');
     }
 
     function renderTempChart() {
       const series = [];
       Object.keys(monitorState.temps).forEach((key, idx) => {
         const arr = monitorState.temps[key];
-        if (arr && arr.length) {
-          series.push({label: `T${Number(key) + 1}`, color: ['#8e44ad', '#16a085', '#c0392b', '#34495e'][idx % 4], data: arr});
+        const visible = monitorState.visible.temps[key] !== false;
+        if (arr && arr.length && visible) {
+          series.push({key, label: `T${Number(key) + 1}`, color: ['#8e44ad', '#16a085', '#c0392b', '#34495e', '#2c3e50'][idx % 5], data: arr});
         }
       });
       drawChart('chartTemp', series);
+      const legendItems = Object.keys(monitorState.temps).map((key, idx) => ({
+        key,
+        label: `T${Number(key) + 1}`,
+        color: ['#8e44ad', '#16a085', '#c0392b', '#34495e', '#2c3e50'][idx % 5],
+        visible: monitorState.visible.temps[key] !== false,
+      }));
+      renderLegend('legendTemp', legendItems, 'temps');
     }
 
     function startMonitor() {
