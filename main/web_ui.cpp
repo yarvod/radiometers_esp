@@ -32,7 +32,6 @@ const char INDEX_HTML[] = R"rawliteral(
     label { display: block; margin-bottom: 5px; font-weight: bold; }
     input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
     .speed-info { font-size: 12px; color: #666; margin-top: 5px; }
-    .usb-panel { background: #eef7e8; padding: 20px; border-radius: 8px; margin-top: 10px; }
     .note { font-size: 12px; color: #666; margin-top: 5px; }
     .files-panel { background: #f4f4ff; padding: 20px; border-radius: 8px; margin-top: 20px; }
     .file-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -217,18 +216,6 @@ const char INDEX_HTML[] = R"rawliteral(
       <br>USB mode: <span id="usbModeLabel">Serial (logs/flash)</span>
     </div>
 
-    <div class="usb-panel">
-      <h3>USB Mode (requires reboot)</h3>
-      <label for="usbModeSelect">Select mode:</label>
-      <select id="usbModeSelect">
-        <option value="cdc">Serial (logs + flashing)</option>
-        <option value="msc">Mass Storage (SD card over USB)</option>
-      </select>
-      <div class="note">MSC отключает доступ к логам/прошивке, даёт доступ к SD по USB. Переключение перезагружает устройство.</div>
-      <button class="btn" onclick="applyUsbMode()">Apply & Reboot</button>
-      <div class="note" id="usbError" style="color:#c0392b; display:none;"></div>
-    </div>
-
     <div class="files-panel">
       <h3>Файлы на SD</h3>
       <div class="form-group file-actions">
@@ -312,20 +299,6 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
       const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
       document.getElementById('usbModeLabel').textContent = modeLabel;
-      const usbModeSelect = document.getElementById('usbModeSelect');
-      usbModeSelect.value = data.usbMode === 'msc' ? 'msc' : 'cdc';
-      usbModeSelect.disabled = !data.usbMscBuilt && data.usbMode !== 'msc';
-      const usbErrorEl = document.getElementById('usbError');
-      if (!data.usbMscBuilt) {
-        usbErrorEl.textContent = 'Прошивка собрана без MSC. Сборка с CONFIG_TINYUSB_MSC_ENABLED=y обязательна.';
-        usbErrorEl.style.display = 'block';
-      }
-      if (data.usbError) {
-        usbErrorEl.textContent = data.usbError;
-        usbErrorEl.style.display = 'block';
-      } else {
-        usbErrorEl.style.display = 'none';
-      }
 
       const sensorSelect = document.getElementById('pidSensor');
       const currentSensor = data.pidSensorIndex ?? 0;
@@ -748,28 +721,6 @@ const char INDEX_HTML[] = R"rawliteral(
     // Initial load
     refreshData();
     loadFiles();
-
-    function applyUsbMode() {
-      const mode = document.getElementById('usbModeSelect').value;
-      const confirmText = mode === 'msc'
-        ? 'Переключиться в Mass Storage. Логи/прошивка по USB станут недоступны. Перезагрузить устройство?'
-        : 'Вернуть USB в режим Serial (логи/прошивка). Устройство перезагрузится. Продолжить?';
-      if (!confirm(confirmText)) return;
-      fetch('/usb/mode', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({mode})
-      }).then(res => {
-        if (!res.ok) {
-          return res.text().then(t => { throw new Error(t || 'Request failed'); });
-        }
-        return res.text();
-      }).then(() => {
-        alert('Переключаюсь, устройство перезагрузится');
-      }).catch(err => {
-        alert('Не удалось переключить: ' + err.message);
-      });
-    }
   </script>
 </body>
 </html>
