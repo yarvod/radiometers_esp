@@ -100,7 +100,7 @@ const char INDEX_HTML[] = R"rawliteral(
     </div>
 
     <details class="charts" open>
-      <summary><strong>Мониторинг графиков</strong> (аккумулируется в браузере)</summary>
+      <summary><strong>Мониторинг графиков</strong></summary>
       <div class="chart-controls">
         <label for="monitorDuration">Окно, секунд (0 — без лимита):</label>
         <input type="number" id="monitorDuration" value="60" min="0" step="10">
