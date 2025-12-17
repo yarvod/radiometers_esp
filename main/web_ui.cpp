@@ -42,6 +42,12 @@ const char INDEX_HTML[] = R"rawliteral(
     .checkbox-label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
     .file-name { word-break: break-all; }
     .temp-label { font-weight: 600; cursor: help; text-decoration: underline dotted; }
+    .tabs { margin-top: 20px; }
+    .tab-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .tab-button { background: #ecf0f1; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    .tab-button.active { background: #3498db; color: #fff; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
   </style>
 </head>
 <body>
@@ -83,150 +89,180 @@ const char INDEX_HTML[] = R"rawliteral(
       </div>
     </div>
     
-    <div class="controls">
-      <div class="control-panel">
-        <h3>ADC Controls</h3>
-        <button class="btn" onclick="refreshData()">Refresh Data</button>
-        <button class="btn btn-calibrate" onclick="calibrate()">Calibrate Zero</button>
+    <div class="tabs">
+      <div class="tab-buttons">
+        <button class="tab-button active" data-tab="tab-measurement">Measurement</button>
+        <button class="tab-button" data-tab="tab-heat">Heat</button>
+        <button class="tab-button" data-tab="tab-stepper">Stepper</button>
+        <button class="tab-button" data-tab="tab-wifi">Wi‑Fi</button>
+        <button class="tab-button" data-tab="tab-files">Files</button>
       </div>
 
-      <div class="control-panel">
-        <h3>Heater Control</h3>
-        <div class="form-group">
-          <label for="heaterPower">Power (%)</label>
-          <input type="number" id="heaterPower" value="0" min="0" max="100" step="0.1">
+      <div id="tab-measurement" class="tab-content active">
+        <div class="controls">
+          <div class="control-panel">
+            <h3>ADC Controls</h3>
+            <button class="btn" onclick="refreshData()">Refresh Data</button>
+            <button class="btn btn-calibrate" onclick="calibrate()">Calibrate Zero</button>
+          </div>
+
+          <div class="control-panel">
+            <h3>Measurements</h3>
+            <div class="form-group">
+              <label for="logFilename">Filename (on SD)</label>
+              <input type="text" id="logFilename" value="log.txt">
+            </div>
+            <div class="form-group">
+              <label><input type="checkbox" id="logUseMotor"> Use motor (home + 90° sweep)</label>
+            </div>
+            <div class="form-group">
+              <label for="logDuration">Averaging duration, sec</label>
+              <input type="number" id="logDuration" value="1" min="0.1" step="0.1">
+            </div>
+            <div>Status: <span id="logStatus">Idle</span></div>
+            <button class="btn" onclick="startLog()">Start Logging</button>
+            <button class="btn btn-stop" onclick="stopLog()">Stop Logging</button>
+          </div>
         </div>
-        <button class="btn" onclick="setHeater()">Set Heater</button>
+        <div class="status">
+          Last update: <span id="lastUpdate">-</span>
+          <br>USB mode: <span id="usbModeLabel">Serial (logs/flash)</span>
+        </div>
       </div>
 
-      <div class="control-panel">
-        <h3>Wi-Fi</h3>
-        <div class="form-group">
-          <label for="wifiMode">Mode</label>
-          <select id="wifiMode">
-            <option value="sta">Connect to Wi‑Fi</option>
-            <option value="ap">Share own Wi‑Fi</option>
-          </select>
+      <div id="tab-heat" class="tab-content">
+        <div class="controls">
+          <div class="control-panel">
+            <h3>Heater Control</h3>
+            <div class="form-group">
+              <label for="heaterPower">Power (%)</label>
+              <input type="number" id="heaterPower" value="0" min="0" max="100" step="0.1">
+            </div>
+            <button class="btn" onclick="setHeater()">Set Heater</button>
+          </div>
+
+          <div class="control-panel">
+            <h3>Heater PID Control</h3>
+            <div class="form-group">
+              <label for="pidSetpoint">Target Temp (°C)</label>
+              <input type="number" id="pidSetpoint" value="25" step="0.1">
+            </div>
+            <div class="form-group">
+              <label for="pidSensor">Sensor</label>
+              <select id="pidSensor">
+                <option value="0">Sensor 1</option>
+                <option value="1">Sensor 2</option>
+                <option value="2">Sensor 3</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="pidKp">Kp</label>
+              <input type="number" id="pidKp" value="1" step="0.01">
+            </div>
+            <div class="form-group">
+              <label for="pidKi">Ki</label>
+              <input type="number" id="pidKi" value="0" step="0.01">
+            </div>
+            <div class="form-group">
+              <label for="pidKd">Kd</label>
+              <input type="number" id="pidKd" value="0" step="0.01">
+            </div>
+            <div>Status: <span id="pidStatus">Off</span></div>
+            <button class="btn" onclick="applyPid()">Apply PID</button>
+            <button class="btn btn-stepper" onclick="enablePid()">Enable PID</button>
+            <button class="btn btn-stop" onclick="disablePid()">Disable PID</button>
+          </div>
+
+          <div class="control-panel">
+            <h3>Fan Control</h3>
+            <div class="form-group">
+              <label for="fanPower">Fan Power (%)</label>
+              <input type="number" id="fanPower" value="100" min="0" max="100" step="1">
+            </div>
+            <button class="btn" onclick="setFan()">Set Fan</button>
+          </div>
         </div>
-        <div class="form-group">
-          <label for="wifiSsid">SSID</label>
-          <input type="text" id="wifiSsid" value="">
-        </div>
-        <div class="form-group">
-          <label for="wifiPassword">Password</label>
-          <input type="text" id="wifiPassword" value="">
-        </div>
-        <button class="btn" onclick="applyWifi()">Apply Wi‑Fi</button>
       </div>
 
-      <div class="control-panel">
-        <h3>Measurements</h3>
-        <div class="form-group">
-          <label for="logFilename">Filename (on SD)</label>
-          <input type="text" id="logFilename" value="log.txt">
+      <div id="tab-stepper" class="tab-content">
+        <div class="controls">
+          <div class="control-panel">
+            <h3>Stepper Motor Control</h3>
+            <div class="stepper-status">
+              Status: <span id="stepperStatus">Disabled</span><br>
+              Position: <span id="stepperPosition">0</span> steps<br>
+              Target: <span id="stepperTarget">0</span> steps<br>
+              Moving: <span id="stepperMoving">No</span>
+            </div>
+            
+            <div class="form-group">
+              <label for="steps">Number of Steps:</label>
+              <input type="number" id="steps" value="400" min="1" max="10000">
+            </div>
+            
+            <div class="form-group">
+              <label for="direction">Direction:</label>
+              <select id="direction">
+                <option value="forward">Forward</option>
+                <option value="backward">Backward</option>
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label for="speed">Speed (microseconds delay):</label>
+              <input type="number" id="speed" value="1000" step="1">
+              <div class="speed-info">Lower value = faster speed. Значение берётся из веб-инпута без ограничений и сохраняется в config.txt.</div>
+            </div>
+            
+            <button class="btn btn-stepper" onclick="enableStepper()">Enable Motor</button>
+            <button class="btn btn-stop" onclick="disableStepper()">Disable Motor</button>
+            <button class="btn" onclick="moveStepper()">Move</button>
+            <button class="btn btn-stop" onclick="stopStepper()">Stop</button>
+            <button class="btn" onclick="setZero()">Set Position to Zero</button>
+            <button class="btn" onclick="findZero()">Find Zero (Hall)</button>
+          </div>
         </div>
-        <div class="form-group">
-          <label><input type="checkbox" id="logUseMotor"> Use motor (home + 90° sweep)</label>
-        </div>
-        <div class="form-group">
-          <label for="logDuration">Averaging duration, sec</label>
-          <input type="number" id="logDuration" value="1" min="0.1" step="0.1">
-        </div>
-        <div>Status: <span id="logStatus">Idle</span></div>
-        <button class="btn" onclick="startLog()">Start Logging</button>
-        <button class="btn btn-stop" onclick="stopLog()">Stop Logging</button>
       </div>
 
-      <div class="control-panel">
-        <h3>Fan Control</h3>
-        <div class="form-group">
-          <label for="fanPower">Fan Power (%)</label>
-          <input type="number" id="fanPower" value="100" min="0" max="100" step="1">
+      <div id="tab-wifi" class="tab-content">
+        <div class="controls">
+          <div class="control-panel">
+            <h3>Wi‑Fi</h3>
+            <div class="form-group">
+              <label for="wifiMode">Mode</label>
+              <select id="wifiMode">
+                <option value="sta">Connect to Wi‑Fi</option>
+                <option value="ap">Share own Wi‑Fi</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="wifiSsid">SSID</label>
+              <input type="text" id="wifiSsid" value="">
+            </div>
+            <div class="form-group">
+              <label for="wifiPassword">Password</label>
+              <input type="text" id="wifiPassword" value="">
+            </div>
+            <button class="btn" onclick="applyWifi()">Apply Wi‑Fi</button>
+          </div>
         </div>
-        <button class="btn" onclick="setFan()">Set Fan</button>
       </div>
 
-      <div class="control-panel">
-        <h3>Heater PID Control</h3>
-        <div class="form-group">
-          <label for="pidSetpoint">Target Temp (°C)</label>
-          <input type="number" id="pidSetpoint" value="25" step="0.1">
+      <div id="tab-files" class="tab-content">
+        <div class="files-panel">
+          <h3>Файлы на SD</h3>
+          <div class="form-group file-actions">
+            <label class="checkbox-label"><input type="checkbox" id="selectAllFiles"> Выбрать все</label>
+            <div class="file-buttons">
+              <button class="btn" onclick="loadFiles()">Обновить список</button>
+              <button class="btn btn-stop" id="deleteSelectedBtn" disabled>Удалить выбранные</button>
+            </div>
+          </div>
+          <div id="fileList"></div>
+          <div class="note">Можно скачать или удалить файл. config.txt защищён от удаления. Одновременная запись логов и скачивание синхронизированы мьютексом.</div>
         </div>
-        <div class="form-group">
-          <label for="pidSensor">Sensor</label>
-          <select id="pidSensor"></select>
-        </div>
-        <div class="form-group">
-          <label for="pidKp">Kp</label>
-          <input type="number" id="pidKp" value="1" step="0.01">
-        </div>
-        <div class="form-group">
-          <label for="pidKi">Ki</label>
-          <input type="number" id="pidKi" value="0" step="0.01">
-        </div>
-        <div class="form-group">
-          <label for="pidKd">Kd</label>
-          <input type="number" id="pidKd" value="0" step="0.01">
-        </div>
-        <div>Status: <span id="pidStatus">Off</span></div>
-        <button class="btn" onclick="applyPid()">Apply PID</button>
-        <button class="btn btn-stepper" onclick="enablePid()">Enable PID</button>
-        <button class="btn btn-stop" onclick="disablePid()">Disable PID</button>
-      </div>
-      
-      <div class="control-panel">
-        <h3>Stepper Motor Control</h3>
-        <div class="stepper-status">
-          Status: <span id="stepperStatus">Disabled</span><br>
-          Position: <span id="stepperPosition">0</span> steps<br>
-          Target: <span id="stepperTarget">0</span> steps<br>
-          Moving: <span id="stepperMoving">No</span>
-        </div>
-        
-        <div class="form-group">
-          <label for="steps">Number of Steps:</label>
-          <input type="number" id="steps" value="400" min="1" max="10000">
-        </div>
-        
-        <div class="form-group">
-          <label for="direction">Direction:</label>
-          <select id="direction">
-            <option value="forward">Forward</option>
-            <option value="backward">Backward</option>
-          </select>
-        </div>
-        
-        <div class="form-group">
-          <label for="speed">Speed (microseconds delay):</label>
-          <input type="number" id="speed" value="1000" step="1">
-          <div class="speed-info">Lower value = faster speed. Значение берётся из веб-инпута без ограничений и сохраняется в config.txt.</div>
-        </div>
-        
-        <button class="btn btn-stepper" onclick="enableStepper()">Enable Motor</button>
-        <button class="btn btn-stop" onclick="disableStepper()">Disable Motor</button>
-        <button class="btn" onclick="moveStepper()">Move</button>
-        <button class="btn btn-stop" onclick="stopStepper()">Stop</button>
-        <button class="btn" onclick="setZero()">Set Position to Zero</button>
-        <button class="btn" onclick="findZero()">Find Zero (Hall)</button>
       </div>
     </div>
-    
-    <div class="status">
-      Last update: <span id="lastUpdate">-</span>
-      <br>USB mode: <span id="usbModeLabel">Serial (logs/flash)</span>
-    </div>
-
-    <div class="files-panel">
-      <h3>Файлы на SD</h3>
-      <div class="form-group file-actions">
-        <label class="checkbox-label"><input type="checkbox" id="selectAllFiles"> Выбрать все</label>
-        <div class="file-buttons">
-          <button class="btn" onclick="loadFiles()">Обновить список</button>
-          <button class="btn btn-stop" id="deleteSelectedBtn" disabled>Удалить выбранные</button>
-        </div>
-      </div>
-      <div id="fileList"></div>
-      <div class="note">Можно скачать или удалить файл. config.txt защищён от удаления. Одновременная запись логов и скачивание синхронизированы мьютексом.</div>
     </div>
   </div>
 
@@ -320,6 +356,20 @@ const char INDEX_HTML[] = R"rawliteral(
       setValueIfIdle('pidKp', (data.pidKp ?? 0).toFixed(4));
       setValueIfIdle('pidKi', (data.pidKi ?? 0).toFixed(4));
       setValueIfIdle('pidKd', (data.pidKd ?? 0).toFixed(4));
+    }
+    
+    function setupTabs() {
+      const buttons = Array.from(document.querySelectorAll('.tab-button'));
+      const contents = Array.from(document.querySelectorAll('.tab-content'));
+      const activate = (id) => {
+        contents.forEach(c => c.classList.toggle('active', c.id === id));
+        buttons.forEach(b => b.classList.toggle('active', b.dataset.tab === id));
+      };
+      buttons.forEach(btn => {
+        btn.addEventListener('click', () => activate(btn.dataset.tab));
+      });
+      const initial = buttons.find(b => b.classList.contains('active'));
+      if (initial) activate(initial.dataset.tab);
     }
     
     function refreshData() {
@@ -714,6 +764,7 @@ const char INDEX_HTML[] = R"rawliteral(
     if (deleteSelectedBtn) {
       deleteSelectedBtn.addEventListener('click', deleteSelectedFiles);
     }
+    setupTabs();
 
     // Auto-refresh every 2 seconds
     setInterval(refreshData, 2000);
