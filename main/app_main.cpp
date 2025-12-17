@@ -8,6 +8,7 @@
 #include <array>
 #include <string>
 #include <vector>
+#include <set>
 #include <ctime>
 #include <cstdint>
 
@@ -518,7 +519,12 @@ constexpr char INDEX_HTML[] = R"rawliteral(
     .usb-panel { background: #eef7e8; padding: 20px; border-radius: 8px; margin-top: 10px; }
     .note { font-size: 12px; color: #666; margin-top: 5px; }
     .files-panel { background: #f4f4ff; padding: 20px; border-radius: 8px; margin-top: 20px; }
+    .file-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .file-actions .file-buttons { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .file-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
+    .file-info { display: flex; align-items: center; gap: 10px; }
+    .file-checkbox { width: 18px; height: 18px; }
+    .checkbox-label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
     .file-name { word-break: break-all; }
     .temp-label { font-weight: 600; cursor: help; text-decoration: underline dotted; }
   </style>
@@ -714,16 +720,22 @@ constexpr char INDEX_HTML[] = R"rawliteral(
 
     <div class="files-panel">
       <h3>Файлы на SD</h3>
-      <div class="form-group">
-        <button class="btn" onclick="loadFiles()">Обновить список</button>
+      <div class="form-group file-actions">
+        <label class="checkbox-label"><input type="checkbox" id="selectAllFiles"> Выбрать все</label>
+        <div class="file-buttons">
+          <button class="btn" onclick="loadFiles()">Обновить список</button>
+          <button class="btn btn-stop" id="deleteSelectedBtn" disabled>Удалить выбранные</button>
+        </div>
       </div>
       <div id="fileList"></div>
-      <div class="note">Можно скачать или удалить файл. Одновременная запись логов и скачивание синхронизированы мьютексом.</div>
+      <div class="note">Можно скачать или удалить файл. config.txt защищён от удаления. Одновременная запись логов и скачивание синхронизированы мьютексом.</div>
     </div>
   </div>
 
 <script>
     let measurementsInitialized = false;
+    const selectedFiles = new Set();
+    let cachedFiles = [];
 
     function setValueIfIdle(id, value) {
       const el = document.getElementById(id);
@@ -1026,20 +1038,143 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         .catch(() => refreshData());
     }
 
+    function getFileName(item) {
+      if (item && typeof item === 'object') {
+        return item.name || '';
+      }
+      return typeof item === 'string' ? item : '';
+    }
+
+    function refreshSelectionState() {
+      const available = new Set(cachedFiles.map(getFileName).filter(name => name && name !== 'config.txt'));
+      Array.from(selectedFiles).forEach(name => {
+        if (!available.has(name)) {
+          selectedFiles.delete(name);
+        }
+      });
+    }
+
+    function updateSelectionControls() {
+      const selectAll = document.getElementById('selectAllFiles');
+      const deleteBtn = document.getElementById('deleteSelectedBtn');
+      const selectableCount = cachedFiles.filter(item => {
+        const name = getFileName(item);
+        return name && name !== 'config.txt';
+      }).length;
+      const selectedCount = selectedFiles.size;
+      if (selectAll) {
+        selectAll.checked = selectableCount > 0 && selectedCount === selectableCount;
+        selectAll.indeterminate = selectedCount > 0 && selectedCount < selectableCount;
+      }
+      if (deleteBtn) {
+        deleteBtn.disabled = selectedCount === 0;
+      }
+    }
+
+    function toggleFileSelection(name, checked) {
+      if (!name || name === 'config.txt') return;
+      if (checked) {
+        selectedFiles.add(name);
+      } else {
+        selectedFiles.delete(name);
+      }
+      updateSelectionControls();
+    }
+
+    function toggleSelectAll(checked) {
+      cachedFiles.forEach(item => {
+        const name = getFileName(item);
+        if (!name || name === 'config.txt') return;
+        if (checked) {
+          selectedFiles.add(name);
+        } else {
+          selectedFiles.delete(name);
+        }
+      });
+      renderFiles(cachedFiles);
+    }
+
+    function sendDeleteRequest(files) {
+      const unique = Array.from(new Set(files.filter(name => name && name !== 'config.txt')));
+      if (unique.length === 0) {
+        alert('Нет выбранных файлов для удаления');
+        return Promise.resolve();
+      }
+      if (!confirm(`Удалить ${unique.length} файл(ов)?`)) {
+        return Promise.resolve();
+      }
+      return fetch('/fs/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: unique }),
+      }).then(async res => {
+        const text = await res.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+        if (!res.ok) {
+          throw new Error(data?.error || data?.message || text || 'Не удалось удалить файлы');
+        }
+        return data;
+      }).then(result => {
+        selectedFiles.clear();
+        loadFiles();
+        const deleted = Array.isArray(result.deleted) ? result.deleted : [];
+        const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+        const failed = Array.isArray(result.failed) ? result.failed : [];
+        if (deleted.length === 0 && skipped.length === 0 && failed.length === 0) {
+          return;
+        }
+        let msg = '';
+        if (deleted.length) msg += `Удалены: ${deleted.join(', ')}. `;
+        if (skipped.length) msg += `Пропущены: ${skipped.join(', ')}. `;
+        if (failed.length) msg += `Ошибки: ${failed.join(', ')}.`;
+        if (msg.trim()) {
+          alert(msg.trim());
+        }
+      }).catch(err => {
+        alert(err.message || 'Не удалось удалить файлы');
+      });
+    }
+
+    function deleteSelectedFiles() {
+      return sendDeleteRequest(Array.from(selectedFiles));
+    }
+
+    function deleteSingleFile(name) {
+      return sendDeleteRequest([name]);
+    }
+
     function renderFiles(files) {
       const listEl = document.getElementById('fileList');
+      cachedFiles = Array.isArray(files) ? files : [];
+      refreshSelectionState();
       if (!listEl) return;
       if (!Array.isArray(files) || files.length === 0) {
         listEl.innerHTML = '<div>Нет файлов</div>';
+        updateSelectionControls();
         return;
       }
       listEl.innerHTML = '';
-      files.forEach(item => {
-        const name = (item && typeof item === 'object') ? item.name : item;
+      cachedFiles.forEach(item => {
+        const name = getFileName(item);
         const sizeBytes = (item && typeof item === 'object' && Number.isFinite(item.size)) ? item.size : null;
         if (!name) return;
         const row = document.createElement('div');
         row.className = 'file-row';
+
+        const info = document.createElement('div');
+        info.className = 'file-info';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'file-checkbox';
+        checkbox.disabled = name === 'config.txt';
+        checkbox.checked = selectedFiles.has(name);
+        checkbox.onchange = () => {
+          toggleFileSelection(name, checkbox.checked);
+          updateSelectionControls();
+        };
+
         const left = document.createElement('span');
         left.className = 'file-name';
         let sizeText = '';
@@ -1047,6 +1182,10 @@ constexpr char INDEX_HTML[] = R"rawliteral(
           sizeText = ` (${(sizeBytes / (1024 * 1024)).toFixed(2)} MB)`;
         }
         left.textContent = name + sizeText;
+
+        info.appendChild(checkbox);
+        info.appendChild(left);
+
         const actions = document.createElement('div');
 
         const dlBtn = document.createElement('button');
@@ -1057,22 +1196,16 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-small btn-stop';
         delBtn.textContent = 'Удалить';
-        delBtn.onclick = () => {
-          if (!confirm(`Удалить файл ${name}?`)) return;
-          fetch('/fs/delete?file=' + encodeURIComponent(name), { method: 'POST' })
-            .then(res => {
-              if (!res.ok) throw new Error();
-              loadFiles();
-            })
-            .catch(() => alert('Не удалось удалить файл'));
-        };
+        delBtn.disabled = name === 'config.txt';
+        delBtn.onclick = () => deleteSingleFile(name);
 
         actions.appendChild(dlBtn);
         actions.appendChild(delBtn);
-        row.appendChild(left);
+        row.appendChild(info);
         row.appendChild(actions);
         listEl.appendChild(row);
       });
+      updateSelectionControls();
     }
 
     function loadFiles() {
@@ -1082,8 +1215,20 @@ constexpr char INDEX_HTML[] = R"rawliteral(
         .then(res => res.json())
         .then(files => renderFiles(files))
         .catch(() => {
+          cachedFiles = [];
+          selectedFiles.clear();
           if (listEl) listEl.innerHTML = 'Ошибка загрузки списка';
+          updateSelectionControls();
         });
+    }
+
+    const selectAllEl = document.getElementById('selectAllFiles');
+    if (selectAllEl) {
+      selectAllEl.addEventListener('change', (e) => toggleSelectAll(e.target.checked));
+    }
+    const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+    if (deleteSelectedBtn) {
+      deleteSelectedBtn.addEventListener('click', deleteSelectedFiles);
     }
 
     // Auto-refresh every 2 seconds
@@ -2913,29 +3058,139 @@ esp_err_t FsDeleteHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
 
-  int qs_len = httpd_req_get_url_query_len(req) + 1;
-  if (qs_len <= 1) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
+  std::vector<std::string> requested_files;
+  bool has_body_files = false;
+  bool saw_body = false;
+  const size_t kMaxDeleteBody = 8192;
+  if (req->content_len > kMaxDeleteBody) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large");
     return ESP_FAIL;
   }
-  std::string qs(qs_len, '\0');
-  if (httpd_req_get_url_query_str(req, qs.data(), qs_len) != ESP_OK) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
+  if (req->content_len > 0) {
+    saw_body = true;
+    std::string body(req->content_len, '\0');
+    size_t offset = 0;
+    while (offset < body.size()) {
+      int received = httpd_req_recv(req, body.data() + offset, body.size() - offset);
+      if (received <= 0) {
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+          continue;
+        }
+        break;
+      }
+      offset += static_cast<size_t>(received);
+    }
+    body.resize(offset);
+
+    if (!body.empty()) {
+      cJSON* root = cJSON_Parse(body.c_str());
+      if (root) {
+        auto collect = [&](cJSON* arr) {
+          if (!arr || !cJSON_IsArray(arr)) return;
+          has_body_files = true;
+          cJSON* item = nullptr;
+          cJSON_ArrayForEach(item, arr) {
+            if (cJSON_IsString(item) && item->valuestring) {
+              requested_files.emplace_back(item->valuestring);
+            }
+          }
+        };
+        if (cJSON_IsArray(root)) {
+          collect(root);
+        } else {
+          collect(cJSON_GetObjectItem(root, "files"));
+        }
+        cJSON_Delete(root);
+      }
+    }
+  }
+
+  if (saw_body && !has_body_files) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON body");
     return ESP_FAIL;
   }
-  char file_param[96] = {};
-  if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
-    return ESP_FAIL;
+
+  if (!has_body_files) {
+    int qs_len = httpd_req_get_url_query_len(req) + 1;
+    if (qs_len <= 1) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
+      return ESP_FAIL;
+    }
+    std::string qs(qs_len, '\0');
+    if (httpd_req_get_url_query_str(req, qs.data(), qs_len) != ESP_OK) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
+      return ESP_FAIL;
+    }
+    char file_param[96] = {};
+    if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
+      return ESP_FAIL;
+    }
+    requested_files.emplace_back(file_param);
   }
-  std::string full_path;
-  if (!SanitizeFilename(file_param, &full_path)) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
-    return ESP_FAIL;
+
+  auto is_protected_config = [](const std::string& name) {
+    if (name.size() != 10) return false;
+    std::string lower;
+    lower.reserve(name.size());
+    for (char c : name) {
+      lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return lower == "config.txt";
+  };
+
+  struct DeleteCandidate {
+    std::string name;
+    std::string full_path;
+  };
+
+  std::vector<DeleteCandidate> candidates;
+  std::vector<std::string> skipped;
+  std::vector<std::string> failed;
+  std::set<std::string> seen;
+
+  for (const auto& raw_name : requested_files) {
+    if (!seen.insert(raw_name).second) continue;
+    if (is_protected_config(raw_name)) {
+      skipped.push_back(raw_name + " (protected)");
+      continue;
+    }
+
+    std::string full_path;
+    if (!SanitizeFilename(raw_name, &full_path)) {
+      failed.push_back(raw_name + " (invalid)");
+      continue;
+    }
+
+    if (snapshot.logging && snapshot.log_filename == raw_name) {
+      skipped.push_back(raw_name + " (active log)");
+      continue;
+    }
+    candidates.push_back({raw_name, std::move(full_path)});
   }
-  if (snapshot.logging && snapshot.log_filename == file_param) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Cannot delete active log");
-    return ESP_FAIL;
+
+  auto send_result = [&](const std::vector<std::string>& deleted) -> esp_err_t {
+    cJSON* resp = cJSON_CreateObject();
+    auto add_array = [&](const char* key, const std::vector<std::string>& values) {
+      cJSON* arr = cJSON_CreateArray();
+      for (const auto& v : values) {
+        cJSON_AddItemToArray(arr, cJSON_CreateString(v.c_str()));
+      }
+      cJSON_AddItemToObject(resp, key, arr);
+    };
+    add_array("deleted", deleted);
+    add_array("skipped", skipped);
+    add_array("failed", failed);
+    const char* json = cJSON_PrintUnformatted(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    cJSON_free((void*)json);
+    cJSON_Delete(resp);
+    return ESP_OK;
+  };
+
+  if (candidates.empty()) {
+    return send_result({});
   }
 
   SdLockGuard guard;
@@ -2948,12 +3203,16 @@ esp_err_t FsDeleteHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
 
-  if (remove(full_path.c_str()) != 0) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Delete failed");
-    return ESP_FAIL;
+  std::vector<std::string> deleted;
+  for (const auto& entry : candidates) {
+    if (remove(entry.full_path.c_str()) != 0) {
+      failed.push_back(entry.name + " (delete failed)");
+    } else {
+      deleted.push_back(entry.name);
+    }
   }
-  httpd_resp_set_type(req, "application/json");
-  return httpd_resp_sendstr(req, "{\"status\":\"deleted\"}");
+
+  return send_result(deleted);
 }
 
 esp_err_t PidApplyHandler(httpd_req_t* req) {
