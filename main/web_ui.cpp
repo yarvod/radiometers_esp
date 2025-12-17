@@ -4,7 +4,7 @@ const char INDEX_HTML[] = R"rawliteral(
 <!DOCTYPE HTML>
 <html>
 <head>
-  <title>LTC2440 ADC Monitor & Stepper Control</title>
+  <title>Radiometers Termostatica</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
@@ -47,11 +47,6 @@ const char INDEX_HTML[] = R"rawliteral(
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <h1>LTC2440 ADC Monitor & Stepper Control</h1>
-      <p>Real-time voltage measurements and TMC2208 stepper motor control</p>
-    </div>
-    
     <div class="adc-readings">
       <div class="adc-channel">
         <div class="channel-name">ADC Channel 1</div>
