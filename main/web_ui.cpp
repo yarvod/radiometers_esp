@@ -680,12 +680,10 @@ const char INDEX_HTML[] = R"rawliteral(
       fetch('/stepper/enable', { method: 'POST' })
         .then(response => response.json())
         .then(data => {
-          alert('Stepper motor enabled');
           refreshData();
         })
         .catch(error => {
           console.error('Error:', error);
-          alert('Stepper motor enabled');
           refreshData();
         });
     }
@@ -694,12 +692,10 @@ const char INDEX_HTML[] = R"rawliteral(
       fetch('/stepper/disable', { method: 'POST' })
         .then(response => response.json())
         .then(data => {
-          alert('Stepper motor disabled');
           refreshData();
         })
         .catch(error => {
           console.error('Error:', error);
-          alert('Stepper motor disabled');
           refreshData();
         });
     }
@@ -722,12 +718,10 @@ const char INDEX_HTML[] = R"rawliteral(
       })
       .then(response => response.json())
       .then(data => {
-        alert('Movement started');
         refreshData();
       })
       .catch(error => {
         console.error('Error:', error);
-        alert('Movement started');
         refreshData();
       });
     }
@@ -736,12 +730,10 @@ const char INDEX_HTML[] = R"rawliteral(
       fetch('/stepper/stop', { method: 'POST' })
         .then(response => response.json())
         .then(data => {
-          alert('Movement stopped');
           refreshData();
         })
         .catch(error => {
           console.error('Error:', error);
-          alert('Movement stopped');
           refreshData();
         });
     }
@@ -750,12 +742,10 @@ const char INDEX_HTML[] = R"rawliteral(
       fetch('/stepper/zero', { method: 'POST' })
         .then(response => response.json())
         .then(data => {
-          alert('Position set to zero');
           refreshData();
         })
         .catch(error => {
           console.error('Error:', error);
-          alert('Position set to zero');
           refreshData();
         });
     }

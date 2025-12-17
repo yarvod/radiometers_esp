@@ -145,9 +145,25 @@ esp_err_t StepperMoveHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
   int steps = cJSON_GetObjectItem(root, "steps") ? cJSON_GetObjectItem(root, "steps")->valueint : 400;
-  const char* direction_str = cJSON_GetObjectItem(root, "direction") && cJSON_GetObjectItem(root, "direction")->valuestring
-                                  ? cJSON_GetObjectItem(root, "direction")->valuestring
-                                  : "forward";
+  bool forward = true;
+  cJSON* dir_item = cJSON_GetObjectItem(root, "direction");
+  if (dir_item) {
+    if (cJSON_IsString(dir_item) && dir_item->valuestring) {
+      std::string dir = dir_item->valuestring;
+      std::transform(dir.begin(), dir.end(), dir.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if (dir.find("back") == 0) {
+        forward = false;
+      } else if (dir.find("rev") == 0) {
+        forward = false;
+      } else if (dir.find("fwd") == 0 || dir.find("forw") == 0) {
+        forward = true;
+      }
+    } else if (cJSON_IsNumber(dir_item)) {
+      forward = dir_item->valueint != 0;
+    } else if (cJSON_IsBool(dir_item)) {
+      forward = cJSON_IsTrue(dir_item);
+    }
+  }
   int speed = cJSON_GetObjectItem(root, "speed") ? cJSON_GetObjectItem(root, "speed")->valueint : app_config.stepper_speed_us;
   cJSON_Delete(root);
 
@@ -162,7 +178,6 @@ esp_err_t StepperMoveHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
 
-  bool forward = std::strcmp(direction_str, "forward") == 0;
   StartStepperMove(steps, forward, speed);
   app_config.stepper_speed_us = speed;
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
