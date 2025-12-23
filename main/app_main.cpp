@@ -142,6 +142,9 @@ bool SanitizeFilename(const std::string& name, std::string* out_full) {
 }
 
 std::string SanitizePostfix(const std::string& raw) {
+  // Keep postfix within overall filename limit (SanitizeFilename caps at 64 chars).
+  // Base pattern: data_YYYYMMDD_HHMMSS_ + postfix + .txt -> base length 25, so allow up to 39.
+  constexpr size_t kMaxPostfixLen = 39;
   std::string out;
   out.reserve(raw.size());
   for (char c : raw) {
@@ -150,7 +153,7 @@ std::string SanitizePostfix(const std::string& raw) {
     } else if (std::isspace(static_cast<unsigned char>(c))) {
       out.push_back('_');
     }
-    if (out.size() >= 24) break;  // keep filenames short
+    if (out.size() >= kMaxPostfixLen) break;
   }
   // Trim trailing underscores from whitespace-only input
   while (!out.empty() && out.back() == '_') {

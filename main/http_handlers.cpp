@@ -357,6 +357,7 @@ void StopLogging() {
 
 void LoggingTask(void*) {
   const int steps_180 = 200;  // adjust to your mechanics (microsteps for 180 degrees)
+  const TickType_t settle_delay = pdMS_TO_TICKS(1000);  // pause after motor moves
 
   auto home_blocking = [&]() {
     UpdateState([](SharedState& s) { s.stepper_abort = false; });
@@ -378,6 +379,7 @@ void LoggingTask(void*) {
       steps++;
     }
     DisableStepper();
+    vTaskDelay(settle_delay);
     UpdateState([](SharedState& s) {
       s.stepper_position = 0;
       s.stepper_target = 0;
@@ -402,6 +404,7 @@ void LoggingTask(void*) {
       esp_rom_delay_us(step_delay_us);
     }
     DisableStepper();
+    vTaskDelay(settle_delay);
     UpdateState([&](SharedState& s) {
       s.homing = false;
       s.stepper_position += forward ? steps : -steps;
