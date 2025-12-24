@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <cerrno>
 #include <dirent.h>
+#include <memory>
 
 #include "cJSON.h"
 #include "app_state.h"
@@ -331,12 +332,18 @@ static bool Sha256File(const std::string& path, std::string* out_hex, size_t* ou
   mbedtls_sha256_context ctx;
   mbedtls_sha256_init(&ctx);
   mbedtls_sha256_starts(&ctx, 0);
-  uint8_t buf[2048];
+  std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[1024]);
+  if (!buf) {
+    mbedtls_sha256_free(&ctx);
+    fclose(f);
+    ESP_LOGE(TAG, "No memory for hash buffer");
+    return false;
+  }
   size_t total = 0;
   size_t n = 0;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+  while ((n = fread(buf.get(), 1, 1024, f)) > 0) {
     total += n;
-    mbedtls_sha256_update(&ctx, buf, n);
+    mbedtls_sha256_update(&ctx, buf.get(), n);
   }
   fclose(f);
   if (out_size) *out_size = total;
@@ -1876,7 +1883,8 @@ extern "C" void app_main(void) {
   }
   xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
   if (upload_task == nullptr) {
-    xTaskCreatePinnedToCore(&UploadTask, "upload_task", 4096, nullptr, 1, &upload_task, 0);
+    // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
+    xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
   }
 
   init_ok = init_ok && msc_ok && (ina_err == ESP_OK);

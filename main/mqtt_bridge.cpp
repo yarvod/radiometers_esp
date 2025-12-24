@@ -181,7 +181,14 @@ void StartMqttBridge() {
     return;
   }
   esp_mqtt_client_register_event(mqtt_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID), mqtt_event_dispatch, nullptr);
-  esp_mqtt_client_start(mqtt_client);
+  esp_err_t start_err = esp_mqtt_client_start(mqtt_client);
+  if (start_err != ESP_OK) {
+    ESP_LOGE(TAG_MQTT, "MQTT start failed: %s", esp_err_to_name(start_err));
+    esp_mqtt_client_destroy(mqtt_client);
+    mqtt_client = nullptr;
+    mqtt_connected = false;
+    return;
+  }
   if (mqtt_state_task == nullptr) {
     xTaskCreatePinnedToCore(&MqttStateTask, "mqtt_state", 4096, nullptr, 2, &mqtt_state_task, 0);
   }
