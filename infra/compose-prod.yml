@@ -2,6 +2,7 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    user: "0"
     ports:
       - "1883:1883"
       - "9001:9001"  # WebSocket
@@ -10,16 +11,20 @@ services:
       MQTT_USER: ${MQTT_USER:?set MQTT_USER}
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
     volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
       - mosquitto_passwd:/mosquitto/secrets
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
-      - ./certs:/mosquitto/certs:ro
+      - ./certs:/mosquitto/certs
     command: >
       sh -c 'set -e;
       if [ ! -s /mosquitto/secrets/passwd ]; then
         mosquitto_passwd -b -c /mosquitto/secrets/passwd "$MQTT_USER" "$MQTT_PASSWORD";
         chmod 0700 /mosquitto/secrets/passwd;
+      fi;
+      if [ -d /mosquitto/certs ]; then
+        chown -R mosquitto:mosquitto /mosquitto/certs || true;
+        chmod 600 /mosquitto/certs/server.key || true;
       fi;
       exec mosquitto -c /mosquitto/config/mosquitto.conf'
 
