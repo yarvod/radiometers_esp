@@ -440,6 +440,77 @@ static bool UploadFileToMinio(const std::string& path) {
     ESP_LOGE(TAG, "Failed to hash %s", path.c_str());
     return false;
   }
+  // Use device_id as bucket if not set
+  if (app_config.minio_bucket.empty()) {
+    app_config.minio_bucket = SanitizeId(app_config.device_id);
+  }
+
+  auto put_bucket_if_needed = [&]() {
+    // Sign empty payload
+    const std::string payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    time_t now = time(nullptr);
+    if (now <= 0) now = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
+    struct tm tm_utc {};
+    gmtime_r(&now, &tm_utc);
+    char date_buf[9];
+    char amz_date[17];
+    strftime(date_buf, sizeof(date_buf), "%Y%m%d", &tm_utc);
+    strftime(amz_date, sizeof(amz_date), "%Y%m%dT%H%M%SZ", &tm_utc);
+    const char* region = "us-east-1";
+    const std::string canonical_uri = "/" + app_config.minio_bucket;
+    const std::string canonical_headers = "host:" + host + "\n" +
+                                          "x-amz-content-sha256:" + payload_hash + "\n" +
+                                          "x-amz-date:" + amz_date + "\n";
+    const std::string signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    const std::string canonical_request =
+        "PUT\n" + canonical_uri + "\n\n" + canonical_headers + "\n" + signed_headers + "\n" + payload_hash;
+    std::string canonical_hash_hex;
+    if (!Sha256String(canonical_request, &canonical_hash_hex)) {
+      return false;
+    }
+    const std::string credential_scope = std::string(date_buf) + "/" + region + "/s3/aws4_request";
+    const std::string string_to_sign = std::string("AWS4-HMAC-SHA256\n") + amz_date + "\n" + credential_scope + "\n" + canonical_hash_hex;
+    uint8_t signing_key[32];
+    if (!DeriveS3SigningKey(app_config.minio_secret_key, date_buf, region, signing_key)) {
+      return false;
+    }
+    uint8_t signature_bin[32];
+    if (!HmacSha256(signing_key, sizeof(signing_key),
+                    reinterpret_cast<const uint8_t*>(string_to_sign.data()), string_to_sign.size(), signature_bin)) {
+      return false;
+    }
+    const std::string signature_hex = HexEncode(signature_bin, sizeof(signature_bin));
+    const std::string authorization = "AWS4-HMAC-SHA256 Credential=" + app_config.minio_access_key + "/" + credential_scope +
+                                      ", SignedHeaders=" + signed_headers + ", Signature=" + signature_hex;
+    const std::string bucket_url = endpoint + "/" + app_config.minio_bucket;
+
+    esp_http_client_config_t cfg = {};
+    cfg.url = bucket_url.c_str();
+    cfg.method = HTTP_METHOD_PUT;
+    cfg.transport_type = use_https ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
+    cfg.disable_auto_redirect = true;
+    cfg.timeout_ms = 8000;
+    cfg.cert_pem = reinterpret_cast<const char*>(isrgrootx1_pem_start);
+    cfg.cert_len = isrgrootx1_pem_end - isrgrootx1_pem_start;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+    esp_http_client_set_header(client, "Host", host.c_str());
+    esp_http_client_set_header(client, "Content-Length", "0");
+    esp_http_client_set_header(client, "x-amz-content-sha256", payload_hash.c_str());
+    esp_http_client_set_header(client, "x-amz-date", amz_date);
+    esp_http_client_set_header(client, "Authorization", authorization.c_str());
+    bool ok = false;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+      esp_http_client_fetch_headers(client);
+      int status = esp_http_client_get_status_code(client);
+      ok = (status >= 200 && status < 300);
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return ok;
+  };
+  (void)put_bucket_if_needed();
+
   time_t now = time(nullptr);
   if (now <= 0) now = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
   struct tm tm_utc {};
