@@ -2,7 +2,7 @@ name: Build and Deploy Nuxt
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "s3ui" ]
   workflow_dispatch:
 
 env:
@@ -46,4 +46,4 @@ jobs:
             cd /opt/esp/infra
             docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
             docker compose -f compose-prod.yml pull frontend
-            docker compose -f compose-prod.yml up -d --remove-orphans
+            docker compose --env-file .env -f compose-prod.yml up -d --remove-orphans

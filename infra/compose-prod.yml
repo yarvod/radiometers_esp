@@ -10,14 +10,14 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - mosquitto_passwd:/mosquitto/config/passwd
+      - mosquitto_passwd:/mosquitto/secrets
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
     command: >
       sh -c 'set -e;
-      if [ ! -s /mosquitto/config/passwd ]; then
-        mosquitto_passwd -b -c /mosquitto/config/passwd "$MQTT_USER" "$MQTT_PASSWORD";
-        chmod 0700 /mosquitto/config/passwd;
+      if [ ! -s /mosquitto/secrets/passwd ]; then
+        mosquitto_passwd -b -c /mosquitto/secrets/passwd "$MQTT_USER" "$MQTT_PASSWORD";
+        chmod 0700 /mosquitto/secrets/passwd;
       fi;
       exec mosquitto -c /mosquitto/config/mosquitto.conf'
 
