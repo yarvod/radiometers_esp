@@ -16,12 +16,15 @@
   --border: #e0e0e0;
   --shadow: 0 6px 14px rgba(0, 0, 0, 0.08);
 }
+*, *::before, *::after { box-sizing: border-box; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.4;
 }
+button, input, select { font: inherit; }
 a { color: var(--accent); }
 .card {
   background: var(--card);
