@@ -5,8 +5,8 @@ services:
     image: eclipse-mosquitto:2
     restart: unless-stopped
     ports:
-      - "1883:1883"    # MQTT TCP
-      - "9001:9001"    # MQTT over WebSocket for Nuxt
+      - "1883:1883"
+      - "9001:9001"  # WebSocket
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto_data:/mosquitto/data
@@ -20,23 +20,20 @@ services:
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"  # S3 API
-      - "9002:9001"  # Web console
+      - "9000:9000"
+      - "9002:9001"
     volumes:
       - minio_data:/data
 
   frontend:
-    build: ./frontend
+    image: ghcr.io/OWNER/esp-frontend:latest
     restart: unless-stopped
     environment:
-      NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-ws://mosquitto:9001/mqtt}
+      NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-wss://yoowee.ru/mqtt}
     ports:
       - "3000:3000"
     depends_on:
       - mosquitto
-    volumes:
-      - ./frontend:/app
-    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3000"]
 
 volumes:
   mosquitto_data:

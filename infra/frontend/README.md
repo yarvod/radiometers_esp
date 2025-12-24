@@ -13,6 +13,8 @@
 cd infra/frontend
 npm install
 npm run dev
+# или через Docker (из корня infra)
+# docker-compose up -d frontend
 ```
 
 Брокер MQTT:
