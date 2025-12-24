@@ -7,10 +7,20 @@ services:
     ports:
       - "1883:1883"    # MQTT TCP
       - "9001:9001"    # MQTT over WebSocket for Nuxt
+    environment:
+      MQTT_USER: ${MQTT_USER:?set MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto_passwd:/mosquitto/config/passwd
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
+    command: >
+      sh -c 'set -e;
+      if [ ! -s /mosquitto/config/passwd ]; then
+        mosquitto_passwd -b -c /mosquitto/config/passwd "$MQTT_USER" "$MQTT_PASSWORD";
+      fi;
+      exec mosquitto -c /mosquitto/config/mosquitto.conf'
 
   minio:
     image: quay.io/minio/minio:RELEASE.2024-02-24T17-11-14Z
@@ -30,6 +40,8 @@ services:
     restart: unless-stopped
     environment:
       NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-ws://mosquitto:9001/mqtt}
+      NUXT_PUBLIC_MQTT_USER: ${MQTT_USER}
+      NUXT_PUBLIC_MQTT_PASSWORD: ${MQTT_PASSWORD}
     ports:
       - "3000:3000"
     depends_on:

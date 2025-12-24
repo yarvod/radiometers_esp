@@ -8,6 +8,7 @@ frontend/.pnpm-store
 frontend/.npmrc
 frontend/yarn.lock
 frontend/package-lock.json
+mosquitto_passwd
 
 # Logs
 **/*.log
@@ -18,6 +19,7 @@ frontend/package-lock.json
 # Env/config
 .env
 frontend/.env
+infra/.env
 
 # Editors/OS
 .DS_Store

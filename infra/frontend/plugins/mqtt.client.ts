@@ -12,6 +12,8 @@ export default defineNuxtPlugin((nuxtApp) => {
       protocolVersion: 5,
       reconnectPeriod: 3000,
       connectTimeout: 8000,
+      username: config.public.mqttUser || undefined,
+      password: config.public.mqttPassword || undefined,
     })
   }
 
