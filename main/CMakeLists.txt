@@ -12,6 +12,7 @@ idf_component_register(
     PRIV_REQUIRES
         esp_wifi
         esp_http_server
+        esp_http_client
         esp_netif
         nvs_flash
         driver
@@ -23,6 +24,7 @@ idf_component_register(
         sdmmc
         fatfs
         onewire_bus
+        mqtt
     INCLUDE_DIRS "."
 )
 

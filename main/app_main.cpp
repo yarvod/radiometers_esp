@@ -303,18 +303,9 @@ static bool Sha256Bytes(const uint8_t* data, size_t len, uint8_t out[32]) {
   if (!out) return false;
   mbedtls_sha256_context ctx;
   mbedtls_sha256_init(&ctx);
-  if (mbedtls_sha256_starts_ret(&ctx, 0) != 0) {
-    mbedtls_sha256_free(&ctx);
-    return false;
-  }
-  if (mbedtls_sha256_update_ret(&ctx, data, len) != 0) {
-    mbedtls_sha256_free(&ctx);
-    return false;
-  }
-  if (mbedtls_sha256_finish_ret(&ctx, out) != 0) {
-    mbedtls_sha256_free(&ctx);
-    return false;
-  }
+  mbedtls_sha256_starts(&ctx, 0);
+  mbedtls_sha256_update(&ctx, data, len);
+  mbedtls_sha256_finish(&ctx, out);
   mbedtls_sha256_free(&ctx);
   return true;
 }
@@ -339,29 +330,18 @@ static bool Sha256File(const std::string& path, std::string* out_hex, size_t* ou
   }
   mbedtls_sha256_context ctx;
   mbedtls_sha256_init(&ctx);
-  if (mbedtls_sha256_starts_ret(&ctx, 0) != 0) {
-    mbedtls_sha256_free(&ctx);
-    fclose(f);
-    return false;
-  }
+  mbedtls_sha256_starts(&ctx, 0);
   uint8_t buf[2048];
   size_t total = 0;
   size_t n = 0;
   while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
     total += n;
-    if (mbedtls_sha256_update_ret(&ctx, buf, n) != 0) {
-      mbedtls_sha256_free(&ctx);
-      fclose(f);
-      return false;
-    }
+    mbedtls_sha256_update(&ctx, buf, n);
   }
   fclose(f);
   if (out_size) *out_size = total;
   uint8_t hash[32];
-  if (mbedtls_sha256_finish_ret(&ctx, hash) != 0) {
-    mbedtls_sha256_free(&ctx);
-    return false;
-  }
+  mbedtls_sha256_finish(&ctx, hash);
   mbedtls_sha256_free(&ctx);
   if (out_hex) {
     *out_hex = HexEncode(hash, sizeof(hash));
@@ -425,6 +405,10 @@ static std::string ExtractHost(const std::string& endpoint) {
 }
 
 static bool UploadFileToMinio(const std::string& path) {
+  if (!app_config.minio_enabled) {
+    ESP_LOGI(TAG, "MinIO disabled, skip upload");
+    return false;
+  }
   if (app_config.minio_endpoint.empty() || app_config.minio_access_key.empty() || app_config.minio_secret_key.empty() ||
       app_config.minio_bucket.empty()) {
     ESP_LOGW(TAG, "MinIO config incomplete, skip upload");
@@ -796,12 +780,16 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool minio_access_set = false;
   bool minio_secret_set = false;
   bool minio_bucket_set = false;
+  bool minio_enabled_val = config->minio_enabled;
+  bool minio_enabled_set = false;
   std::string mqtt_uri = config->mqtt_uri;
   std::string mqtt_user = config->mqtt_user;
   std::string mqtt_password = config->mqtt_password;
   bool mqtt_uri_set = false;
   bool mqtt_user_set = false;
   bool mqtt_password_set = false;
+  bool mqtt_enabled_val = config->mqtt_enabled;
+  bool mqtt_enabled_set = false;
 
   while (fgets(line, sizeof(line), file)) {
     std::string raw(line);
@@ -899,6 +887,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     } else if (key == "minio_bucket") {
       minio_bucket = value;
       minio_bucket_set = true;
+    } else if (key == "minio_enabled") {
+      if (ParseBool(value, &minio_enabled_val)) {
+        minio_enabled_set = true;
+      }
     } else if (key == "mqtt_uri") {
       mqtt_uri = value;
       mqtt_uri_set = true;
@@ -908,6 +900,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     } else if (key == "mqtt_password") {
       mqtt_password = value;
       mqtt_password_set = true;
+    } else if (key == "mqtt_enabled") {
+      if (ParseBool(value, &mqtt_enabled_val)) {
+        mqtt_enabled_set = true;
+      }
     }
   }
 
@@ -957,6 +953,9 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (minio_bucket_set) {
     config->minio_bucket = minio_bucket;
   }
+  if (minio_enabled_set) {
+    config->minio_enabled = minio_enabled_val;
+  }
   if (mqtt_uri_set) {
     config->mqtt_uri = mqtt_uri;
   }
@@ -965,6 +964,9 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   }
   if (mqtt_password_set) {
     config->mqtt_password = mqtt_password;
+  }
+  if (mqtt_enabled_set) {
+    config->mqtt_enabled = mqtt_enabled_val;
   }
   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
     pid_config.kp = pid_kp;
@@ -980,7 +982,8 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   }
   return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || log_use_motor_set ||
          log_duration_set || stepper_speed_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
-         minio_bucket_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || pid_config.from_file;
+         minio_bucket_set || minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || mqtt_enabled_set ||
+         pid_config.from_file;
 }
 
 void LoadConfigFromSdCard(AppConfig* config) {

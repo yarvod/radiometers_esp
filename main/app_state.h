@@ -41,9 +41,11 @@ struct AppConfig {
   std::string minio_access_key;
   std::string minio_secret_key;
   std::string minio_bucket;
+  bool minio_enabled;
   std::string mqtt_uri;
   std::string mqtt_user;
   std::string mqtt_password;
+  bool mqtt_enabled;
 };
 
 struct PidConfig {

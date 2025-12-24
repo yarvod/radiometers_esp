@@ -24,9 +24,11 @@ AppConfig app_config{
     "",                 // minio_access_key
     "",                 // minio_secret_key
     "",                 // minio_bucket
+    false,              // minio_enabled
     "",                 // mqtt_uri
     "",                 // mqtt_user
     "",                 // mqtt_password
+    false,              // mqtt_enabled
 };
 
 PidConfig pid_config{

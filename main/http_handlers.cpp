@@ -83,9 +83,11 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "minioAccessKey", app_config.minio_access_key.c_str());
   cJSON_AddStringToObject(root, "minioSecretKey", app_config.minio_secret_key.c_str());
   cJSON_AddStringToObject(root, "minioBucket", app_config.minio_bucket.c_str());
+  cJSON_AddBoolToObject(root, "minioEnabled", app_config.minio_enabled);
   cJSON_AddStringToObject(root, "mqttUri", app_config.mqtt_uri.c_str());
   cJSON_AddStringToObject(root, "mqttUser", app_config.mqtt_user.c_str());
   cJSON_AddStringToObject(root, "mqttPassword", app_config.mqtt_password.c_str());
+  cJSON_AddBoolToObject(root, "mqttEnabled", app_config.mqtt_enabled);
   cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
   cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
   cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
@@ -344,6 +346,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   if (!cfg.minio_bucket.empty()) {
     fprintf(f, "minio_bucket = %s\n", cfg.minio_bucket.c_str());
   }
+  fprintf(f, "minio_enabled = %s\n", (cfg.minio_enabled ? "true" : "false"));
   if (!cfg.mqtt_uri.empty()) {
     fprintf(f, "mqtt_uri = %s\n", cfg.mqtt_uri.c_str());
   }
@@ -353,6 +356,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   if (!cfg.mqtt_password.empty()) {
     fprintf(f, "mqtt_password = %s\n", cfg.mqtt_password.c_str());
   }
+  fprintf(f, "mqtt_enabled = %s\n", (cfg.mqtt_enabled ? "true" : "false"));
   fclose(f);
   // Keep mounted if logging is active to avoid invalidating open log file.
   if (!already_mounted && !log_file) {

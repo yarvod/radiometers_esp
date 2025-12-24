@@ -101,7 +101,7 @@ void HandleMqttCommand(const std::string& topic, const uint8_t* data, int len) {
   cJSON_Delete(root);
 }
 
-esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
+static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED: {
       const std::string device = SanitizeId(app_config.device_id);
@@ -121,9 +121,20 @@ esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
   return ESP_OK;
 }
 
+static void mqtt_event_dispatch(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
+  (void)handler_args;
+  (void)base;
+  (void)event_id;
+  mqtt_event_handler_cb(static_cast<esp_mqtt_event_handle_t>(event_data));
+}
+
 }  // namespace
 
 void StartMqttBridge() {
+  if (!app_config.mqtt_enabled) {
+    ESP_LOGI(TAG_MQTT, "MQTT disabled by config");
+    return;
+  }
   if (app_config.mqtt_uri.empty()) {
     ESP_LOGI(TAG_MQTT, "MQTT disabled (uri empty)");
     return;
@@ -134,17 +145,18 @@ void StartMqttBridge() {
     mqtt_client = nullptr;
   }
   esp_mqtt_client_config_t cfg = {};
-  cfg.uri = app_config.mqtt_uri.c_str();
-  if (!app_config.mqtt_user.empty()) cfg.username = app_config.mqtt_user.c_str();
-  if (!app_config.mqtt_password.empty()) cfg.password = app_config.mqtt_password.c_str();
-  cfg.disable_auto_reconnect = false;
-  cfg.keepalive = 30;
-  cfg.event_handle = mqtt_event_handler_cb;
+  cfg.broker.address.uri = app_config.mqtt_uri.c_str();
+  cfg.credentials.username = app_config.mqtt_user.empty() ? nullptr : app_config.mqtt_user.c_str();
+  cfg.credentials.authentication.password = app_config.mqtt_password.empty() ? nullptr : app_config.mqtt_password.c_str();
+  cfg.session.keepalive = 30;
+  cfg.network.disable_auto_reconnect = false;
+  cfg.session.disable_clean_session = false;
+  cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
   mqtt_client = esp_mqtt_client_init(&cfg);
   if (!mqtt_client) {
     ESP_LOGE(TAG_MQTT, "MQTT init failed");
     return;
   }
+  esp_mqtt_client_register_event(mqtt_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID), mqtt_event_dispatch, nullptr);
   esp_mqtt_client_start(mqtt_client);
 }
-
