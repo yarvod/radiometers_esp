@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <dirent.h>
 #include <memory>
+#include "isrgrootx1.pem.h"
 
 #include "cJSON.h"
 #include "app_state.h"
@@ -487,6 +488,9 @@ static bool UploadFileToMinio(const std::string& path) {
   cfg_http.timeout_ms = 10000;  // avoid long blocking if network is down
   cfg_http.transport_type = use_https ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
   cfg_http.disable_auto_redirect = true;
+  // Use LetsEncrypt ISRG root
+  cfg_http.cert_pem = reinterpret_cast<const char*>(isrgrootx1_pem_start);
+  cfg_http.cert_len = isrgrootx1_pem_end - isrgrootx1_pem_start;
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg_http);
   if (!client) {

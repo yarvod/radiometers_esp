@@ -16,6 +16,8 @@ esp_mqtt_client_handle_t mqtt_client = nullptr;
 static bool mqtt_connected = false;
 extern const uint8_t ca_crt_start[] asm("_binary_ca_crt_start");
 extern const uint8_t ca_crt_end[] asm("_binary_ca_crt_end");
+extern const uint8_t isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
+extern const uint8_t isrgrootx1_pem_end[] asm("_binary_isrgrootx1_pem_end");
 
 void MqttPublish(const std::string& topic, const std::string& payload, int qos = 0, bool retain = false) {
   if (!mqtt_client || topic.empty()) return;

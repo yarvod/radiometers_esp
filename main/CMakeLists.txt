@@ -24,10 +24,11 @@ idf_component_register(
         sdmmc
         fatfs
         onewire_bus
-        mqtt
+    mqtt
     INCLUDE_DIRS "."
     EMBED_TXTFILES
         "ca.crt"
+        "isrgrootx1.pem"
 )
 
 set_property(TARGET ${COMPONENT_LIB} PROPERTY CXX_STANDARD 17)
