@@ -26,7 +26,8 @@ export const useDevicesStore = defineStore('devices', {
       this.mqttReady = true
 
       mqtt.on('connect', () => {
-        // Optionally subscribe to discovery topic if есть
+        mqtt.subscribe("+/resp")
+        mqtt.subscribe("+/state")
       })
 
       mqtt.on('message', (topic, payload) => {
@@ -47,6 +48,14 @@ export const useDevicesStore = defineStore('devices', {
           if (msg.data && deviceId) {
             this.setState(deviceId, msg.data)
           }
+        }
+        if (parts.length >= 2 && parts[1] === 'state') {
+          const deviceId = parts[0]
+          this.markOnline(deviceId)
+          const txt = payload.toString()
+          let msg: any = {}
+          try { msg = JSON.parse(txt) } catch (_) {}
+          this.setState(deviceId, msg)
         }
       })
     },

@@ -26,3 +26,5 @@ infra/.env
 Thumbs.db
 .idea
 .vscode
+
+*certs

@@ -59,6 +59,7 @@ TaskHandle_t calibration_task = nullptr;
 TaskHandle_t find_zero_task = nullptr;
 TaskHandle_t log_task = nullptr;
 TaskHandle_t upload_task = nullptr;
+TaskHandle_t mqtt_state_task = nullptr;
 
 sdmmc_card_t* sd_card = nullptr;
 sdmmc_card_t* log_sd_card = nullptr;

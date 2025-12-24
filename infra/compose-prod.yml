@@ -5,6 +5,7 @@ services:
     ports:
       - "1883:1883"
       - "9001:9001"  # WebSocket
+      - "8883:8883"  # TLS
     environment:
       MQTT_USER: ${MQTT_USER:?set MQTT_USER}
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
@@ -13,6 +14,7 @@ services:
       - mosquitto_passwd:/mosquitto/secrets
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
+      - ./certs:/mosquitto/certs:ro
     command: >
       sh -c 'set -e;
       if [ ! -s /mosquitto/secrets/passwd ]; then

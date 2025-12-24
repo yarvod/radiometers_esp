@@ -312,6 +312,9 @@ const char INDEX_HTML[] = R"rawliteral(
             <input type="text" id="deviceId" placeholder="dev1">
           </div>
           <div class="form-group">
+            <label><input type="checkbox" id="minioEnabled"> Включить MinIO</label>
+          </div>
+          <div class="form-group">
             <label for="minioEndpoint">MinIO endpoint (http://host:9000)</label>
             <input type="text" id="minioEndpoint" placeholder="http://...">
           </div>
@@ -330,6 +333,9 @@ const char INDEX_HTML[] = R"rawliteral(
           <div class="form-group">
             <label for="mqttUri">MQTT URI (e.g. mqtt://host:1883)</label>
             <input type="text" id="mqttUri" placeholder="mqtt://...">
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" id="mqttEnabled"> Включить MQTT</label>
           </div>
           <div class="form-group">
             <label for="mqttUser">MQTT user</label>
@@ -673,9 +679,17 @@ const char INDEX_HTML[] = R"rawliteral(
         setValueIfIdle('minioBucket', data.minioBucket || '');
         setValueIfIdle('minioAccessKey', data.minioAccessKey || '');
         setValueIfIdle('minioSecretKey', data.minioSecretKey || '');
+        const minioEnabledEl = document.getElementById('minioEnabled');
+        if (minioEnabledEl && document.activeElement !== minioEnabledEl) {
+          minioEnabledEl.checked = !!data.minioEnabled;
+        }
         setValueIfIdle('mqttUri', data.mqttUri || '');
         setValueIfIdle('mqttUser', data.mqttUser || '');
         setValueIfIdle('mqttPassword', data.mqttPassword || '');
+        const mqttEnabledEl = document.getElementById('mqttEnabled');
+        if (mqttEnabledEl && document.activeElement !== mqttEnabledEl) {
+          mqttEnabledEl.checked = !!data.mqttEnabled;
+        }
         measurementsInitialized = true;
       }
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
@@ -890,11 +904,13 @@ const char INDEX_HTML[] = R"rawliteral(
     function applyCloudConfig() {
       const payload = {
         deviceId: document.getElementById('deviceId').value,
+        minioEnabled: document.getElementById('minioEnabled').checked,
         minioEndpoint: document.getElementById('minioEndpoint').value,
         minioBucket: document.getElementById('minioBucket').value,
         minioAccessKey: document.getElementById('minioAccessKey').value,
         minioSecretKey: document.getElementById('minioSecretKey').value,
         mqttUri: document.getElementById('mqttUri').value,
+        mqttEnabled: document.getElementById('mqttEnabled').checked,
         mqttUser: document.getElementById('mqttUser').value,
         mqttPassword: document.getElementById('mqttPassword').value,
       };

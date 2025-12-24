@@ -13,6 +13,7 @@ namespace {
 
 constexpr char TAG_MQTT[] = "MQTT_BRIDGE";
 esp_mqtt_client_handle_t mqtt_client = nullptr;
+static bool mqtt_connected = false;
 
 void MqttPublish(const std::string& topic, const std::string& payload, int qos = 0, bool retain = false) {
   if (!mqtt_client || topic.empty()) return;
@@ -104,6 +105,7 @@ void HandleMqttCommand(const std::string& topic, const uint8_t* data, int len) {
 static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED: {
+      mqtt_connected = true;
       const std::string device = SanitizeId(app_config.device_id);
       std::string topic = device + "/cmd";
       esp_mqtt_client_subscribe(event->client, topic.c_str(), 0);
@@ -113,6 +115,10 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
     case MQTT_EVENT_DATA: {
       std::string topic(event->topic, event->topic_len);
       HandleMqttCommand(topic, reinterpret_cast<const uint8_t*>(event->data), event->data_len);
+      break;
+    }
+    case MQTT_EVENT_DISCONNECTED: {
+      mqtt_connected = false;
       break;
     }
     default:
@@ -126,6 +132,19 @@ static void mqtt_event_dispatch(void* handler_args, esp_event_base_t base, int32
   (void)base;
   (void)event_id;
   mqtt_event_handler_cb(static_cast<esp_mqtt_event_handle_t>(event_data));
+}
+
+static void MqttStateTask(void*) {
+  const TickType_t interval = pdMS_TO_TICKS(1000);
+  const std::string device = SanitizeId(app_config.device_id);
+  const std::string topic = device + "/state";
+  while (true) {
+    if (mqtt_connected && mqtt_client) {
+      std::string payload = BuildStateJsonString();
+      esp_mqtt_client_publish(mqtt_client, topic.c_str(), payload.c_str(), payload.size(), 0, 0);
+    }
+    vTaskDelay(interval);
+  }
 }
 
 }  // namespace
@@ -159,4 +178,7 @@ void StartMqttBridge() {
   }
   esp_mqtt_client_register_event(mqtt_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID), mqtt_event_dispatch, nullptr);
   esp_mqtt_client_start(mqtt_client);
+  if (mqtt_state_task == nullptr) {
+    xTaskCreatePinnedToCore(&MqttStateTask, "mqtt_state", 4096, nullptr, 2, &mqtt_state_task, 0);
+  }
 }

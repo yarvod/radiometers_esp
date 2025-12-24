@@ -1383,14 +1383,22 @@ esp_err_t CloudApplyHandler(httpd_req_t* req) {
     cJSON* item = cJSON_GetObjectItem(root, key);
     return (item && cJSON_IsString(item) && item->valuestring) ? std::string(item->valuestring) : std::string();
   };
+  auto get_bool = [&](const char* key, bool def) -> bool {
+    cJSON* item = cJSON_GetObjectItem(root, key);
+    if (item && cJSON_IsBool(item)) return cJSON_IsTrue(item);
+    if (item && cJSON_IsNumber(item)) return item->valueint != 0;
+    return def;
+  };
   app_config.device_id = get_str("deviceId");
   app_config.minio_endpoint = get_str("minioEndpoint");
   app_config.minio_access_key = get_str("minioAccessKey");
   app_config.minio_secret_key = get_str("minioSecretKey");
   app_config.minio_bucket = get_str("minioBucket");
+  app_config.minio_enabled = get_bool("minioEnabled", app_config.minio_enabled);
   app_config.mqtt_uri = get_str("mqttUri");
   app_config.mqtt_user = get_str("mqttUser");
   app_config.mqtt_password = get_str("mqttPassword");
+  app_config.mqtt_enabled = get_bool("mqttEnabled", app_config.mqtt_enabled);
   cJSON_Delete(root);
 
   SaveConfigToSdCard(app_config, pid_config, usb_mode);

@@ -55,6 +55,10 @@ std::string BuildStateJsonInternal() {
 
 }  // namespace
 
+std::string BuildStateJsonString() {
+  return BuildStateJsonInternal();
+}
+
 ActionResult ActionStartLog(const LogRequest& req) {
   LogRequest r = req;
   if (r.duration_s <= 0.0f) r.duration_s = 1.0f;

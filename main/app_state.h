@@ -126,6 +126,7 @@ extern TaskHandle_t calibration_task;
 extern TaskHandle_t find_zero_task;
 extern TaskHandle_t log_task;
 extern TaskHandle_t upload_task;
+extern TaskHandle_t mqtt_state_task;
 
 extern sdmmc_card_t* sd_card;
 extern sdmmc_card_t* log_sd_card;

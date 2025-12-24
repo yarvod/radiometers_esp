@@ -7,6 +7,7 @@ services:
     ports:
       - "1883:1883"    # MQTT TCP
       - "9001:9001"    # MQTT over WebSocket for Nuxt
+      - "8883:8883"    # MQTT over TLS
     environment:
       MQTT_USER: ${MQTT_USER:?set MQTT_USER}
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
@@ -15,6 +16,7 @@ services:
       - mosquitto_passwd:/mosquitto/secrets
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
+      - ./certs:/mosquitto/certs:ro
     command: >
       sh -c 'set -e;
       if [ ! -s /mosquitto/secrets/passwd ]; then
