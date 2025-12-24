@@ -4,6 +4,9 @@ import { connect, MqttClient } from 'mqtt'
 let client: MqttClient | null = null
 
 export default defineNuxtPlugin((nuxtApp) => {
+  if (process.server) {
+    return
+  }
   const config = useRuntimeConfig()
   const url = config.public.mqttUrl
 

@@ -21,8 +21,8 @@ export const useDevicesStore = defineStore('devices', {
     mqttReady: false,
   }),
   actions: {
-    init(mqtt: MqttClient) {
-      if (this.mqttReady) return
+    init(mqtt?: MqttClient | null) {
+      if (this.mqttReady || !mqtt) return
       this.mqttReady = true
 
       mqtt.on('connect', () => {
@@ -63,7 +63,8 @@ export const useDevicesStore = defineStore('devices', {
       prev.lastSeen = Date.now()
       this.devices.set(id, prev)
     },
-    sendCommand(mqtt: MqttClient, deviceId: string, cmd: any) {
+    sendCommand(mqtt: MqttClient | null | undefined, deviceId: string, cmd: any) {
+      if (!mqtt) throw new Error('MQTT client not ready')
       const reqId = crypto.randomUUID()
       const topic = `${deviceId}/cmd`
       const msg = JSON.stringify({ ...cmd, reqId })
