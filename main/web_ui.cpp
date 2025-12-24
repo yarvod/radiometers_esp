@@ -291,8 +291,56 @@ const char INDEX_HTML[] = R"rawliteral(
               <button class="btn btn-stop" id="deleteSelectedBtn" disabled>Удалить выбранные</button>
             </div>
           </div>
+          <div class="file-nav">
+            <div>
+              <button class="btn btn-small" onclick="goUp()">⬆️ ..</button>
+              <span id="filePathLabel"></span>
+            </div>
+            <div class="file-pages">
+              <button class="btn btn-small" onclick="pagePrev()">←</button>
+              <span id="filePageInfo"></span>
+              <button class="btn btn-small" onclick="pageNext()">→</button>
+            </div>
+          </div>
           <div id="fileList"></div>
           <div class="note">Можно скачать или удалить файл. config.txt защищён от удаления. Одновременная запись логов и скачивание синхронизированы мьютексом.</div>
+        </div>
+        <div class="control-panel">
+          <h3>Облако (MinIO) и MQTT</h3>
+          <div class="form-group">
+            <label for="deviceId">Device ID</label>
+            <input type="text" id="deviceId" placeholder="dev1">
+          </div>
+          <div class="form-group">
+            <label for="minioEndpoint">MinIO endpoint (http://host:9000)</label>
+            <input type="text" id="minioEndpoint" placeholder="http://...">
+          </div>
+          <div class="form-group">
+            <label for="minioBucket">MinIO bucket</label>
+            <input type="text" id="minioBucket" placeholder="bucket">
+          </div>
+          <div class="form-group">
+            <label for="minioAccessKey">MinIO access key</label>
+            <input type="text" id="minioAccessKey">
+          </div>
+          <div class="form-group">
+            <label for="minioSecretKey">MinIO secret key</label>
+            <input type="password" id="minioSecretKey">
+          </div>
+          <div class="form-group">
+            <label for="mqttUri">MQTT URI (e.g. mqtt://host:1883)</label>
+            <input type="text" id="mqttUri" placeholder="mqtt://...">
+          </div>
+          <div class="form-group">
+            <label for="mqttUser">MQTT user</label>
+            <input type="text" id="mqttUser">
+          </div>
+          <div class="form-group">
+            <label for="mqttPassword">MQTT password</label>
+            <input type="password" id="mqttPassword">
+          </div>
+          <button class="btn" onclick="applyCloudConfig()">Сохранить настройки</button>
+          <div class="note">S3-загрузки берут файлы из папки to_upload и после успеха перемещают в uploaded. MQTT будет использовать deviceId в именах очередей/топиков.</div>
         </div>
       </div>
     </div>
@@ -313,6 +361,20 @@ const char INDEX_HTML[] = R"rawliteral(
         temps: {}
       }
     };
+    const filesState = { path: '', page: 0, pageSize: 10, total: 0, totalPages: 0 };
+
+    function getBaseName(path) {
+      if (!path) return '';
+      const idx = path.lastIndexOf('/');
+      return idx >= 0 ? path.slice(idx + 1) : path;
+    }
+
+    function getFilePath(item) {
+      if (item && typeof item === 'object') {
+        return item.path || item.name || '';
+      }
+      return typeof item === 'string' ? item : '';
+    }
 
     function setValueIfIdle(id, value) {
       const el = document.getElementById(id);
@@ -594,20 +656,28 @@ const char INDEX_HTML[] = R"rawliteral(
       } else {
         logStatus.textContent = 'Idle';
       }
-    if (!measurementsInitialized) {
-      setValueIfIdle('logFilename', data.logFilename || '');
-      const logUseMotorEl = document.getElementById('logUseMotor');
-      if (logUseMotorEl && document.activeElement !== logUseMotorEl) {
-        logUseMotorEl.checked = !!data.logUseMotor;
+      if (!measurementsInitialized) {
+        setValueIfIdle('logFilename', data.logFilename || '');
+        const logUseMotorEl = document.getElementById('logUseMotor');
+        if (logUseMotorEl && document.activeElement !== logUseMotorEl) {
+          logUseMotorEl.checked = !!data.logUseMotor;
       }
       setValueIfIdle('logDuration', (data.logDuration ?? 1).toFixed(1));
       // Wi-Fi defaults
-      const wifiModeEl = document.getElementById('wifiMode');
-      if (wifiModeEl) wifiModeEl.value = data.wifiApMode ? 'ap' : 'sta';
-      setValueIfIdle('wifiSsid', data.wifiSsid || '');
-      setValueIfIdle('wifiPassword', data.wifiPassword || '');
-      measurementsInitialized = true;
-    }
+        const wifiModeEl = document.getElementById('wifiMode');
+        if (wifiModeEl) wifiModeEl.value = data.wifiApMode ? 'ap' : 'sta';
+        setValueIfIdle('wifiSsid', data.wifiSsid || '');
+        setValueIfIdle('wifiPassword', data.wifiPassword || '');
+        setValueIfIdle('deviceId', data.deviceId || '');
+        setValueIfIdle('minioEndpoint', data.minioEndpoint || '');
+        setValueIfIdle('minioBucket', data.minioBucket || '');
+        setValueIfIdle('minioAccessKey', data.minioAccessKey || '');
+        setValueIfIdle('minioSecretKey', data.minioSecretKey || '');
+        setValueIfIdle('mqttUri', data.mqttUri || '');
+        setValueIfIdle('mqttUser', data.mqttUser || '');
+        setValueIfIdle('mqttPassword', data.mqttPassword || '');
+        measurementsInitialized = true;
+      }
       document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
@@ -817,6 +887,29 @@ const char INDEX_HTML[] = R"rawliteral(
       });
     }
 
+    function applyCloudConfig() {
+      const payload = {
+        deviceId: document.getElementById('deviceId').value,
+        minioEndpoint: document.getElementById('minioEndpoint').value,
+        minioBucket: document.getElementById('minioBucket').value,
+        minioAccessKey: document.getElementById('minioAccessKey').value,
+        minioSecretKey: document.getElementById('minioSecretKey').value,
+        mqttUri: document.getElementById('mqttUri').value,
+        mqttUser: document.getElementById('mqttUser').value,
+        mqttPassword: document.getElementById('mqttPassword').value,
+      };
+      fetch('/cloud/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(res => {
+        if (!res.ok) throw new Error('Не удалось сохранить настройки');
+        return res.json();
+      }).then(() => {
+        alert('Облачные настройки сохранены');
+      }).catch(err => alert(err.message || 'Ошибка сохранения'));
+    }
+
     function applyPid() {
       const payload = {
         setpoint: parseFloat(document.getElementById('pidSetpoint').value),
@@ -845,17 +938,14 @@ const char INDEX_HTML[] = R"rawliteral(
     }
 
     function getFileName(item) {
-      if (item && typeof item === 'object') {
-        return item.name || '';
-      }
-      return typeof item === 'string' ? item : '';
+      return getBaseName(getFilePath(item));
     }
 
     function refreshSelectionState() {
-      const available = new Set(cachedFiles.map(getFileName).filter(name => name && name !== 'config.txt'));
-      Array.from(selectedFiles).forEach(name => {
-        if (!available.has(name)) {
-          selectedFiles.delete(name);
+      const available = new Set(cachedFiles.filter(item => (item?.type ?? 'file') === 'file').map(getFilePath).filter(Boolean));
+      Array.from(selectedFiles).forEach(path => {
+        if (!available.has(path)) {
+          selectedFiles.delete(path);
         }
       });
     }
@@ -865,7 +955,7 @@ const char INDEX_HTML[] = R"rawliteral(
       const deleteBtn = document.getElementById('deleteSelectedBtn');
       const selectableCount = cachedFiles.filter(item => {
         const name = getFileName(item);
-        return name && name !== 'config.txt';
+        return name && name !== 'config.txt' && (item?.type ?? 'file') === 'file';
       }).length;
       const selectedCount = selectedFiles.size;
       if (selectAll) {
@@ -877,31 +967,36 @@ const char INDEX_HTML[] = R"rawliteral(
       }
     }
 
-    function toggleFileSelection(name, checked) {
-      if (!name || name === 'config.txt') return;
+    function toggleFileSelection(path, checked) {
+      const base = getBaseName(path);
+      if (!path || base === 'config.txt') return;
       if (checked) {
-        selectedFiles.add(name);
+        selectedFiles.add(path);
       } else {
-        selectedFiles.delete(name);
+        selectedFiles.delete(path);
       }
       updateSelectionControls();
     }
 
     function toggleSelectAll(checked) {
       cachedFiles.forEach(item => {
-        const name = getFileName(item);
-        if (!name || name === 'config.txt') return;
+        const path = getFilePath(item);
+        const base = getBaseName(path);
+        if (!path || base === 'config.txt' || (item?.type ?? 'file') === 'dir') return;
         if (checked) {
-          selectedFiles.add(name);
+          selectedFiles.add(path);
         } else {
-          selectedFiles.delete(name);
+          selectedFiles.delete(path);
         }
       });
-      renderFiles(cachedFiles);
+      renderFiles({ entries: cachedFiles, path: filesState.path, page: filesState.page, pageSize: filesState.pageSize, total: filesState.total, totalPages: filesState.totalPages });
     }
 
     function sendDeleteRequest(files) {
-      const unique = Array.from(new Set(files.filter(name => name && name !== 'config.txt')));
+      const unique = Array.from(new Set(files.filter(name => {
+        const base = getBaseName(name);
+        return name && base !== 'config.txt';
+      })));
       if (unique.length === 0) {
         alert('Нет выбранных файлов для удаления');
         return Promise.resolve();
@@ -950,20 +1045,45 @@ const char INDEX_HTML[] = R"rawliteral(
       return sendDeleteRequest([name]);
     }
 
-    function renderFiles(files) {
+    function updateFileNav() {
+      const pathLabel = document.getElementById('filePathLabel');
+      const pageInfo = document.getElementById('filePageInfo');
+      const cleanPath = filesState.path || '/';
+      if (pathLabel) pathLabel.textContent = cleanPath;
+      if (pageInfo) pageInfo.textContent = `${filesState.page + 1}/${Math.max(filesState.totalPages || 1, 1)}`;
+    }
+
+    function renderFiles(data) {
       const listEl = document.getElementById('fileList');
-      cachedFiles = Array.isArray(files) ? files : [];
+      let entries = [];
+      if (Array.isArray(data)) {
+        entries = data;
+        filesState.total = entries.length;
+        filesState.totalPages = 1;
+        filesState.page = 0;
+      } else if (data && typeof data === 'object') {
+        entries = Array.isArray(data.entries) ? data.entries : [];
+        filesState.path = data.path || '';
+        filesState.page = Number.isFinite(data.page) ? data.page : 0;
+        filesState.pageSize = Number.isFinite(data.pageSize) ? data.pageSize : 10;
+        filesState.total = Number.isFinite(data.total) ? data.total : entries.length;
+        filesState.totalPages = Number.isFinite(data.totalPages) ? data.totalPages : 1;
+      }
+      cachedFiles = entries;
       refreshSelectionState();
+      updateFileNav();
       if (!listEl) return;
-      if (!Array.isArray(files) || files.length === 0) {
+      if (!Array.isArray(entries) || entries.length === 0) {
         listEl.innerHTML = '<div>Нет файлов</div>';
         updateSelectionControls();
         return;
       }
       listEl.innerHTML = '';
-      cachedFiles.forEach(item => {
-        const name = getFileName(item);
+      entries.forEach(item => {
+        const path = getFilePath(item);
+        const name = getBaseName(path);
         const sizeBytes = (item && typeof item === 'object' && Number.isFinite(item.size)) ? item.size : null;
+        const isDir = (item && item.type === 'dir');
         if (!name) return;
         const row = document.createElement('div');
         row.className = 'file-row';
@@ -974,10 +1094,10 @@ const char INDEX_HTML[] = R"rawliteral(
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.className = 'file-checkbox';
-        checkbox.disabled = name === 'config.txt';
-        checkbox.checked = selectedFiles.has(name);
+        checkbox.disabled = name === 'config.txt' || isDir;
+        checkbox.checked = selectedFiles.has(path);
         checkbox.onchange = () => {
-          toggleFileSelection(name, checkbox.checked);
+          toggleFileSelection(path, checkbox.checked);
           updateSelectionControls();
         };
 
@@ -987,26 +1107,34 @@ const char INDEX_HTML[] = R"rawliteral(
         if (sizeBytes !== null) {
           sizeText = ` (${(sizeBytes / (1024 * 1024)).toFixed(2)} MB)`;
         }
-        left.textContent = name + sizeText;
+        left.textContent = (isDir ? '📁 ' : '') + name + sizeText;
 
         info.appendChild(checkbox);
         info.appendChild(left);
 
         const actions = document.createElement('div');
 
-        const dlBtn = document.createElement('button');
-        dlBtn.className = 'btn btn-small';
-        dlBtn.textContent = 'Скачать';
-        dlBtn.onclick = () => { window.open('/fs/download?file=' + encodeURIComponent(name), '_blank'); };
+        if (isDir) {
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn btn-small';
+          openBtn.textContent = 'Открыть';
+          openBtn.onclick = () => openFolder(path);
+          actions.appendChild(openBtn);
+        } else {
+          const dlBtn = document.createElement('button');
+          dlBtn.className = 'btn btn-small';
+          dlBtn.textContent = 'Скачать';
+          dlBtn.onclick = () => { window.open('/fs/download?path=' + encodeURIComponent(path), '_blank'); };
 
-        const delBtn = document.createElement('button');
-        delBtn.className = 'btn btn-small btn-stop';
-        delBtn.textContent = 'Удалить';
-        delBtn.disabled = name === 'config.txt';
-        delBtn.onclick = () => deleteSingleFile(name);
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn btn-small btn-stop';
+          delBtn.textContent = 'Удалить';
+          delBtn.disabled = name === 'config.txt';
+          delBtn.onclick = () => deleteSingleFile(path);
 
-        actions.appendChild(dlBtn);
-        actions.appendChild(delBtn);
+          actions.appendChild(dlBtn);
+          actions.appendChild(delBtn);
+        }
         row.appendChild(info);
         row.appendChild(actions);
         listEl.appendChild(row);
@@ -1014,10 +1142,43 @@ const char INDEX_HTML[] = R"rawliteral(
       updateSelectionControls();
     }
 
+    function openFolder(path) {
+      filesState.path = path || '';
+      filesState.page = 0;
+      loadFiles();
+    }
+
+    function goUp() {
+      const path = filesState.path || '';
+      const idx = path.lastIndexOf('/');
+      filesState.path = idx > 0 ? path.slice(0, idx) : '';
+      filesState.page = 0;
+      loadFiles();
+    }
+
+    function pagePrev() {
+      if (filesState.page > 0) {
+        filesState.page -= 1;
+        loadFiles();
+      }
+    }
+
+    function pageNext() {
+      if (filesState.page + 1 < filesState.totalPages) {
+        filesState.page += 1;
+        loadFiles();
+      }
+    }
+
     function loadFiles() {
       const listEl = document.getElementById('fileList');
       if (listEl) listEl.innerHTML = 'Загружаю...';
-      fetch('/fs/list')
+      const params = new URLSearchParams();
+      if (filesState.path) params.append('path', filesState.path);
+      params.append('page', filesState.page);
+      params.append('pageSize', filesState.pageSize);
+      const url = '/fs/list' + (params.toString() ? ('?' + params.toString()) : '');
+      fetch(url)
         .then(res => res.json())
         .then(files => renderFiles(files))
         .catch(() => {

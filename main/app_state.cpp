@@ -19,6 +19,14 @@ AppConfig app_config{
     false,              // logging_use_motor
     1.0f,               // logging_duration_s
     1000,               // stepper_speed_us
+    "dev1",             // device_id
+    "",                 // minio_endpoint
+    "",                 // minio_access_key
+    "",                 // minio_secret_key
+    "",                 // minio_bucket
+    "",                 // mqtt_uri
+    "",                 // mqtt_user
+    "",                 // mqtt_password
 };
 
 PidConfig pid_config{
@@ -48,11 +56,13 @@ UsbMode usb_mode = UsbMode::kCdc;
 TaskHandle_t calibration_task = nullptr;
 TaskHandle_t find_zero_task = nullptr;
 TaskHandle_t log_task = nullptr;
+TaskHandle_t upload_task = nullptr;
 
 sdmmc_card_t* sd_card = nullptr;
 sdmmc_card_t* log_sd_card = nullptr;
 FILE* log_file = nullptr;
 bool log_sd_mounted = false;
+std::string current_log_path;
 
 SdLockGuard::SdLockGuard(TickType_t timeout_ticks) {
   locked_ = (sd_mutex && xSemaphoreTake(sd_mutex, timeout_ticks) == pdTRUE);

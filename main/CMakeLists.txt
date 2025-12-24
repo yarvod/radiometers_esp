@@ -6,6 +6,8 @@ idf_component_register(
         "web_ui.cpp"
         "ltc2440.cpp"
         "onewire_m1820.cpp"
+        "control_actions.cpp"
+        "mqtt_bridge.cpp"
        
     PRIV_REQUIRES
         esp_wifi

@@ -11,6 +11,9 @@
 #include <set>
 #include <ctime>
 #include <cstdint>
+#include <sys/stat.h>
+#include <cerrno>
+#include <dirent.h>
 
 #include "cJSON.h"
 #include "app_state.h"
@@ -23,6 +26,7 @@
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_system.h"
@@ -38,6 +42,9 @@
 #include "freertos/semphr.h"
 #include "ltc2440.h"
 #include "nvs_flash.h"
+#include "mbedtls/md.h"
+#include "mbedtls/sha256.h"
+#include "mqtt_bridge.h"
 #include "nvs.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
@@ -141,6 +148,20 @@ bool SanitizeFilename(const std::string& name, std::string* out_full) {
   return true;
 }
 
+bool SanitizePath(const std::string& rel_path, std::string* out_full) {
+  if (rel_path.empty() || rel_path[0] == '/' || rel_path.size() > 128) return false;
+  if (rel_path.find("..") != std::string::npos) return false;
+  if (rel_path.find("//") != std::string::npos) return false;
+  for (char c : rel_path) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '/')) {
+      return false;
+    }
+  }
+  std::string full = std::string(CONFIG_MOUNT_POINT) + "/" + rel_path;
+  if (out_full) *out_full = full;
+  return true;
+}
+
 std::string SanitizePostfix(const std::string& raw) {
   // Keep postfix within overall filename limit (SanitizeFilename caps at 64 chars).
   // Base pattern: data_YYYYMMDD_HHMMSS_ + postfix + .txt -> base length 25, so allow up to 39.
@@ -204,6 +225,389 @@ std::string IsoUtcNow() {
   return std::string(buf);
 }
 
+bool EnsureDirExists(const char* path) {
+  if (!path) return false;
+  struct stat st {};
+  if (stat(path, &st) == 0) {
+    return S_ISDIR(st.st_mode);
+  }
+  if (mkdir(path, 0775) == 0) {
+    return true;
+  }
+  ESP_LOGE(TAG, "mkdir %s failed: %d", path, errno);
+  return false;
+}
+
+bool EnsureUploadDirs() {
+  return EnsureDirExists(TO_UPLOAD_DIR) && EnsureDirExists(UPLOADED_DIR);
+}
+
+static std::string Basename(const std::string& path) {
+  const size_t pos = path.find_last_of('/');
+  if (pos == std::string::npos) return path;
+  return path.substr(pos + 1);
+}
+
+bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::string* out_new_path) {
+  if (src_path.empty() || !dest_dir) return false;
+  if (!EnsureDirExists(dest_dir)) return false;
+  std::string dest = std::string(dest_dir) + "/" + Basename(src_path);
+  if (rename(src_path.c_str(), dest.c_str()) != 0) {
+    ESP_LOGE(TAG, "Failed to move %s -> %s (errno %d)", src_path.c_str(), dest.c_str(), errno);
+    return false;
+  }
+  if (out_new_path) {
+    *out_new_path = dest;
+  }
+  return true;
+}
+
+bool QueueCurrentLogForUpload() {
+  SdLockGuard guard;
+  if (!guard.locked()) {
+    ESP_LOGW(TAG, "SD mutex unavailable, cannot queue log");
+    return false;
+  }
+  if (!MountLogSd()) {
+    return false;
+  }
+  if (log_file) {
+    FlushLogFile();
+    fclose(log_file);
+    log_file = nullptr;
+  }
+  if (current_log_path.empty()) {
+    return false;
+  }
+  std::string new_path;
+  if (!MoveFileToDir(current_log_path, TO_UPLOAD_DIR, &new_path)) {
+    return false;
+  }
+  current_log_path.clear();
+  ESP_LOGI(TAG, "Queued log for upload: %s", new_path.c_str());
+  return true;
+}
+
+static std::string HexEncode(const uint8_t* data, size_t len) {
+  static const char* kHex = "0123456789abcdef";
+  std::string out;
+  out.reserve(len * 2);
+  for (size_t i = 0; i < len; ++i) {
+    out.push_back(kHex[data[i] >> 4]);
+    out.push_back(kHex[data[i] & 0x0F]);
+  }
+  return out;
+}
+
+static bool Sha256Bytes(const uint8_t* data, size_t len, uint8_t out[32]) {
+  if (!out) return false;
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  if (mbedtls_sha256_starts_ret(&ctx, 0) != 0) {
+    mbedtls_sha256_free(&ctx);
+    return false;
+  }
+  if (mbedtls_sha256_update_ret(&ctx, data, len) != 0) {
+    mbedtls_sha256_free(&ctx);
+    return false;
+  }
+  if (mbedtls_sha256_finish_ret(&ctx, out) != 0) {
+    mbedtls_sha256_free(&ctx);
+    return false;
+  }
+  mbedtls_sha256_free(&ctx);
+  return true;
+}
+
+static bool Sha256String(const std::string& input, std::string* out_hex) {
+  uint8_t hash[32];
+  if (!Sha256Bytes(reinterpret_cast<const uint8_t*>(input.data()), input.size(), hash)) {
+    return false;
+  }
+  if (out_hex) {
+    *out_hex = HexEncode(hash, sizeof(hash));
+  }
+  return true;
+}
+
+static bool Sha256File(const std::string& path, std::string* out_hex, size_t* out_size) {
+  if (out_size) *out_size = 0;
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) {
+    ESP_LOGE(TAG, "Failed to open %s for hashing", path.c_str());
+    return false;
+  }
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  if (mbedtls_sha256_starts_ret(&ctx, 0) != 0) {
+    mbedtls_sha256_free(&ctx);
+    fclose(f);
+    return false;
+  }
+  uint8_t buf[2048];
+  size_t total = 0;
+  size_t n = 0;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+    total += n;
+    if (mbedtls_sha256_update_ret(&ctx, buf, n) != 0) {
+      mbedtls_sha256_free(&ctx);
+      fclose(f);
+      return false;
+    }
+  }
+  fclose(f);
+  if (out_size) *out_size = total;
+  uint8_t hash[32];
+  if (mbedtls_sha256_finish_ret(&ctx, hash) != 0) {
+    mbedtls_sha256_free(&ctx);
+    return false;
+  }
+  mbedtls_sha256_free(&ctx);
+  if (out_hex) {
+    *out_hex = HexEncode(hash, sizeof(hash));
+  }
+  return true;
+}
+
+static bool HmacSha256(const uint8_t* key, size_t key_len, const uint8_t* data, size_t data_len, uint8_t out[32]) {
+  if (!key || !out) return false;
+  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (!info) return false;
+  if (mbedtls_md_hmac(info, key, key_len, data, data_len, out) != 0) {
+    return false;
+  }
+  return true;
+}
+
+static bool DeriveS3SigningKey(const std::string& secret, const std::string& date, const std::string& region, uint8_t out[32]) {
+  if (secret.empty() || date.size() != 8 || region.empty() || !out) return false;
+  std::string key = "AWS4" + secret;
+  uint8_t k_date[32];
+  uint8_t k_region[32];
+  uint8_t k_service[32];
+  if (!HmacSha256(reinterpret_cast<const uint8_t*>(key.data()), key.size(),
+                  reinterpret_cast<const uint8_t*>(date.data()), date.size(), k_date)) {
+    return false;
+  }
+  if (!HmacSha256(k_date, sizeof(k_date), reinterpret_cast<const uint8_t*>(region.data()), region.size(), k_region)) {
+    return false;
+  }
+  static const char kService[] = "s3";
+  if (!HmacSha256(k_region, sizeof(k_region), reinterpret_cast<const uint8_t*>(kService), strlen(kService), k_service)) {
+    return false;
+  }
+  static const char kTerm[] = "aws4_request";
+  if (!HmacSha256(k_service, sizeof(k_service), reinterpret_cast<const uint8_t*>(kTerm), strlen(kTerm), out)) {
+    return false;
+  }
+  return true;
+}
+
+static std::string TrimTrailingSlash(const std::string& in) {
+  std::string out = in;
+  while (!out.empty() && out.back() == '/') {
+    out.pop_back();
+  }
+  return out;
+}
+
+static std::string ExtractHost(const std::string& endpoint) {
+  std::string host = endpoint;
+  size_t scheme = host.find("://");
+  if (scheme != std::string::npos) {
+    host = host.substr(scheme + 3);
+  }
+  size_t slash = host.find('/');
+  if (slash != std::string::npos) {
+    host = host.substr(0, slash);
+  }
+  return host;
+}
+
+static bool UploadFileToMinio(const std::string& path) {
+  if (app_config.minio_endpoint.empty() || app_config.minio_access_key.empty() || app_config.minio_secret_key.empty() ||
+      app_config.minio_bucket.empty()) {
+    ESP_LOGW(TAG, "MinIO config incomplete, skip upload");
+    return false;
+  }
+  const std::string device = SanitizeId(app_config.device_id);
+  const std::string filename = Basename(path);
+  const std::string object_key = device + "/" + filename;
+  const std::string endpoint = TrimTrailingSlash(app_config.minio_endpoint);
+  const std::string host = ExtractHost(endpoint);
+  const bool use_https = endpoint.rfind("https://", 0) == 0;
+  if (host.empty()) {
+    ESP_LOGE(TAG, "Invalid MinIO endpoint: %s", endpoint.c_str());
+    return false;
+  }
+  const std::string url = endpoint + "/" + app_config.minio_bucket + "/" + object_key;
+
+  std::string payload_hash;
+  size_t file_size = 0;
+  if (!Sha256File(path, &payload_hash, &file_size)) {
+    ESP_LOGE(TAG, "Failed to hash %s", path.c_str());
+    return false;
+  }
+  time_t now = time(nullptr);
+  if (now <= 0) now = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
+  struct tm tm_utc {};
+  gmtime_r(&now, &tm_utc);
+  char date_buf[9];
+  char amz_date[17];
+  strftime(date_buf, sizeof(date_buf), "%Y%m%d", &tm_utc);
+  strftime(amz_date, sizeof(amz_date), "%Y%m%dT%H%M%SZ", &tm_utc);
+
+  const char* region = "us-east-1";
+  const std::string canonical_uri = "/" + app_config.minio_bucket + "/" + object_key;
+  const std::string canonical_headers = "host:" + host + "\n" +
+                                        "x-amz-content-sha256:" + payload_hash + "\n" +
+                                        "x-amz-date:" + amz_date + "\n";
+  const std::string signed_headers = "host;x-amz-content-sha256;x-amz-date";
+  const std::string canonical_request =
+      "PUT\n" + canonical_uri + "\n\n" + canonical_headers + "\n" + signed_headers + "\n" + payload_hash;
+
+  std::string canonical_hash_hex;
+  if (!Sha256String(canonical_request, &canonical_hash_hex)) {
+    ESP_LOGE(TAG, "Failed to hash canonical request");
+    return false;
+  }
+
+  const std::string credential_scope = std::string(date_buf) + "/" + region + "/s3/aws4_request";
+  const std::string string_to_sign = std::string("AWS4-HMAC-SHA256\n") + amz_date + "\n" + credential_scope + "\n" + canonical_hash_hex;
+
+  uint8_t signing_key[32];
+  if (!DeriveS3SigningKey(app_config.minio_secret_key, date_buf, region, signing_key)) {
+    ESP_LOGE(TAG, "Failed to derive signing key");
+    return false;
+  }
+  uint8_t signature_bin[32];
+  if (!HmacSha256(signing_key, sizeof(signing_key),
+                  reinterpret_cast<const uint8_t*>(string_to_sign.data()), string_to_sign.size(), signature_bin)) {
+    ESP_LOGE(TAG, "Failed to sign string");
+    return false;
+  }
+  const std::string signature_hex = HexEncode(signature_bin, sizeof(signature_bin));
+  const std::string authorization = "AWS4-HMAC-SHA256 Credential=" + app_config.minio_access_key + "/" + credential_scope +
+                                    ", SignedHeaders=" + signed_headers + ", Signature=" + signature_hex;
+
+  esp_http_client_config_t cfg_http = {};
+  cfg_http.url = url.c_str();
+  cfg_http.method = HTTP_METHOD_PUT;
+  cfg_http.timeout_ms = 10000;  // avoid long blocking if network is down
+  cfg_http.transport_type = use_https ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
+  cfg_http.disable_auto_redirect = true;
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg_http);
+  if (!client) {
+    ESP_LOGE(TAG, "esp_http_client_init failed");
+    return false;
+  }
+  char len_buf[32];
+  snprintf(len_buf, sizeof(len_buf), "%u", static_cast<unsigned>(file_size));
+  esp_http_client_set_header(client, "Host", host.c_str());
+  esp_http_client_set_header(client, "Content-Length", len_buf);
+  esp_http_client_set_header(client, "x-amz-content-sha256", payload_hash.c_str());
+  esp_http_client_set_header(client, "x-amz-date", amz_date);
+  esp_http_client_set_header(client, "Authorization", authorization.c_str());
+
+  if (esp_http_client_open(client, file_size) != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open HTTP connection to %s", url.c_str());
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) {
+    ESP_LOGE(TAG, "Cannot reopen file %s for upload", path.c_str());
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  char buf[2048];
+  size_t n = 0;
+  bool ok = true;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+    int written = esp_http_client_write(client, buf, n);
+    if (written < 0) {
+      ESP_LOGE(TAG, "HTTP write failed");
+      ok = false;
+      break;
+    }
+  }
+  fclose(f);
+  if (!ok) {
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  esp_http_client_fetch_headers(client);
+  int status = esp_http_client_get_status_code(client);
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+  if (status >= 200 && status < 300) {
+    ESP_LOGI(TAG, "Uploaded %s to MinIO (%d)", path.c_str(), status);
+    return true;
+  }
+  ESP_LOGE(TAG, "MinIO upload failed, status %d", status);
+  return false;
+}
+
+static bool UploadPendingOnce() {
+  std::vector<std::string> files;
+  {
+    SdLockGuard guard(pdMS_TO_TICKS(50));
+    if (!guard.locked()) {
+      ESP_LOGW(TAG, "SD mutex busy, skip upload cycle");
+      return false;
+    }
+    if (!MountLogSd()) {
+      return false;
+    }
+    if (!EnsureUploadDirs()) {
+      return false;
+    }
+    DIR* dir = opendir(TO_UPLOAD_DIR);
+    if (!dir) {
+      ESP_LOGI(TAG, "No upload dir, nothing to sync");
+      return false;
+    }
+    struct dirent* ent = nullptr;
+    while ((ent = readdir(dir)) != nullptr) {
+      if (ent->d_name[0] == '.') continue;
+      if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+      std::string full = std::string(TO_UPLOAD_DIR) + "/" + ent->d_name;
+      files.push_back(full);
+    }
+    closedir(dir);
+  }
+
+  int uploaded = 0;
+  for (const auto& f : files) {
+    if (UploadFileToMinio(f)) {
+      SdLockGuard guard(pdMS_TO_TICKS(200));
+      if (!guard.locked() || !MountLogSd()) {
+        ESP_LOGW(TAG, "SD busy, cannot move uploaded file %s", f.c_str());
+        continue;
+      }
+      if (MoveFileToDir(f, UPLOADED_DIR, nullptr)) {
+        uploaded++;
+      }
+    }
+  }
+  if (uploaded > 0) {
+    ESP_LOGI(TAG, "Uploaded %d file(s) to MinIO", uploaded);
+    return true;
+  }
+  return false;
+}
+
+void UploadTask(void*) {
+  const TickType_t interval = pdMS_TO_TICKS(60 * 60 * 1000);  // hourly
+  while (true) {
+    UploadPendingOnce();
+    vTaskDelay(interval);
+  }
+}
 bool FlushLogFile() {
   if (!log_file) return false;
   fflush(log_file);
@@ -262,6 +666,7 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
     s.logging = true;
     s.log_filename = filename;
   });
+  current_log_path = full_path;
   return true;
 }
 
@@ -381,6 +786,22 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   int pid_sensor = pid_config.sensor_index;
   std::string ssid;
   std::string password;
+  std::string device_id = config->device_id;
+  bool device_id_set = false;
+  std::string minio_endpoint = config->minio_endpoint;
+  std::string minio_access = config->minio_access_key;
+  std::string minio_secret = config->minio_secret_key;
+  std::string minio_bucket = config->minio_bucket;
+  bool minio_endpoint_set = false;
+  bool minio_access_set = false;
+  bool minio_secret_set = false;
+  bool minio_bucket_set = false;
+  std::string mqtt_uri = config->mqtt_uri;
+  std::string mqtt_user = config->mqtt_user;
+  std::string mqtt_password = config->mqtt_password;
+  bool mqtt_uri_set = false;
+  bool mqtt_user_set = false;
+  bool mqtt_password_set = false;
 
   while (fgets(line, sizeof(line), file)) {
     std::string raw(line);
@@ -461,6 +882,32 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
       } else {
         ESP_LOGW(TAG, "Invalid stepper_speed_us in config.txt");
       }
+    } else if (key == "device_id") {
+      if (!value.empty()) {
+        device_id = value;
+        device_id_set = true;
+      }
+    } else if (key == "minio_endpoint") {
+      minio_endpoint = value;
+      minio_endpoint_set = true;
+    } else if (key == "minio_access_key") {
+      minio_access = value;
+      minio_access_set = true;
+    } else if (key == "minio_secret_key") {
+      minio_secret = value;
+      minio_secret_set = true;
+    } else if (key == "minio_bucket") {
+      minio_bucket = value;
+      minio_bucket_set = true;
+    } else if (key == "mqtt_uri") {
+      mqtt_uri = value;
+      mqtt_uri_set = true;
+    } else if (key == "mqtt_user") {
+      mqtt_user = value;
+      mqtt_user_set = true;
+    } else if (key == "mqtt_password") {
+      mqtt_password = value;
+      mqtt_password_set = true;
     }
   }
 
@@ -495,6 +942,30 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     config->stepper_speed_us = stepper_speed_val;
     UpdateState([&](SharedState& s) { s.stepper_speed_us = stepper_speed_val; });
   }
+  if (device_id_set) {
+    config->device_id = device_id;
+  }
+  if (minio_endpoint_set) {
+    config->minio_endpoint = minio_endpoint;
+  }
+  if (minio_access_set) {
+    config->minio_access_key = minio_access;
+  }
+  if (minio_secret_set) {
+    config->minio_secret_key = minio_secret;
+  }
+  if (minio_bucket_set) {
+    config->minio_bucket = minio_bucket;
+  }
+  if (mqtt_uri_set) {
+    config->mqtt_uri = mqtt_uri;
+  }
+  if (mqtt_user_set) {
+    config->mqtt_user = mqtt_user;
+  }
+  if (mqtt_password_set) {
+    config->mqtt_password = mqtt_password;
+  }
   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
     pid_config.kp = pid_kp;
     pid_config.ki = pid_ki;
@@ -507,7 +978,9 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     UpdateState([&](SharedState& s) { s.pid_enabled = pid_enabled_val; });
     pid_config.from_file = true;
   }
-  return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || pid_config.from_file;
+  return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || log_use_motor_set ||
+         log_duration_set || stepper_speed_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
+         minio_bucket_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || pid_config.from_file;
 }
 
 void LoadConfigFromSdCard(AppConfig* config) {
@@ -1399,8 +1872,14 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
   }
   xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
+  if (upload_task == nullptr) {
+    xTaskCreatePinnedToCore(&UploadTask, "upload_task", 4096, nullptr, 1, &upload_task, 0);
+  }
 
   init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
   SetStatusLeds(init_ok);
   ESP_LOGI(TAG, "System ready");
+
+  // Start MQTT after init (non-blocking)
+  StartMqttBridge();
 }
