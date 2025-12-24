@@ -1,5 +1,6 @@
 import { defineNuxtPlugin, useRuntimeConfig } from '#app'
-import { connect, MqttClient } from 'mqtt'
+import type { MqttClient } from 'mqtt'
+import mqtt from 'mqtt'
 
 let client: MqttClient | null = null
 
@@ -11,7 +12,7 @@ export default defineNuxtPlugin((nuxtApp) => {
   const url = config.public.mqttUrl
 
   if (!client) {
-    client = connect(url, {
+    client = mqtt.connect(url, {
       protocolVersion: 5,
       reconnectPeriod: 3000,
       connectTimeout: 8000,

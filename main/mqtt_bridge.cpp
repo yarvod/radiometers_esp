@@ -47,6 +47,7 @@ void HandleMqttCommand(const std::string& topic, const uint8_t* data, int len) {
   if (topic != device + "/cmd" || !data || len <= 0) {
     return;
   }
+  ESP_LOGI(TAG_MQTT, "MQTT cmd on %s", topic.c_str());
   std::string payload(reinterpret_cast<const char*>(data), static_cast<size_t>(len));
   cJSON* root = cJSON_Parse(payload.c_str());
   if (!root) {
@@ -113,7 +114,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
       const std::string device = SanitizeId(app_config.device_id);
       std::string topic = device + "/cmd";
       esp_mqtt_client_subscribe(event->client, topic.c_str(), 0);
-      ESP_LOGI(TAG_MQTT, "MQTT connected, subscribed to %s", topic.c_str());
+      ESP_LOGI(TAG_MQTT, "MQTT connected to %s, subscribed to %s", app_config.mqtt_uri.c_str(), topic.c_str());
       break;
     }
     case MQTT_EVENT_DATA: {
@@ -123,6 +124,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
     }
     case MQTT_EVENT_DISCONNECTED: {
       mqtt_connected = false;
+      ESP_LOGW(TAG_MQTT, "MQTT disconnected");
       break;
     }
     default:
@@ -146,6 +148,7 @@ static void MqttStateTask(void*) {
     if (mqtt_connected && mqtt_client) {
       std::string payload = BuildStateJsonString();
       esp_mqtt_client_publish(mqtt_client, topic.c_str(), payload.c_str(), payload.size(), 0, 0);
+      ESP_LOGI(TAG_MQTT, "MQTT state published to %s (%d bytes)", topic.c_str(), (int)payload.size());
     }
     vTaskDelay(interval);
   }

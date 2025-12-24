@@ -6,13 +6,15 @@
 
 <style>
 :root {
-  color-scheme: dark;
-  --bg: #0f1115;
-  --card: #1c1f26;
-  --accent: #8ab4f8;
-  --text: #e8eaed;
-  --muted: #9aa0a6;
-  --border: #2c2f36;
+  color-scheme: light;
+  --bg: #f0f0f0;
+  --card: #f8f9fa;
+  --accent: #3498db;
+  --accent-strong: #2980b9;
+  --text: #1f1f1f;
+  --muted: #5f6368;
+  --border: #e0e0e0;
+  --shadow: 0 6px 14px rgba(0, 0, 0, 0.08);
 }
 body {
   margin: 0;
@@ -25,23 +27,32 @@ a { color: var(--accent); }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  box-shadow: var(--shadow);
+  padding: 16px;
 }
 button {
-  background: #2d3038;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  box-shadow: 0 4px 12px rgba(43, 102, 246, 0.28);
+}
+button:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(43, 102, 246, 0.35); filter: brightness(1.02); }
+button:active { transform: translateY(0); filter: brightness(0.98); }
+input, select {
+  background: #f1f3f4;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 8px 12px;
-  cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
+  padding: 10px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-button:hover { background: #363a45; border-color: var(--accent); }
-input, select {
-  background: #12151b;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
+input:focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.15);
 }
 </style>

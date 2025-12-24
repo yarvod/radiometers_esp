@@ -28,6 +28,7 @@ export const useDevicesStore = defineStore('devices', {
       mqtt.on('connect', () => {
         mqtt.subscribe("+/resp")
         mqtt.subscribe("+/state")
+        console.info('MQTT connected')
       })
 
       mqtt.on('message', (topic, payload) => {
@@ -56,8 +57,12 @@ export const useDevicesStore = defineStore('devices', {
           let msg: any = {}
           try { msg = JSON.parse(txt) } catch (_) {}
           this.setState(deviceId, msg)
+          console.debug('state update', deviceId, msg)
         }
       })
+      mqtt.on('error', (err) => console.error('MQTT error', err))
+      mqtt.on('reconnect', () => console.warn('MQTT reconnecting...'))
+      mqtt.on('close', () => console.warn('MQTT closed'))
     },
     markOnline(id: string) {
       const prev = this.devices.get(id) || { id, online: false }
