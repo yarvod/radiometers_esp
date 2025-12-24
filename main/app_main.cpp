@@ -150,12 +150,15 @@ bool SanitizeFilename(const std::string& name, std::string* out_full) {
   return true;
 }
 
-bool SanitizePath(const std::string& rel_path, std::string* out_full) {
-  if (rel_path.empty() || rel_path[0] == '/' || rel_path.size() > 128) return false;
+bool SanitizePath(const std::string& rel_path_raw, std::string* out_full) {
+  if (rel_path_raw.empty() || rel_path_raw.size() > 256) return false;
+  std::string rel_path = rel_path_raw;
+  if (!rel_path.empty() && rel_path[0] == '/') rel_path.erase(rel_path.begin());
+  if (rel_path.empty() || rel_path.size() > 256) return false;
   if (rel_path.find("..") != std::string::npos) return false;
   if (rel_path.find("//") != std::string::npos) return false;
   for (char c : rel_path) {
-    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '/')) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '/' || c == ' ' || c == '(' || c == ')')) {
       return false;
     }
   }
@@ -213,7 +216,7 @@ std::string BuildLogFilename(const std::string& postfix_raw) {
 // Devices
 LTC2440 adc1(ADC_CS1, ADC_MISO);
 LTC2440 adc2(ADC_CS2, ADC_MISO);
-// LTC2440 adc3(ADC_CS3, ADC_MISO);
+LTC2440 adc3(ADC_CS3, ADC_MISO);
 
 std::string IsoUtcNow() {
   time_t now = time(nullptr);
@@ -712,7 +715,7 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
 
   SharedState snapshot = CopyState();
   log_config.file_start_us = esp_timer_get_time();
-  fprintf(log_file, "timestamp_iso,timestamp_ms,adc1,adc2");
+  fprintf(log_file, "timestamp_iso,timestamp_ms,adc1,adc2,adc3");
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     const std::string& label = snapshot.temp_labels[i];
     if (!label.empty()) {
@@ -723,7 +726,7 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
   }
   fprintf(log_file, ",bus_v,bus_i,bus_p");
   if (log_config.use_motor) {
-    fprintf(log_file, ",adc1_cal,adc2_cal");
+    fprintf(log_file, ",adc1_cal,adc2_cal,adc3_cal");
   }
   fprintf(log_file, "\n");
   FlushLogFile();
@@ -1648,12 +1651,12 @@ esp_err_t ReadAllAdc(float* v1, float* v2, float* v3) {
     StartErrorBlink();
     return err;
   }
-  // err = adc3.Read(&raw3);
-  // if (err != ESP_OK) {
-  //   ESP_LOGE(TAG, "ADC3 read failed");
-  //   StartErrorBlink();
-  //   return err;
-  // }
+  err = adc3.Read(&raw3);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "ADC3 read failed");
+    StartErrorBlink();
+    return err;
+  }
 
   *v1 = static_cast<float>(raw1) * ADC_SCALE;
   *v2 = static_cast<float>(raw2) * ADC_SCALE;
@@ -1666,10 +1669,16 @@ void AdcTask(void*) {
     float v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
     if (ReadAllAdc(&v1, &v2, &v3) == ESP_OK) {
       const uint64_t now_ms = esp_timer_get_time() / 1000ULL;
+      const float raw1 = v1;
+      const float raw2 = v2;
+      const float raw3 = v3;
       UpdateState([&](SharedState& s) {
-        s.voltage1 = v1 - s.offset1;
-        s.voltage2 = v2 - s.offset2;
-        s.voltage3 = v3 - s.offset3;
+        s.voltage1 = raw1 - s.offset1;
+        s.voltage2 = raw2 - s.offset2;
+        s.voltage3 = raw3 - s.offset3;
+        s.voltage1_cal = raw1;
+        s.voltage2_cal = raw2;
+        s.voltage3_cal = raw3;
         s.last_update_ms = now_ms;
       });
       ESP_LOGD(TAG, "ADC: %.6f %.6f %.6f", v1, v2, v3);
@@ -1896,7 +1905,7 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(InitSpiBus());
   ESP_ERROR_CHECK(adc1.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
   ESP_ERROR_CHECK(adc2.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
-  // ESP_ERROR_CHECK(adc3.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
+  ESP_ERROR_CHECK(adc3.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
   esp_err_t ina_err = InitIna219();
   if (ina_err != ESP_OK) {
     ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));

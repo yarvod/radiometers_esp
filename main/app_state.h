@@ -61,6 +61,9 @@ struct SharedState {
   float voltage1;
   float voltage2;
   float voltage3;
+  float voltage1_cal;
+  float voltage2_cal;
+  float voltage3_cal;
   float offset1;
   float offset2;
   float offset3;

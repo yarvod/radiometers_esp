@@ -17,6 +17,9 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "voltage1", snapshot.voltage1);
   cJSON_AddNumberToObject(root, "voltage2", snapshot.voltage2);
   cJSON_AddNumberToObject(root, "voltage3", snapshot.voltage3);
+  cJSON_AddNumberToObject(root, "voltage1Cal", snapshot.voltage1_cal);
+  cJSON_AddNumberToObject(root, "voltage2Cal", snapshot.voltage2_cal);
+  cJSON_AddNumberToObject(root, "voltage3Cal", snapshot.voltage3_cal);
   cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);

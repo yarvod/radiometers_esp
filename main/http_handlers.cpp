@@ -28,6 +28,34 @@
 #include "tusb_msc_storage.h"
 #include "sdkconfig.h"
 
+static bool UrlDecode(const char* src, std::string* out) {
+  if (!src || !out) return false;
+  out->clear();
+  for (size_t i = 0; src[i] != '\0'; ++i) {
+    char c = src[i];
+    if (c == '%') {
+      if (!std::isxdigit(static_cast<unsigned char>(src[i + 1])) || !std::isxdigit(static_cast<unsigned char>(src[i + 2]))) {
+        return false;
+      }
+      auto hex = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+        if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+        return 0;
+      };
+      int v = (hex(src[i + 1]) << 4) | hex(src[i + 2]);
+      out->push_back(static_cast<char>(v));
+      i += 2;
+    } else if (c == '+') {
+      out->push_back(' ');
+    } else {
+      out->push_back(c);
+    }
+    if (out->size() > 512) return false;
+  }
+  return true;
+}
+
 // HTTP handlers
 esp_err_t RootHandler(httpd_req_t* req) {
   httpd_resp_set_type(req, "text/html");
@@ -40,6 +68,9 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "voltage1", snapshot.voltage1);
   cJSON_AddNumberToObject(root, "voltage2", snapshot.voltage2);
   cJSON_AddNumberToObject(root, "voltage3", snapshot.voltage3);
+  cJSON_AddNumberToObject(root, "voltage1Cal", snapshot.voltage1_cal);
+  cJSON_AddNumberToObject(root, "voltage2Cal", snapshot.voltage2_cal);
+  cJSON_AddNumberToObject(root, "voltage3Cal", snapshot.voltage3_cal);
   cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
@@ -575,15 +606,21 @@ void LoggingTask(void*) {
         }
         uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
         const std::string iso = IsoUtcNow();
-        fprintf(log_file, "%s,%llu,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, pending_base.voltage1, pending_base.voltage2);
+        fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms,
+                pending_base.voltage1, pending_base.voltage2, pending_base.voltage3);
         for (int i = 0; i < pending_base.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
           fprintf(log_file, ",%.2f", pending_base.temps_c[i]);
         }
         fprintf(log_file, ",%.3f,%.3f,%.3f", pending_base.ina_bus_voltage, pending_base.ina_current, pending_base.ina_power);
-        fprintf(log_file, ",%.6f,%.6f", avg.voltage1, avg.voltage2);
+        fprintf(log_file, ",%.6f,%.6f,%.6f", avg.voltage1, avg.voltage2, avg.voltage3);
         fprintf(log_file, "\n");
         FlushLogFile();
         ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+        UpdateState([&](SharedState& s) {
+          s.voltage1_cal = avg.voltage1;
+          s.voltage2_cal = avg.voltage2;
+          s.voltage3_cal = avg.voltage3;
+        });
       }
 
       // Вернуться вперёд на 200 и продолжить цикл
@@ -616,17 +653,23 @@ void LoggingTask(void*) {
     }
     uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
     const std::string iso = IsoUtcNow();
-    fprintf(log_file, "%s,%llu,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2);
+    fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms,
+            avg1.voltage1, avg1.voltage2, avg1.voltage3);
     for (int i = 0; i < avg1.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
       fprintf(log_file, ",%.2f", avg1.temps_c[i]);
     }
     fprintf(log_file, ",%.3f,%.3f,%.3f", avg1.ina_bus_voltage, avg1.ina_current, avg1.ina_power);
     if (log_config.use_motor && have_cal) {
-      fprintf(log_file, ",%.6f,%.6f", avg2.voltage1, avg2.voltage2);
+      fprintf(log_file, ",%.6f,%.6f,%.6f", avg2.voltage1, avg2.voltage2, avg2.voltage3);
     }
     fprintf(log_file, "\n");
     FlushLogFile();
     ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+    UpdateState([&](SharedState& s) {
+      s.voltage1_cal = avg1.voltage1;
+      s.voltage2_cal = avg1.voltage2;
+      s.voltage3_cal = avg1.voltage3;
+    });
   }
 }
 
@@ -818,9 +861,14 @@ esp_err_t FsListHandler(httpd_req_t* req) {
   if (qs_len > 1) {
     std::string qs(qs_len, '\0');
     if (httpd_req_get_url_query_str(req, qs.data(), qs_len) == ESP_OK) {
-      char buf[128] = {};
+      char buf[256] = {};
       if (httpd_query_key_value(qs.c_str(), "path", buf, sizeof(buf)) == ESP_OK) {
-        rel_path = buf;
+        std::string decoded;
+        if (!UrlDecode(buf, &decoded)) {
+          httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
+          return ESP_FAIL;
+        }
+        rel_path = decoded;
       }
       if (httpd_query_key_value(qs.c_str(), "page", buf, sizeof(buf)) == ESP_OK) {
         page = std::max(0, atoi(buf));
@@ -932,7 +980,7 @@ esp_err_t FsDownloadHandler(httpd_req_t* req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
     return ESP_FAIL;
   }
-  char file_param[128] = {};
+  char file_param[256] = {};
   bool has_path = httpd_query_key_value(qs.c_str(), "path", file_param, sizeof(file_param)) == ESP_OK;
   if (!has_path) {
     if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
@@ -940,13 +988,19 @@ esp_err_t FsDownloadHandler(httpd_req_t* req) {
       return ESP_FAIL;
     }
   }
+  std::string req_path = file_param;
+  std::string decoded_path;
+  if (!UrlDecode(req_path.c_str(), &decoded_path)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+    return ESP_FAIL;
+  }
   std::string full_path;
   if (has_path) {
-    if (!SanitizePath(file_param, &full_path)) {
+    if (!SanitizePath(decoded_path, &full_path)) {
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
       return ESP_FAIL;
     }
-  } else if (!SanitizeFilename(file_param, &full_path)) {
+  } else if (!SanitizeFilename(decoded_path, &full_path)) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
     return ESP_FAIL;
   }
@@ -973,7 +1027,7 @@ esp_err_t FsDownloadHandler(httpd_req_t* req) {
     ctype = "text/csv";
   }
   httpd_resp_set_type(req, ctype);
-  std::string download_name = file_param;
+  std::string download_name = decoded_path;
   size_t slash = download_name.find_last_of('/');
   if (slash != std::string::npos) {
     download_name = download_name.substr(slash + 1);
@@ -1066,13 +1120,18 @@ esp_err_t FsDeleteHandler(httpd_req_t* req) {
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
       return ESP_FAIL;
     }
-    char file_param[96] = {};
+    char file_param[256] = {};
     if (httpd_query_key_value(qs.c_str(), "path", file_param, sizeof(file_param)) != ESP_OK &&
         httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
       return ESP_FAIL;
     }
-    requested_files.emplace_back(file_param);
+    std::string decoded;
+    if (!UrlDecode(file_param, &decoded)) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+      return ESP_FAIL;
+    }
+    requested_files.emplace_back(decoded);
   }
 
   auto is_protected_config = [](const std::string& name) {

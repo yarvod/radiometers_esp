@@ -26,9 +26,26 @@
             <div class="reading-value big">{{ device?.state?.voltage2?.toFixed?.(6) ?? '—' }}</div>
             <div class="reading-sub">В</div>
           </div>
+          <div class="reading-card primary">
+            <div class="reading-label">U3</div>
+            <div class="reading-value big">{{ device?.state?.voltage3?.toFixed?.(6) ?? '—' }}</div>
+            <div class="reading-sub">В</div>
+          </div>
         </div>
       </div>
       <div class="temps">
+        <div class="temp-card subtle">
+          <div class="temp-title">U1 cal</div>
+          <div class="temp-value small">{{ device?.state?.voltage1Cal?.toFixed?.(6) ?? '--' }} V</div>
+        </div>
+        <div class="temp-card subtle">
+          <div class="temp-title">U2 cal</div>
+          <div class="temp-value small">{{ device?.state?.voltage2Cal?.toFixed?.(6) ?? '--' }} V</div>
+        </div>
+        <div class="temp-card subtle">
+          <div class="temp-title">U3 cal</div>
+          <div class="temp-value small">{{ device?.state?.voltage3Cal?.toFixed?.(6) ?? '--' }} V</div>
+        </div>
         <div v-for="(t, i) in temps" :key="i" class="temp-card">
           <div class="temp-title">{{ tempLabels[i] || `T${i + 1}` }}</div>
           <div class="temp-value small">{{ t?.toFixed?.(2) ?? '--' }} °C</div>
@@ -227,6 +244,7 @@ input { width: 100%; box-sizing: border-box; }
 .muted { color: var(--muted); font-size: 13px; }
 .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
+.temp-card.subtle { background: #f7f7f7; box-shadow: none; }
 .temp-title { font-size: 12px; color: var(--muted); }
 .temp-value { font-weight: 700; font-size: 16px; color: #1f2d3d; }
 .temp-value.small { font-size: 16px; }
