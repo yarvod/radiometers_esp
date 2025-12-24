@@ -26,6 +26,8 @@ idf_component_register(
         onewire_bus
         mqtt
     INCLUDE_DIRS "."
+    EMBED_TXTFILES
+        "ca.crt"
 )
 
 set_property(TARGET ${COMPONENT_LIB} PROPERTY CXX_STANDARD 17)

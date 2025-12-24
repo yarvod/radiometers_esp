@@ -14,6 +14,8 @@ namespace {
 constexpr char TAG_MQTT[] = "MQTT_BRIDGE";
 esp_mqtt_client_handle_t mqtt_client = nullptr;
 static bool mqtt_connected = false;
+extern const uint8_t ca_crt_start[] asm("_binary_ca_crt_start");
+extern const uint8_t ca_crt_end[] asm("_binary_ca_crt_end");
 
 void MqttPublish(const std::string& topic, const std::string& payload, int qos = 0, bool retain = false) {
   if (!mqtt_client || topic.empty()) return;
@@ -171,6 +173,8 @@ void StartMqttBridge() {
   cfg.network.disable_auto_reconnect = false;
   cfg.session.disable_clean_session = false;
   cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
+  cfg.broker.verification.certificate = reinterpret_cast<const char*>(ca_crt_start);
+  cfg.broker.verification.certificate_len = ca_crt_end - ca_crt_start;
   mqtt_client = esp_mqtt_client_init(&cfg);
   if (!mqtt_client) {
     ESP_LOGE(TAG_MQTT, "MQTT init failed");
