@@ -12,13 +12,14 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto_passwd:/mosquitto/config/passwd
+      - mosquitto_passwd:/mosquitto/config/passwd
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
     command: >
       sh -c 'set -e;
       if [ ! -s /mosquitto/config/passwd ]; then
         mosquitto_passwd -b -c /mosquitto/config/passwd "$MQTT_USER" "$MQTT_PASSWORD";
+        chmod 0700 /mosquitto/config/passwd;
       fi;
       exec mosquitto -c /mosquitto/config/mosquitto.conf'
 
@@ -48,9 +49,11 @@ services:
       - mosquitto
     volumes:
       - ./frontend:/app
+      - /app/node_modules
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3000"]
 
 volumes:
   mosquitto_data:
   mosquitto_log:
+  mosquitto_passwd:
   minio_data:
