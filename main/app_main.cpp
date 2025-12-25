@@ -88,6 +88,9 @@ bool time_synced = false;
 bool wifi_inited = false;
 esp_netif_t* wifi_netif_sta = nullptr;
 esp_netif_t* wifi_netif_ap = nullptr;
+static TaskHandle_t wifi_recover_task = nullptr;
+static bool fallback_ap_active = false;
+static wifi_config_t sta_cfg_cached = {};
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
@@ -1141,14 +1144,52 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       esp_wifi_connect();
       retry_count++;
       ESP_LOGW(TAG, "Retry Wi-Fi connection (%d)", retry_count);
-    } else {
+    } else if (!app_config.wifi_ap_mode) {
       xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
+      if (!fallback_ap_active) {
+        ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
+        fallback_ap_active = true;
+        wifi_config_t ap_config = {};
+        const char* ap_ssid = "esp";
+        const char* ap_pass = "12345678";
+        std::strncpy(reinterpret_cast<char*>(ap_config.ap.ssid), ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+        std::strncpy(reinterpret_cast<char*>(ap_config.ap.password), ap_pass, sizeof(ap_config.ap.password) - 1);
+        ap_config.ap.ssid_len = strlen(reinterpret_cast<char*>(ap_config.ap.ssid));
+        ap_config.ap.channel = 1;
+        ap_config.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+        ap_config.ap.max_connection = 4;
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached);
+        if (!wifi_recover_task) {
+          xTaskCreatePinnedToCore(
+              [](void*) {
+                while (fallback_ap_active) {
+                  esp_wifi_connect();
+                  vTaskDelay(pdMS_TO_TICKS(5000));
+                }
+                vTaskDelete(nullptr);
+              },
+              "wifi_recover", 2048, nullptr, 1, &wifi_recover_task, 0);
+        }
+      }
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     retry_count = 0;
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    if (fallback_ap_active && !app_config.wifi_ap_mode) {
+      ESP_LOGI(TAG, "Disabling fallback AP after reconnect");
+      fallback_ap_active = false;
+      if (wifi_recover_task) {
+        TaskHandle_t t = wifi_recover_task;
+        wifi_recover_task = nullptr;
+        vTaskDelete(t);
+      }
+      esp_wifi_set_mode(WIFI_MODE_STA);
+      esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached);
+    }
   }
 }
 
@@ -1220,6 +1261,7 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
   ap_config.ap.max_connection = 4;
 
   wifi_mode_t mode = ap_mode ? WIFI_MODE_APSTA : WIFI_MODE_STA;
+  sta_cfg_cached = wifi_config;
   ESP_ERROR_CHECK(esp_wifi_set_mode(mode));
   if (USE_CUSTOM_MAC) {
     ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CUSTOM_MAC));
