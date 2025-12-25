@@ -46,6 +46,14 @@
           <div class="temp-title">U3 cal</div>
           <div class="temp-value small">{{ device?.state?.voltage3Cal?.toFixed?.(6) ?? '--' }} V</div>
         </div>
+        <div class="temp-card subtle">
+          <div class="temp-title">Wi‑Fi RSSI</div>
+          <div class="temp-value small">{{ device?.state?.wifiRssi ?? '--' }} dBm</div>
+        </div>
+        <div class="temp-card subtle">
+          <div class="temp-title">Wi‑Fi качество</div>
+          <div class="temp-value small">{{ device?.state?.wifiQuality ?? '--' }}%</div>
+        </div>
         <div v-for="(t, i) in temps" :key="i" class="temp-card">
           <div class="temp-title">{{ tempLabels[i] || `T${i + 1}` }}</div>
           <div class="temp-value small">{{ t?.toFixed?.(2) ?? '--' }} °C</div>

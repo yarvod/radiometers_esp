@@ -262,6 +262,10 @@ const char INDEX_HTML[] = R"rawliteral(
           <div class="control-panel">
             <h3>Wi‑Fi</h3>
             <div class="form-group">
+              <div>RSSI: <span id="wifiRssi">-- dBm</span></div>
+              <div>Качество: <span id="wifiQuality">-- %</span></div>
+            </div>
+            <div class="form-group">
               <label for="wifiMode">Mode</label>
               <select id="wifiMode">
                 <option value="sta">Connect to Wi‑Fi</option>
@@ -634,6 +638,10 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('inaVoltage').textContent = data.inaBusVoltage.toFixed(3) + ' V';
       document.getElementById('inaCurrent').textContent = data.inaCurrent.toFixed(3);
       document.getElementById('inaPower').textContent = data.inaPower.toFixed(3);
+      const wifiRssiEl = document.getElementById('wifiRssi');
+      const wifiQualEl = document.getElementById('wifiQuality');
+      if (wifiRssiEl && data.wifiRssi !== undefined) wifiRssiEl.textContent = data.wifiRssi + ' dBm';
+      if (wifiQualEl && data.wifiQuality !== undefined) wifiQualEl.textContent = data.wifiQuality + ' %';
       document.getElementById('fanPowerDisplay').textContent = data.fanPower.toFixed(0) + ' %';
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;

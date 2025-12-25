@@ -33,6 +33,8 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
+  cJSON_AddNumberToObject(root, "wifiRssi", snapshot.wifi_rssi_dbm);
+  cJSON_AddNumberToObject(root, "wifiQuality", snapshot.wifi_quality);
   cJSON* temps = cJSON_CreateArray();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     cJSON_AddItemToArray(temps, cJSON_CreateNumber(snapshot.temps_c[i]));

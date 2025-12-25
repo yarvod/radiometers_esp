@@ -74,6 +74,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
+  cJSON_AddNumberToObject(root, "wifiRssi", snapshot.wifi_rssi_dbm);
+  cJSON_AddNumberToObject(root, "wifiQuality", snapshot.wifi_quality);
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);

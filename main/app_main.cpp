@@ -1152,6 +1152,28 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
   }
 }
 
+static int RssiToQuality(int rssi_dbm) {
+  // Map -100..-50 dBm to 0..100%
+  int q = 2 * (rssi_dbm + 100);
+  if (q < 0) q = 0;
+  if (q > 100) q = 100;
+  return q;
+}
+
+void WifiMonitorTask(void*) {
+  while (true) {
+    wifi_ap_record_t ap{};
+    esp_err_t err = esp_wifi_sta_get_ap_info(&ap);
+    int rssi = (err == ESP_OK) ? ap.rssi : -127;
+    int quality = (err == ESP_OK) ? RssiToQuality(rssi) : 0;
+    UpdateState([&](SharedState& s) {
+      s.wifi_rssi_dbm = rssi;
+      s.wifi_quality = quality;
+    });
+    vTaskDelay(pdMS_TO_TICKS(5000));
+  }
+}
+
 void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode) {
   if (!wifi_event_group) {
     wifi_event_group = xEventGroupCreate();
@@ -1970,6 +1992,7 @@ extern "C" void app_main(void) {
     // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
     xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
   }
+  xTaskCreatePinnedToCore(&WifiMonitorTask, "wifi_mon", 2048, nullptr, 1, nullptr, 0);
 
   init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
   SetStatusLeds(init_ok);

@@ -102,6 +102,8 @@ struct SharedState {
   bool calibrating;
   bool usb_msc_mode;
   std::string usb_error;
+  int wifi_rssi_dbm;
+  int wifi_quality;
 };
 
 enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };
