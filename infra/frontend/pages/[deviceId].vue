@@ -116,14 +116,6 @@
           </div>
         </div>
         <button class="btn danger" @click="setHeater">Установить</button>
-        <div class="form-group">
-          <label>Вентилятор (%)</label>
-          <div class="range-row">
-            <input type="range" min="0" max="100" step="1" v-model.number="fanPower" @input="fanEditing = true" @change="fanEditing = true" />
-            <input type="number" min="0" max="100" step="1" v-model.number="fanPower" @input="fanEditing = true" />
-          </div>
-        </div>
-        <button class="btn success" @click="setFan">Установить</button>
         <div class="divider"></div>
         <div class="form-group">
           <label>PID цель (°C)</label>
@@ -249,9 +241,7 @@ const tempEntries = computed(() => {
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1000, reverse: false })
 const heaterPower = ref(0)
-const fanPower = ref(0)
 const heaterEditing = ref(false)
-const fanEditing = ref(false)
 const pidDirty = ref(false)
 const wifiDirty = ref(false)
 const pidApplyStatus = ref('')
@@ -316,9 +306,6 @@ watch(
     if (!heaterEditing.value && Number.isFinite(state.heaterPower)) {
       heaterPower.value = Number(state.heaterPower)
     }
-    if (!fanEditing.value && Number.isFinite(state.fanPower)) {
-      fanPower.value = Number(state.fanPower)
-    }
   },
   { immediate: true }
 )
@@ -356,11 +343,6 @@ function setHeater() {
   if (!deviceId.value) return
   store.heaterSet(nuxtApp.$mqtt, deviceId.value, heaterPower.value)
   heaterEditing.value = false
-}
-function setFan() {
-  if (!deviceId.value) return
-  store.fanSet(nuxtApp.$mqtt, deviceId.value, fanPower.value)
-  fanEditing.value = false
 }
 async function applyPid() {
   if (!deviceId.value) return
@@ -447,7 +429,10 @@ onMounted(() => {
 .chip.cool { background: #e7f5ff; color: #22649e; border-color: rgba(52, 152, 219, 0.35); }
 .chip.online { background: #e6f8ed; color: #2e8b57; border-color: rgba(46, 139, 87, 0.35); }
 .chip.warn { background: #fff4e5; color: #a55a00; border-color: rgba(247, 178, 56, 0.35); }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 16px; }
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+}
 .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .inline > * { min-width: 0; }
 .fields > * { flex: 1 1 180px; }
