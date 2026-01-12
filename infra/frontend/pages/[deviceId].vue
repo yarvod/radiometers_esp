@@ -98,8 +98,74 @@
 
       <div class="card">
         <div class="card-head">
+          <h3>Термоконтроль</h3>
+          <span class="badge accent">Heater + PID</span>
+        </div>
+        <div class="status-row">
+          <span class="chip" :class="{ online: pidEnabled, subtle: !pidEnabled }">PID {{ pidEnabled ? 'On' : 'Off' }}</span>
+          <span class="chip subtle">Выход: {{ pidOutputDisplay }}</span>
+          <span class="chip subtle">Цель: {{ pidSetpointDisplay }}</span>
+          <span class="chip subtle">Датчик: {{ pidSensorLabel }}</span>
+          <span class="chip subtle">T: {{ pidSensorTemp }}</span>
+        </div>
+        <div class="form-group">
+          <label>Ручной нагрев (%)</label>
+          <div class="range-row">
+            <input type="range" min="0" max="100" step="0.5" v-model.number="heaterPower" @input="heaterEditing = true" @change="heaterEditing = true" />
+            <input type="number" min="0" max="100" step="0.1" v-model.number="heaterPower" @input="heaterEditing = true" />
+          </div>
+        </div>
+        <button class="btn danger" @click="setHeater">Установить</button>
+        <div class="form-group">
+          <label>Вентилятор (%)</label>
+          <div class="range-row">
+            <input type="range" min="0" max="100" step="1" v-model.number="fanPower" @input="fanEditing = true" @change="fanEditing = true" />
+            <input type="number" min="0" max="100" step="1" v-model.number="fanPower" @input="fanEditing = true" />
+          </div>
+        </div>
+        <button class="btn success" @click="setFan">Установить</button>
+        <div class="divider"></div>
+        <div class="form-group">
+          <label>PID цель (°C)</label>
+          <input type="number" min="0" step="0.1" v-model.number="pidForm.setpoint" @input="pidDirty = true" />
+        </div>
+        <div class="form-group">
+          <label>PID датчик</label>
+          <select v-model.number="pidForm.sensorIndex" @change="pidDirty = true">
+            <option v-for="(sensor, idx) in tempEntries" :key="sensor.key" :value="idx">
+              {{ sensor.label }}{{ sensor.address ? ` (${sensor.address})` : '' }}
+            </option>
+          </select>
+        </div>
+        <div class="inline fields">
+          <label class="compact">Kp
+            <input type="number" step="0.01" v-model.number="pidForm.kp" @input="pidDirty = true" />
+          </label>
+          <label class="compact">Ki
+            <input type="number" step="0.01" v-model.number="pidForm.ki" @input="pidDirty = true" />
+          </label>
+          <label class="compact">Kd
+            <input type="number" step="0.01" v-model.number="pidForm.kd" @input="pidDirty = true" />
+          </label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" @click="applyPid">Сохранить PID</button>
+          <button class="btn success" @click="enablePid">Включить PID</button>
+          <button class="btn warning ghost" @click="disablePid">Выключить PID</button>
+        </div>
+        <p class="muted" v-if="pidApplyStatus">{{ pidApplyStatus }}</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
           <h3>Шаговик</h3>
           <span class="badge success">Мотор</span>
+        </div>
+        <div class="status-row">
+          <span class="chip" :class="{ online: stepperEnabled, subtle: !stepperEnabled }">{{ stepperEnabled ? 'Enabled' : 'Disabled' }}</span>
+          <span class="chip" :class="{ warm: stepperMoving, subtle: !stepperMoving }">{{ stepperMoving ? 'Moving' : 'Idle' }}</span>
+          <span class="chip" :class="{ warn: stepperHoming, subtle: !stepperHoming }">{{ stepperHoming ? 'Homing' : 'Ready' }}</span>
+          <span class="chip subtle">Dir: {{ stepperDirText }}</span>
         </div>
         <div class="inline">
           <button class="btn success" @click="stepperEnable">Enable</button>
@@ -120,19 +186,37 @@
 
       <div class="card">
         <div class="card-head">
-          <h3>Нагреватель / Вентилятор</h3>
-          <span class="badge accent">Термоконтроль</span>
+          <h3>Wi‑Fi</h3>
+          <span class="badge">Сеть</span>
+        </div>
+        <div class="status-row">
+          <span class="chip strong">IP: {{ wifiIpDisplay }}</span>
+          <span class="chip subtle">STA: {{ wifiStaIpDisplay }}</span>
+          <span class="chip subtle">AP: {{ wifiApIpDisplay }}</span>
+          <span class="chip" :class="{ online: wifiModeDisplay === 'sta', cool: wifiModeDisplay === 'ap' }">Mode: {{ wifiModeDisplay.toUpperCase() }}</span>
+        </div>
+        <div class="status-row">
+          <span class="chip subtle">RSSI: {{ device?.state?.wifiRssi ?? '--' }} dBm</span>
+          <span class="chip subtle">Качество: {{ device?.state?.wifiQuality ?? '--' }}%</span>
+          <span class="chip subtle">SSID: {{ wifiSsidDisplay }}</span>
         </div>
         <div class="form-group">
-          <label>Мощность нагревателя (%)</label>
-          <input type="number" v-model.number="heaterPower" min="0" max="100" />
+          <label>Режим</label>
+          <select v-model="wifiForm.mode" @change="wifiDirty = true">
+            <option value="sta">STA (подключение)</option>
+            <option value="ap">AP (точка доступа)</option>
+          </select>
         </div>
-        <button class="btn danger" @click="setHeater">Установить</button>
         <div class="form-group">
-          <label>Мощность вентилятора (%)</label>
-          <input type="number" v-model.number="fanPower" min="0" max="100" />
+          <label>SSID</label>
+          <input type="text" v-model="wifiForm.ssid" @input="wifiDirty = true" />
         </div>
-        <button class="btn success" @click="setFan">Установить</button>
+        <div class="form-group">
+          <label>Пароль</label>
+          <input type="password" v-model="wifiForm.password" @input="wifiDirty = true" />
+        </div>
+        <button class="btn primary" @click="applyWifi">Применить Wi‑Fi</button>
+        <p class="muted" v-if="wifiApplyStatus">{{ wifiApplyStatus }}</p>
       </div>
     </div>
   </div>
@@ -166,6 +250,78 @@ const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1000, reverse: false })
 const heaterPower = ref(0)
 const fanPower = ref(0)
+const heaterEditing = ref(false)
+const fanEditing = ref(false)
+const pidDirty = ref(false)
+const wifiDirty = ref(false)
+const pidApplyStatus = ref('')
+const wifiApplyStatus = ref('')
+const pidForm = reactive({ setpoint: 25, sensorIndex: 0, kp: 1, ki: 0, kd: 0 })
+const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
+
+const pidEnabled = computed(() => !!device.value?.state?.pidEnabled)
+const pidOutputDisplay = computed(() => {
+  const val = device.value?.state?.pidOutput
+  return Number.isFinite(val) ? `${Number(val).toFixed(1)} %` : '--'
+})
+const pidSetpointDisplay = computed(() => {
+  const val = device.value?.state?.pidSetpoint
+  return Number.isFinite(val) ? `${Number(val).toFixed(1)} °C` : '--'
+})
+const pidSensorLabel = computed(() => {
+  const idx = device.value?.state?.pidSensorIndex ?? pidForm.sensorIndex
+  return tempEntries.value[idx]?.label || `T${(idx ?? 0) + 1}`
+})
+const pidSensorTemp = computed(() => {
+  const idx = device.value?.state?.pidSensorIndex ?? pidForm.sensorIndex
+  const entry = tempEntries.value[idx ?? 0]
+  if (!entry || !Number.isFinite(entry.value)) return '--'
+  return `${Number(entry.value).toFixed(2)} °C`
+})
+
+const stepperEnabled = computed(() => !!device.value?.state?.stepperEnabled)
+const stepperMoving = computed(() => !!device.value?.state?.stepperMoving)
+const stepperHoming = computed(() => !!device.value?.state?.stepperHoming)
+const stepperDirText = computed(() => {
+  const dir = device.value?.state?.stepperDirForward
+  if (dir === undefined || dir === null) return '--'
+  return dir ? 'FWD' : 'REV'
+})
+
+const wifiModeDisplay = computed(() => {
+  const mode = device.value?.state?.wifiMode
+  if (mode === 'ap' || mode === 'sta') return mode
+  return device.value?.state?.wifiApMode ? 'ap' : 'sta'
+})
+const wifiIpDisplay = computed(() => device.value?.state?.wifiIp || '--')
+const wifiStaIpDisplay = computed(() => device.value?.state?.wifiStaIp || '--')
+const wifiApIpDisplay = computed(() => device.value?.state?.wifiApIp || '--')
+const wifiSsidDisplay = computed(() => device.value?.state?.wifiSsid || '--')
+
+watch(
+  () => device.value?.state,
+  (state) => {
+    if (!state) return
+    if (!pidDirty.value) {
+      if (Number.isFinite(state.pidSetpoint)) pidForm.setpoint = Number(state.pidSetpoint)
+      if (Number.isFinite(state.pidSensorIndex)) pidForm.sensorIndex = Number(state.pidSensorIndex)
+      if (Number.isFinite(state.pidKp)) pidForm.kp = Number(state.pidKp)
+      if (Number.isFinite(state.pidKi)) pidForm.ki = Number(state.pidKi)
+      if (Number.isFinite(state.pidKd)) pidForm.kd = Number(state.pidKd)
+    }
+    if (!wifiDirty.value) {
+      wifiForm.mode = state.wifiMode || (state.wifiApMode ? 'ap' : 'sta')
+      wifiForm.ssid = state.wifiSsid || ''
+    }
+    if (!heaterEditing.value && Number.isFinite(state.heaterPower)) {
+      heaterPower.value = Number(state.heaterPower)
+    }
+    if (!fanEditing.value && Number.isFinite(state.fanPower)) {
+      fanPower.value = Number(state.fanPower)
+    }
+  },
+  { immediate: true }
+)
 
 async function refreshState() {
   if (!deviceId.value) return
@@ -199,10 +355,64 @@ function stepperMove() {
 function setHeater() {
   if (!deviceId.value) return
   store.heaterSet(nuxtApp.$mqtt, deviceId.value, heaterPower.value)
+  heaterEditing.value = false
 }
 function setFan() {
   if (!deviceId.value) return
   store.fanSet(nuxtApp.$mqtt, deviceId.value, fanPower.value)
+  fanEditing.value = false
+}
+async function applyPid() {
+  if (!deviceId.value) return
+  pidApplyStatus.value = 'Сохраняю PID...'
+  try {
+    await store.pidApply(nuxtApp.$mqtt, deviceId.value, {
+      setpoint: pidForm.setpoint,
+      sensor: pidForm.sensorIndex,
+      kp: pidForm.kp,
+      ki: pidForm.ki,
+      kd: pidForm.kd,
+    })
+    pidDirty.value = false
+    pidApplyStatus.value = 'PID сохранен'
+  } catch (e: any) {
+    pidApplyStatus.value = e?.message || 'Ошибка сохранения PID'
+  }
+}
+async function enablePid() {
+  if (!deviceId.value) return
+  pidApplyStatus.value = 'Включаю PID...'
+  try {
+    await store.pidEnable(nuxtApp.$mqtt, deviceId.value)
+    pidApplyStatus.value = 'PID включен'
+  } catch (e: any) {
+    pidApplyStatus.value = e?.message || 'Ошибка включения PID'
+  }
+}
+async function disablePid() {
+  if (!deviceId.value) return
+  pidApplyStatus.value = 'Выключаю PID...'
+  try {
+    await store.pidDisable(nuxtApp.$mqtt, deviceId.value)
+    pidApplyStatus.value = 'PID выключен'
+  } catch (e: any) {
+    pidApplyStatus.value = e?.message || 'Ошибка выключения PID'
+  }
+}
+async function applyWifi() {
+  if (!deviceId.value) return
+  wifiApplyStatus.value = 'Применяю Wi‑Fi...'
+  try {
+    await store.wifiApply(nuxtApp.$mqtt, deviceId.value, {
+      mode: wifiForm.mode,
+      ssid: wifiForm.ssid,
+      password: wifiForm.password,
+    })
+    wifiDirty.value = false
+    wifiApplyStatus.value = 'Wi‑Fi обновлен (устройство может переподключиться)'
+  } catch (e: any) {
+    wifiApplyStatus.value = e?.message || 'Ошибка применения Wi‑Fi'
+  }
 }
 
 onMounted(() => {
@@ -236,11 +446,15 @@ onMounted(() => {
 .chip.warm { background: #fff3e8; color: #b54708; border-color: rgba(229, 152, 102, 0.4); }
 .chip.cool { background: #e7f5ff; color: #22649e; border-color: rgba(52, 152, 219, 0.35); }
 .chip.online { background: #e6f8ed; color: #2e8b57; border-color: rgba(46, 139, 87, 0.35); }
+.chip.warn { background: #fff4e5; color: #a55a00; border-color: rgba(247, 178, 56, 0.35); }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .inline > * { min-width: 0; }
 .fields > * { flex: 1 1 180px; }
 .fields .compact input { width: 100%; }
+.range-row { display: flex; align-items: center; gap: 10px; }
+.range-row input[type="range"] { flex: 1; }
+.divider { height: 1px; background: var(--border); margin: 12px 0; }
 .checkbox { display: inline-flex; align-items: center; justify-content: flex-start; gap: 10px; font-weight: 600; white-space: nowrap; }
 .checkbox input { margin: 0; width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
 .compact input { width: 120px; }

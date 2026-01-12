@@ -104,6 +104,9 @@ struct SharedState {
   std::string usb_error;
   int wifi_rssi_dbm;
   int wifi_quality;
+  std::string wifi_ip;
+  std::string wifi_ip_sta;
+  std::string wifi_ip_ap;
 };
 
 enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };

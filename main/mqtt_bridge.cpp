@@ -1,5 +1,7 @@
 #include "mqtt_bridge.h"
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 
 #include "control_actions.h"
@@ -101,6 +103,67 @@ void HandleMqttCommand(const std::string& topic, const uint8_t* data, int len) {
     res = ActionHeaterSet(get_num("power", 0.0f));
   } else if (type == "fan_set") {
     res = ActionFanSet(get_num("power", 0.0f));
+  } else if (type == "pid_apply") {
+    float kp = get_num("kp", pid_config.kp);
+    float ki = get_num("ki", pid_config.ki);
+    float kd = get_num("kd", pid_config.kd);
+    float sp = get_num("setpoint", pid_config.setpoint);
+    int sensor = get_int("sensor", pid_config.sensor_index);
+
+    SharedState snapshot = CopyState();
+    if (snapshot.temp_sensor_count > 0) {
+      sensor = std::clamp(sensor, 0, snapshot.temp_sensor_count - 1);
+    } else if (sensor < 0) {
+      sensor = 0;
+    }
+
+    pid_config.kp = kp;
+    pid_config.ki = ki;
+    pid_config.kd = kd;
+    pid_config.setpoint = sp;
+    pid_config.sensor_index = sensor;
+
+    UpdateState([&](SharedState& s) {
+      s.pid_kp = kp;
+      s.pid_ki = ki;
+      s.pid_kd = kd;
+      s.pid_setpoint = sp;
+      s.pid_sensor_index = sensor;
+    });
+
+    SaveConfigToSdCard(app_config, pid_config, usb_mode);
+    res = {true, "pid_applied", {}};
+  } else if (type == "pid_enable") {
+    SharedState snapshot = CopyState();
+    if (snapshot.temp_sensor_count == 0) {
+      res = {false, "no temp sensors", {}};
+    } else {
+      UpdateState([](SharedState& s) { s.pid_enabled = true; });
+      res = {true, "pid_enabled", {}};
+    }
+  } else if (type == "pid_disable") {
+    UpdateState([](SharedState& s) { s.pid_enabled = false; });
+    res = {true, "pid_disabled", {}};
+  } else if (type == "wifi_apply") {
+    std::string mode = get_str("mode");
+    std::string ssid = get_str("ssid");
+    std::string pass = get_str("password");
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (mode != "ap") mode = "sta";
+
+    if (ssid.empty() || ssid.size() >= WIFI_SSID_MAX_LEN) {
+      res = {false, "invalid ssid", {}};
+    } else if (pass.size() >= WIFI_PASSWORD_MAX_LEN) {
+      res = {false, "invalid password", {}};
+    } else {
+      app_config.wifi_ssid = ssid;
+      app_config.wifi_password = pass;
+      app_config.wifi_ap_mode = (mode == "ap");
+      app_config.wifi_from_file = true;
+      SaveConfigToSdCard(app_config, pid_config, usb_mode);
+      InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+      res = {true, "wifi_applied", {}};
+    }
   }
 
   MqttSendResponse(device, req_id, res);

@@ -22,7 +22,14 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
   cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
   cJSON_AddNumberToObject(root, "pidOutput", snapshot.pid_output);
+  cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
+  cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
+  cJSON_AddNumberToObject(root, "pidKp", snapshot.pid_kp);
+  cJSON_AddNumberToObject(root, "pidKi", snapshot.pid_ki);
+  cJSON_AddNumberToObject(root, "pidKd", snapshot.pid_kd);
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
+  cJSON_AddBoolToObject(root, "stepperHoming", snapshot.homing);
+  cJSON_AddBoolToObject(root, "stepperDirForward", snapshot.stepper_direction_forward);
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
@@ -32,6 +39,12 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddNumberToObject(root, "wifiRssi", snapshot.wifi_rssi_dbm);
   cJSON_AddNumberToObject(root, "wifiQuality", snapshot.wifi_quality);
+  cJSON_AddStringToObject(root, "wifiIp", snapshot.wifi_ip.c_str());
+  cJSON_AddStringToObject(root, "wifiStaIp", snapshot.wifi_ip_sta.c_str());
+  cJSON_AddStringToObject(root, "wifiApIp", snapshot.wifi_ip_ap.c_str());
+  cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
+  cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
+  cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
   cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     std::string label = snapshot.temp_labels[i];
