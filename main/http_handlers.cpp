@@ -68,9 +68,6 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "voltage1", snapshot.voltage1);
   cJSON_AddNumberToObject(root, "voltage2", snapshot.voltage2);
   cJSON_AddNumberToObject(root, "voltage3", snapshot.voltage3);
-  cJSON_AddNumberToObject(root, "voltage1Cal", snapshot.voltage1_cal);
-  cJSON_AddNumberToObject(root, "voltage2Cal", snapshot.voltage2_cal);
-  cJSON_AddNumberToObject(root, "voltage3Cal", snapshot.voltage3_cal);
   cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
@@ -81,29 +78,19 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
   cJSON_AddNumberToObject(root, "tempSensorCount", snapshot.temp_sensor_count);
-  cJSON* temp_array = cJSON_CreateArray();
+  cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    cJSON_AddItemToArray(temp_array, cJSON_CreateNumber(snapshot.temps_c[i]));
-  }
-  cJSON_AddItemToObject(root, "tempSensors", temp_array);
-  cJSON* label_array = cJSON_CreateArray();
-  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    const std::string& name = snapshot.temp_labels[i];
-    if (!name.empty()) {
-      cJSON_AddItemToArray(label_array, cJSON_CreateString(name.c_str()));
-    } else {
-      char buf[16];
-      std::snprintf(buf, sizeof(buf), "Sensor %d", i + 1);
-      cJSON_AddItemToArray(label_array, cJSON_CreateString(buf));
+    std::string label = snapshot.temp_labels[i];
+    if (label.empty()) {
+      label = "t" + std::to_string(i + 1);
     }
-  }
-  cJSON_AddItemToObject(root, "tempLabels", label_array);
-  cJSON* addr_array = cJSON_CreateArray();
-  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     const std::string& addr = snapshot.temp_addresses[i];
-    cJSON_AddItemToArray(addr_array, cJSON_CreateString(addr.c_str()));
+    cJSON* entry = cJSON_CreateObject();
+    cJSON_AddNumberToObject(entry, "value", snapshot.temps_c[i]);
+    cJSON_AddStringToObject(entry, "address", addr.c_str());
+    cJSON_AddItemToObject(temp_obj, label.c_str(), entry);
   }
-  cJSON_AddItemToObject(root, "tempAddresses", addr_array);
+  cJSON_AddItemToObject(root, "tempSensors", temp_obj);
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddBoolToObject(root, "logUseMotor", snapshot.log_use_motor);
@@ -130,6 +117,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "pidOutput", snapshot.pid_output);
   cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
+  const std::string iso = IsoUtcNow();
+  cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);

@@ -393,6 +393,36 @@ const char INDEX_HTML[] = R"rawliteral(
       }
     }
 
+    function getTempEntries(data) {
+      const out = [];
+      if (!data) return out;
+      if (Array.isArray(data.tempSensors)) {
+        const labels = Array.isArray(data.tempLabels) ? data.tempLabels : [];
+        const addresses = Array.isArray(data.tempAddresses) ? data.tempAddresses : [];
+        data.tempSensors.forEach((value, idx) => {
+          const label = labels[idx] || `t${idx + 1}`;
+          out.push({
+            key: label || `t${idx + 1}`,
+            label: label || `t${idx + 1}`,
+            value,
+            address: addresses[idx] || '',
+          });
+        });
+        return out;
+      }
+      const obj = data.tempSensors;
+      if (obj && typeof obj === 'object') {
+        Object.entries(obj).forEach(([key, entry]) => {
+          if (entry && typeof entry === 'object') {
+            out.push({ key, label: key, value: entry.value, address: entry.address || '' });
+          } else {
+            out.push({ key, label: key, value: entry, address: '' });
+          }
+        });
+      }
+      return out;
+    }
+
     function pruneSeries(series, now) {
       if (monitorState.durationMs <= 0) return series;
       const cutoff = now - monitorState.durationMs;
@@ -414,18 +444,19 @@ const char INDEX_HTML[] = R"rawliteral(
       pruneSeries(monitorState.adc.v2, now);
       pruneSeries(monitorState.adc.v3, now);
 
-      const temps = Array.isArray(data.tempSensors) ? data.tempSensors : [];
-      temps.forEach((val, idx) => {
-        if (!monitorState.temps[idx]) monitorState.temps[idx] = [];
-        if (monitorState.visible.temps[idx] === undefined) monitorState.visible.temps[idx] = true;
-        monitorState.temps[idx].push({t: now, v: val});
-        pruneSeries(monitorState.temps[idx], now);
+      const tempEntries = getTempEntries(data);
+      const currentKeys = new Set(tempEntries.map(entry => entry.key));
+      tempEntries.forEach(entry => {
+        if (!monitorState.temps[entry.key]) monitorState.temps[entry.key] = [];
+        if (monitorState.visible.temps[entry.key] === undefined) monitorState.visible.temps[entry.key] = true;
+        monitorState.temps[entry.key].push({t: now, v: entry.value});
+        pruneSeries(monitorState.temps[entry.key], now);
       });
       // Prune old sensor slots if window expired
       Object.keys(monitorState.temps).forEach(key => {
         const arr = monitorState.temps[key];
         pruneSeries(arr, now);
-        if (arr.length === 0 && temps.length < Number(key)) {
+        if (!currentKeys.has(key) && arr.length === 0) {
           delete monitorState.temps[key];
         }
       });
@@ -595,13 +626,13 @@ const char INDEX_HTML[] = R"rawliteral(
         const arr = monitorState.temps[key];
         const visible = monitorState.visible.temps[key] !== false;
         if (arr && arr.length && visible) {
-          series.push({key, label: `T${Number(key) + 1}`, color: ['#8e44ad', '#16a085', '#c0392b', '#34495e', '#2c3e50'][idx % 5], data: arr});
+          series.push({key, label: key, color: ['#8e44ad', '#16a085', '#c0392b', '#34495e', '#2c3e50'][idx % 5], data: arr});
         }
       });
       drawChart('chartTemp', series);
       const legendItems = Object.keys(monitorState.temps).map((key, idx) => ({
         key,
-        label: `T${Number(key) + 1}`,
+        label: key,
         color: ['#8e44ad', '#16a085', '#c0392b', '#34495e', '#2c3e50'][idx % 5],
         visible: monitorState.visible.temps[key] !== false,
       }));
@@ -646,17 +677,16 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
       setValueIfIdle('heaterPower', data.heaterPower?.toFixed(1) ?? data.heaterPower ?? 0);
-    const list = document.getElementById('tempList');
-    const labels = Array.isArray(data.tempLabels) ? data.tempLabels : [];
-    const addresses = Array.isArray(data.tempAddresses) ? data.tempAddresses : [];
-      if (Array.isArray(data.tempSensors) && data.tempSensors.length > 0) {
+      const list = document.getElementById('tempList');
+      const tempEntries = getTempEntries(data);
+      if (tempEntries.length > 0) {
         let html = '';
-        data.tempSensors.forEach((t, idx) => {
-          const name = labels[idx] || `t${idx + 1}`;
-          const addr = addresses[idx] || '';
+        tempEntries.forEach((entry, idx) => {
+          const name = entry.label || `t${idx + 1}`;
+          const addr = entry.address || '';
           const title = addr ? ` title="1-Wire ${addr}"` : '';
           const labelHtml = `<span class="temp-label"${title}>${name}</span>`;
-          const text = Number.isFinite(t) ? `${t.toFixed(2)} °C` : '--.- °C';
+          const text = Number.isFinite(entry.value) ? `${entry.value.toFixed(2)} °C` : '--.- °C';
           const classAttr = idx === 0 ? ' class="voltage"' : '';
           html += `<div${classAttr}>${labelHtml}: ${text}</div>`;
         });
@@ -705,24 +735,30 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
       document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes' : 'No';
       setValueIfIdle('speed', data.stepperSpeedUs ?? '');
-      document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+      const lastUpdateEl = document.getElementById('lastUpdate');
+      if (lastUpdateEl) {
+        if (data.timestampIso) {
+          const parsed = new Date(data.timestampIso);
+          lastUpdateEl.textContent = isNaN(parsed.getTime()) ? data.timestampIso : parsed.toLocaleString();
+        } else {
+          lastUpdateEl.textContent = new Date().toLocaleTimeString();
+        }
+      }
       const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
       document.getElementById('usbModeLabel').textContent = modeLabel;
 
       const sensorSelect = document.getElementById('pidSensor');
       const currentSensor = data.pidSensorIndex ?? 0;
-      const count = data.tempSensorCount || (data.tempSensors ? data.tempSensors.length : 0);
       sensorSelect.innerHTML = '';
-      for (let i = 0; i < count; i++) {
+      tempEntries.forEach((entry, i) => {
         const opt = document.createElement('option');
         opt.value = i;
-        const label = labels[i] || `t${i + 1}`;
-        const addr = addresses[i] || '';
-        opt.textContent = addr ? `${label} (${addr})` : label;
-        if (addr) opt.title = `1-Wire ${addr}`;
+        const label = entry.label || `t${i + 1}`;
+        opt.textContent = entry.address ? `${label} (${entry.address})` : label;
+        if (entry.address) opt.title = `1-Wire ${entry.address}`;
         if (i === currentSensor) opt.selected = true;
         sensorSelect.appendChild(opt);
-      }
+      });
       // PID inputs оставляем как ввёл пользователь, не трогаем автоданными
       document.getElementById('pidStatus').textContent = data.pidEnabled ? `On (out ${data.pidOutput?.toFixed(1) ?? 0}%)` : 'Off';
       setValueIfIdle('pidSetpoint', (data.pidSetpoint ?? 0).toFixed(2));

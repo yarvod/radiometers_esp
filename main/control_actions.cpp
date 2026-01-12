@@ -17,9 +17,6 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "voltage1", snapshot.voltage1);
   cJSON_AddNumberToObject(root, "voltage2", snapshot.voltage2);
   cJSON_AddNumberToObject(root, "voltage3", snapshot.voltage3);
-  cJSON_AddNumberToObject(root, "voltage1Cal", snapshot.voltage1_cal);
-  cJSON_AddNumberToObject(root, "voltage2Cal", snapshot.voltage2_cal);
-  cJSON_AddNumberToObject(root, "voltage3Cal", snapshot.voltage3_cal);
   cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
@@ -35,22 +32,21 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddNumberToObject(root, "wifiRssi", snapshot.wifi_rssi_dbm);
   cJSON_AddNumberToObject(root, "wifiQuality", snapshot.wifi_quality);
-  cJSON* temps = cJSON_CreateArray();
+  cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    cJSON_AddItemToArray(temps, cJSON_CreateNumber(snapshot.temps_c[i]));
-  }
-  cJSON_AddItemToObject(root, "temps", temps);
-  cJSON* labels = cJSON_CreateArray();
-  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    const std::string& name = snapshot.temp_labels[i];
-    if (!name.empty()) {
-      cJSON_AddItemToArray(labels, cJSON_CreateString(name.c_str()));
-    } else {
-      std::string def = "Sensor " + std::to_string(i + 1);
-      cJSON_AddItemToArray(labels, cJSON_CreateString(def.c_str()));
+    std::string label = snapshot.temp_labels[i];
+    if (label.empty()) {
+      label = "t" + std::to_string(i + 1);
     }
+    const std::string& addr = snapshot.temp_addresses[i];
+    cJSON* entry = cJSON_CreateObject();
+    cJSON_AddNumberToObject(entry, "value", snapshot.temps_c[i]);
+    cJSON_AddStringToObject(entry, "address", addr.c_str());
+    cJSON_AddItemToObject(temp_obj, label.c_str(), entry);
   }
-  cJSON_AddItemToObject(root, "tempLabels", labels);
+  cJSON_AddItemToObject(root, "tempSensors", temp_obj);
+  const std::string iso = IsoUtcNow();
+  cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
   const char* json = cJSON_PrintUnformatted(root);
   std::string result = json ? json : "{}";
   cJSON_free((void*)json);

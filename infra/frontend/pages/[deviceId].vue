@@ -35,18 +35,6 @@
       </div>
       <div class="temps">
         <div class="temp-card subtle">
-          <div class="temp-title">U1 cal</div>
-          <div class="temp-value small">{{ device?.state?.voltage1Cal?.toFixed?.(6) ?? '--' }} V</div>
-        </div>
-        <div class="temp-card subtle">
-          <div class="temp-title">U2 cal</div>
-          <div class="temp-value small">{{ device?.state?.voltage2Cal?.toFixed?.(6) ?? '--' }} V</div>
-        </div>
-        <div class="temp-card subtle">
-          <div class="temp-title">U3 cal</div>
-          <div class="temp-value small">{{ device?.state?.voltage3Cal?.toFixed?.(6) ?? '--' }} V</div>
-        </div>
-        <div class="temp-card subtle">
           <div class="temp-title">Wi‑Fi RSSI</div>
           <div class="temp-value small">{{ device?.state?.wifiRssi ?? '--' }} dBm</div>
         </div>
@@ -54,9 +42,9 @@
           <div class="temp-title">Wi‑Fi качество</div>
           <div class="temp-value small">{{ device?.state?.wifiQuality ?? '--' }}%</div>
         </div>
-        <div v-for="(t, i) in temps" :key="i" class="temp-card">
-          <div class="temp-title">{{ tempLabels[i] || `T${i + 1}` }}</div>
-          <div class="temp-value small">{{ t?.toFixed?.(2) ?? '--' }} °C</div>
+        <div v-for="sensor in tempEntries" :key="sensor.key" class="temp-card">
+          <div class="temp-title">{{ sensor.label }}</div>
+          <div class="temp-value small">{{ sensor.value?.toFixed?.(2) ?? '--' }} °C</div>
         </div>
         <div class="temp-card">
           <div class="temp-title">I</div>
@@ -160,8 +148,19 @@ const nuxtApp = useNuxtApp()
 store.init(nuxtApp.$mqtt)
 
 const device = computed(() => (deviceId.value ? store.devices.get(deviceId.value) : undefined))
-const temps = computed(() => device.value?.state?.temps ?? [])
-const tempLabels = computed(() => device.value?.state?.tempLabels ?? [])
+const tempEntries = computed(() => {
+  const sensors = device.value?.state?.tempSensors
+  if (Array.isArray(sensors)) {
+    return sensors.map((value, idx) => ({ key: `t${idx + 1}`, label: `t${idx + 1}`, value, address: '' }))
+  }
+  if (!sensors || typeof sensors !== 'object') return []
+  return Object.entries(sensors as Record<string, any>).map(([label, entry]) => {
+    if (entry && typeof entry === 'object') {
+      return { key: label, label, value: entry.value, address: entry.address || '' }
+    }
+    return { key: label, label, value: entry, address: '' }
+  })
+})
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1000, reverse: false })
