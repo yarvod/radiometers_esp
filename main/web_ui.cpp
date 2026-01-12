@@ -58,6 +58,9 @@ const char INDEX_HTML[] = R"rawliteral(
     .legend-item { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; padding: 4px 8px; border-radius: 4px; }
     .legend-item.disabled { opacity: 0.4; text-decoration: line-through; }
     .legend-color { width: 14px; height: 14px; border-radius: 3px; }
+    .chip-select { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip-option { background: #ecf0f1; border: 1px solid #d8dee9; color: #2c3e50; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .chip-option.selected { background: #e6f8ed; border-color: rgba(46, 139, 87, 0.35); color: #2e8b57; }
   </style>
 </head>
 <body>
@@ -181,12 +184,9 @@ const char INDEX_HTML[] = R"rawliteral(
               <input type="number" id="pidSetpoint" value="25" step="0.1">
             </div>
             <div class="form-group">
-              <label for="pidSensor">Sensor</label>
-              <select id="pidSensor">
-                <option value="0">Sensor 1</option>
-                <option value="1">Sensor 2</option>
-                <option value="2">Sensor 3</option>
-              </select>
+              <label>PID sensors</label>
+              <div id="pidSensorChips" class="chip-select"></div>
+              <div class="note">Можно выбрать несколько датчиков.</div>
             </div>
             <div class="form-group">
               <label for="pidKp">Kp</label>
@@ -359,6 +359,9 @@ const char INDEX_HTML[] = R"rawliteral(
 
 <script>
     let measurementsInitialized = false;
+    let pidEditing = false;
+    let pidEntries = [];
+    const pidSelection = new Set();
     const selectedFiles = new Set();
     let cachedFiles = [];
     const monitorState = {
@@ -421,6 +424,46 @@ const char INDEX_HTML[] = R"rawliteral(
         });
       }
       return out;
+    }
+
+    function setPidSelectionFromMask(mask, count) {
+      pidSelection.clear();
+      for (let i = 0; i < count; i++) {
+        if (mask & (1 << i)) pidSelection.add(i);
+      }
+      if (pidSelection.size === 0 && count > 0) {
+        pidSelection.add(0);
+      }
+    }
+
+    function renderPidChips(entries) {
+      pidEntries = entries || [];
+      const container = document.getElementById('pidSensorChips');
+      if (!container) return;
+      if (!pidEntries.length) {
+        container.innerHTML = '<span class="note">Нет датчиков</span>';
+        return;
+      }
+      container.innerHTML = '';
+      pidEntries.forEach((entry, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chip-option' + (pidSelection.has(idx) ? ' selected' : '');
+        const label = entry.label || `t${idx + 1}`;
+        btn.textContent = entry.address ? `${label} (${entry.address})` : label;
+        btn.onclick = () => togglePidSensor(idx);
+        container.appendChild(btn);
+      });
+    }
+
+    function togglePidSensor(idx) {
+      pidEditing = true;
+      if (pidSelection.has(idx)) {
+        pidSelection.delete(idx);
+      } else {
+        pidSelection.add(idx);
+      }
+      renderPidChips(pidEntries);
     }
 
     function pruneSeries(series, now) {
@@ -747,18 +790,17 @@ const char INDEX_HTML[] = R"rawliteral(
       const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
       document.getElementById('usbModeLabel').textContent = modeLabel;
 
-      const sensorSelect = document.getElementById('pidSensor');
-      const currentSensor = data.pidSensorIndex ?? 0;
-      sensorSelect.innerHTML = '';
-      tempEntries.forEach((entry, i) => {
-        const opt = document.createElement('option');
-        opt.value = i;
-        const label = entry.label || `t${i + 1}`;
-        opt.textContent = entry.address ? `${label} (${entry.address})` : label;
-        if (entry.address) opt.title = `1-Wire ${entry.address}`;
-        if (i === currentSensor) opt.selected = true;
-        sensorSelect.appendChild(opt);
-      });
+      const mask = Number.isFinite(data.pidSensorMask) ? data.pidSensorMask : 0;
+      if (!pidEditing) {
+        if (mask > 0) {
+          setPidSelectionFromMask(mask, tempEntries.length);
+        } else if (Number.isFinite(data.pidSensorIndex)) {
+          setPidSelectionFromMask(1 << Number(data.pidSensorIndex), tempEntries.length);
+        } else {
+          setPidSelectionFromMask(0, tempEntries.length);
+        }
+      }
+      renderPidChips(tempEntries);
       // PID inputs оставляем как ввёл пользователь, не трогаем автоданными
       document.getElementById('pidStatus').textContent = data.pidEnabled ? `On (out ${data.pidOutput?.toFixed(1) ?? 0}%)` : 'Off';
       setValueIfIdle('pidSetpoint', (data.pidSetpoint ?? 0).toFixed(2));
@@ -971,13 +1013,19 @@ const char INDEX_HTML[] = R"rawliteral(
     }
 
     function applyPid() {
+      const selected = Array.from(pidSelection).filter(v => Number.isFinite(v)).sort((a, b) => a - b);
+      if (pidEntries.length > 0 && selected.length === 0) {
+        selected.push(0);
+        pidSelection.add(0);
+      }
       const payload = {
         setpoint: parseFloat(document.getElementById('pidSetpoint').value),
-        sensor: parseInt(document.getElementById('pidSensor').value),
+        sensors: selected,
         kp: parseFloat(document.getElementById('pidKp').value),
         ki: parseFloat(document.getElementById('pidKi').value),
         kd: parseFloat(document.getElementById('pidKd').value),
       };
+      pidEditing = false;
       fetch('/pid/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

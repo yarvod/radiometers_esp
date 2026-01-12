@@ -826,6 +826,20 @@ bool ParseBool(const std::string& value, bool* out) {
   return false;
 }
 
+static uint16_t ClampSensorMask(uint16_t mask, int count) {
+  if (count <= 0) return 0;
+  const int capped = std::min(count, 16);
+  const uint16_t allowed = static_cast<uint16_t>((1u << capped) - 1u);
+  return static_cast<uint16_t>(mask & allowed);
+}
+
+static int FirstSetBitIndex(uint16_t mask) {
+  for (int i = 0; i < 16; ++i) {
+    if (mask & (1u << i)) return i;
+  }
+  return 0;
+}
+
 bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (!file || !config) {
     return false;
@@ -851,11 +865,13 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool pid_enabled_set = false;
   bool pid_enabled_val = false;
   bool pid_kp_set = false, pid_ki_set = false, pid_kd_set = false, pid_sp_set = false, pid_sensor_set = false;
+  bool pid_mask_set = false;
   float pid_kp = pid_config.kp;
   float pid_ki = pid_config.ki;
   float pid_kd = pid_config.kd;
   float pid_sp = pid_config.setpoint;
   int pid_sensor = pid_config.sensor_index;
+  uint16_t pid_mask = pid_config.sensor_mask;
   std::string ssid;
   std::string password;
   std::string device_id = config->device_id;
@@ -933,6 +949,9 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     } else if (key == "pid_sensor") {
       pid_sensor = std::atoi(value.c_str());
       pid_sensor_set = true;
+    } else if (key == "pid_sensor_mask") {
+      pid_mask = static_cast<uint16_t>(std::strtoul(value.c_str(), nullptr, 0));
+      pid_mask_set = true;
     } else if (key == "pid_enabled") {
       if (ParseBool(value, &pid_enabled_val)) {
         pid_enabled_set = true;
@@ -1056,12 +1075,22 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (mqtt_enabled_set) {
     config->mqtt_enabled = mqtt_enabled_val;
   }
-  if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set) {
+  if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set || pid_mask_set) {
     pid_config.kp = pid_kp;
     pid_config.ki = pid_ki;
     pid_config.kd = pid_kd;
     pid_config.setpoint = pid_sp;
     pid_config.sensor_index = pid_sensor;
+    if (pid_mask_set) {
+      pid_mask = ClampSensorMask(pid_mask, MAX_TEMP_SENSORS);
+      if (pid_mask == 0) {
+        pid_mask = static_cast<uint16_t>(1u << std::clamp(pid_sensor, 0, MAX_TEMP_SENSORS - 1));
+      }
+      pid_config.sensor_mask = pid_mask;
+      pid_config.sensor_index = FirstSetBitIndex(pid_mask);
+    } else if (pid_sensor_set) {
+      pid_config.sensor_mask = static_cast<uint16_t>(1u << std::clamp(pid_sensor, 0, MAX_TEMP_SENSORS - 1));
+    }
     pid_config.from_file = true;
   }
   if (pid_enabled_set) {
@@ -1791,8 +1820,18 @@ void TempTask(void*) {
         s.temps_c = temps;
         s.temp_labels = meta.labels;
         s.temp_addresses = meta.addresses;
-        if (count > 0 && (s.pid_sensor_index >= count || s.pid_sensor_index < 0)) {
-          s.pid_sensor_index = 0;
+        if (count > 0) {
+          const uint16_t available_mask = static_cast<uint16_t>((1u << std::min(count, MAX_TEMP_SENSORS)) - 1u);
+          uint16_t mask = static_cast<uint16_t>(s.pid_sensor_mask & available_mask);
+          if (mask == 0) {
+            int idx = s.pid_sensor_index;
+            if (idx < 0 || idx >= count) idx = 0;
+            mask = static_cast<uint16_t>(1u << idx);
+          }
+          s.pid_sensor_mask = mask;
+          if (s.pid_sensor_index >= count || s.pid_sensor_index < 0) {
+            s.pid_sensor_index = FirstSetBitIndex(mask);
+          }
         }
       });
       if (count > 0) {
@@ -1826,15 +1865,29 @@ void PidTask(void*) {
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
-    if (snapshot.pid_sensor_index < 0 || snapshot.pid_sensor_index >= snapshot.temp_sensor_count) {
+    if (snapshot.temp_sensor_count <= 0) {
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
-    float temp = snapshot.temps_c[snapshot.pid_sensor_index];
-    if (!std::isfinite(temp)) {
+    uint16_t mask = snapshot.pid_sensor_mask;
+    if (mask == 0) {
+      int idx = std::clamp(snapshot.pid_sensor_index, 0, snapshot.temp_sensor_count - 1);
+      mask = static_cast<uint16_t>(1u << idx);
+    }
+    float temp_sum = 0.0f;
+    int temp_count = 0;
+    for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+      if ((mask & (1u << i)) == 0) continue;
+      float t = snapshot.temps_c[i];
+      if (!std::isfinite(t)) continue;
+      temp_sum += t;
+      temp_count++;
+    }
+    if (temp_count == 0) {
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
+    float temp = temp_sum / static_cast<float>(temp_count);
     float error = snapshot.pid_setpoint - temp;
     integral += error * dt;
     integral = std::clamp(integral, -200.0f, 200.0f);
@@ -1986,6 +2039,7 @@ extern "C" void app_main(void) {
     s.pid_kd = pid_config.kd;
     s.pid_setpoint = pid_config.setpoint;
     s.pid_sensor_index = pid_config.sensor_index;
+    s.pid_sensor_mask = pid_config.sensor_mask;
     s.stepper_speed_us = app_config.stepper_speed_us;
   });
   InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);

@@ -37,6 +37,7 @@ PidConfig pid_config{
     0.0f,  // kd
     25.0f, // setpoint
     0,     // sensor_index
+    1,     // sensor_mask
     false, // from_file
 };
 

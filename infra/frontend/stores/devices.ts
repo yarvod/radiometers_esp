@@ -120,7 +120,7 @@ export const useDevicesStore = defineStore('devices', {
     async fanSet(mqtt: MqttClient, deviceId: string, power: number) {
       return this.sendCommand(mqtt, deviceId, { type: 'fan_set', power })
     },
-    async pidApply(mqtt: MqttClient, deviceId: string, payload: { setpoint: number; sensor: number; kp: number; ki: number; kd: number }) {
+    async pidApply(mqtt: MqttClient, deviceId: string, payload: { setpoint: number; sensors: number[]; kp: number; ki: number; kd: number }) {
       return this.sendCommand(mqtt, deviceId, { type: 'pid_apply', ...payload })
     },
     async pidEnable(mqtt: MqttClient, deviceId: string) {

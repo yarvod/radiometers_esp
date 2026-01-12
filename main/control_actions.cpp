@@ -24,6 +24,7 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "pidOutput", snapshot.pid_output);
   cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
   cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
+  cJSON_AddNumberToObject(root, "pidSensorMask", snapshot.pid_sensor_mask);
   cJSON_AddNumberToObject(root, "pidKp", snapshot.pid_kp);
   cJSON_AddNumberToObject(root, "pidKi", snapshot.pid_ki);
   cJSON_AddNumberToObject(root, "pidKd", snapshot.pid_kd);

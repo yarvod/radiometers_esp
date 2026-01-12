@@ -122,12 +122,20 @@
           <input type="number" min="0" step="0.1" v-model.number="pidForm.setpoint" @input="pidDirty = true" />
         </div>
         <div class="form-group">
-          <label>PID датчик</label>
-          <select v-model.number="pidForm.sensorIndex" @change="pidDirty = true">
-            <option v-for="(sensor, idx) in tempEntries" :key="sensor.key" :value="idx">
+          <label>PID датчики</label>
+          <div class="chip-select">
+            <button
+              v-for="(sensor, idx) in tempEntries"
+              :key="sensor.key"
+              class="chip-option"
+              :class="{ selected: pidForm.sensorIndices.includes(idx) }"
+              type="button"
+              @click="togglePidSensor(idx)"
+            >
               {{ sensor.label }}{{ sensor.address ? ` (${sensor.address})` : '' }}
-            </option>
-          </select>
+            </button>
+            <span v-if="tempEntries.length === 0" class="muted">Нет датчиков</span>
+          </div>
         </div>
         <div class="inline fields">
           <label class="compact">Kp
@@ -246,8 +254,36 @@ const pidDirty = ref(false)
 const wifiDirty = ref(false)
 const pidApplyStatus = ref('')
 const wifiApplyStatus = ref('')
-const pidForm = reactive({ setpoint: 25, sensorIndex: 0, kp: 1, ki: 0, kd: 0 })
+const pidForm = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
 const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
+
+const maskToIndices = (mask: number, count: number) => {
+  const out: number[] = []
+  for (let i = 0; i < count; i++) {
+    if (mask & (1 << i)) out.push(i)
+  }
+  return out
+}
+
+const normalizeIndices = (indices: number[], count: number) => {
+  const set = new Set(indices.filter((idx) => idx >= 0 && idx < count))
+  return Array.from(set).sort((a, b) => a - b)
+}
+
+const pidStateSensorIndices = computed(() => {
+  const count = tempEntries.value.length
+  const state = device.value?.state || {}
+  const mask = Number(state.pidSensorMask)
+  if (Number.isFinite(mask) && mask > 0) {
+    const indices = maskToIndices(mask, count)
+    return indices.length ? indices : (count ? [0] : [])
+  }
+  const idx = Number(state.pidSensorIndex)
+  if (Number.isFinite(idx) && count > 0) {
+    return [Math.max(0, Math.min(count - 1, idx))]
+  }
+  return []
+})
 
 const pidEnabled = computed(() => !!device.value?.state?.pidEnabled)
 const pidOutputDisplay = computed(() => {
@@ -259,14 +295,24 @@ const pidSetpointDisplay = computed(() => {
   return Number.isFinite(val) ? `${Number(val).toFixed(1)} °C` : '--'
 })
 const pidSensorLabel = computed(() => {
-  const idx = device.value?.state?.pidSensorIndex ?? pidForm.sensorIndex
-  return tempEntries.value[idx]?.label || `T${(idx ?? 0) + 1}`
+  if (pidStateSensorIndices.value.length === 0) return '--'
+  return pidStateSensorIndices.value
+    .map((idx) => tempEntries.value[idx]?.label || `T${idx + 1}`)
+    .join(', ')
 })
 const pidSensorTemp = computed(() => {
-  const idx = device.value?.state?.pidSensorIndex ?? pidForm.sensorIndex
-  const entry = tempEntries.value[idx ?? 0]
-  if (!entry || !Number.isFinite(entry.value)) return '--'
-  return `${Number(entry.value).toFixed(2)} °C`
+  const indices = pidStateSensorIndices.value
+  if (!indices.length) return '--'
+  let sum = 0
+  let count = 0
+  indices.forEach((idx) => {
+    const entry = tempEntries.value[idx]
+    if (!entry || !Number.isFinite(entry.value)) return
+    sum += Number(entry.value)
+    count += 1
+  })
+  if (!count) return '--'
+  return `${(sum / count).toFixed(2)} °C`
 })
 
 const stepperEnabled = computed(() => !!device.value?.state?.stepperEnabled)
@@ -294,7 +340,12 @@ watch(
     if (!state) return
     if (!pidDirty.value) {
       if (Number.isFinite(state.pidSetpoint)) pidForm.setpoint = Number(state.pidSetpoint)
-      if (Number.isFinite(state.pidSensorIndex)) pidForm.sensorIndex = Number(state.pidSensorIndex)
+      const mask = Number(state.pidSensorMask)
+      if (Number.isFinite(mask) && mask > 0) {
+        pidForm.sensorIndices = normalizeIndices(maskToIndices(mask, tempEntries.value.length), tempEntries.value.length)
+      } else if (Number.isFinite(state.pidSensorIndex) && tempEntries.value.length > 0) {
+        pidForm.sensorIndices = normalizeIndices([Number(state.pidSensorIndex)], tempEntries.value.length)
+      }
       if (Number.isFinite(state.pidKp)) pidForm.kp = Number(state.pidKp)
       if (Number.isFinite(state.pidKi)) pidForm.ki = Number(state.pidKi)
       if (Number.isFinite(state.pidKd)) pidForm.kd = Number(state.pidKd)
@@ -344,13 +395,32 @@ function setHeater() {
   store.heaterSet(nuxtApp.$mqtt, deviceId.value, heaterPower.value)
   heaterEditing.value = false
 }
+function togglePidSensor(idx: number) {
+  pidDirty.value = true
+  if (pidForm.sensorIndices.includes(idx)) {
+    pidForm.sensorIndices = pidForm.sensorIndices.filter((value) => value !== idx)
+    return
+  }
+  pidForm.sensorIndices = normalizeIndices([...pidForm.sensorIndices, idx], tempEntries.value.length)
+}
 async function applyPid() {
   if (!deviceId.value) return
+  const count = tempEntries.value.length
+  const selected = normalizeIndices(pidForm.sensorIndices, count)
+  pidForm.sensorIndices = selected
+  if (count === 0) {
+    pidApplyStatus.value = 'Нет доступных датчиков'
+    return
+  }
+  if (selected.length === 0) {
+    pidApplyStatus.value = 'Выберите хотя бы один датчик'
+    return
+  }
   pidApplyStatus.value = 'Сохраняю PID...'
   try {
     await store.pidApply(nuxtApp.$mqtt, deviceId.value, {
       setpoint: pidForm.setpoint,
-      sensor: pidForm.sensorIndex,
+      sensors: selected,
       kp: pidForm.kp,
       ki: pidForm.ki,
       kd: pidForm.kd,
@@ -440,6 +510,9 @@ onMounted(() => {
 .range-row { display: flex; align-items: center; gap: 10px; }
 .range-row input[type="range"] { flex: 1; }
 .divider { height: 1px; background: var(--border); margin: 12px 0; }
+.chip-select { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-option { background: #f1f3f4; border: 1px solid var(--border); color: #1f2d3d; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.chip-option.selected { background: #e6f8ed; border-color: rgba(46, 139, 87, 0.35); color: #2e8b57; }
 .checkbox { display: inline-flex; align-items: center; justify-content: flex-start; gap: 10px; font-weight: 600; white-space: nowrap; }
 .checkbox input { margin: 0; width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
 .compact input { width: 120px; }

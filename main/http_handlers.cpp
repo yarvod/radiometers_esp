@@ -114,6 +114,7 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
   cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
   cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
+  cJSON_AddNumberToObject(root, "pidSensorMask", snapshot.pid_sensor_mask);
   cJSON_AddNumberToObject(root, "pidKp", snapshot.pid_kp);
   cJSON_AddNumberToObject(root, "pidKi", snapshot.pid_ki);
   cJSON_AddNumberToObject(root, "pidKd", snapshot.pid_kd);
@@ -357,6 +358,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   fprintf(f, "pid_kd = %.6f\n", pid.kd);
   fprintf(f, "pid_setpoint = %.6f\n", pid.setpoint);
   fprintf(f, "pid_sensor = %d\n", pid.sensor_index);
+  fprintf(f, "pid_sensor_mask = %u\n", static_cast<unsigned int>(pid.sensor_mask));
   fprintf(f, "pid_enabled = %s\n", (CopyState().pid_enabled ? "true" : "false"));
   if (!cfg.device_id.empty()) {
     fprintf(f, "device_id = %s\n", cfg.device_id.c_str());
@@ -1254,6 +1256,8 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   float kd = pid_config.kd;
   float sp = pid_config.setpoint;
   int sensor = pid_config.sensor_index;
+  uint16_t sensor_mask = pid_config.sensor_mask;
+  bool sensor_mask_set = false;
 
   get_number("kp", &kp);
   get_number("ki", &ki);
@@ -1263,6 +1267,24 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   if (sensor_item && cJSON_IsNumber(sensor_item)) {
     sensor = sensor_item->valueint;
   }
+  cJSON* mask_item = cJSON_GetObjectItem(root, "sensorMask");
+  if (mask_item && cJSON_IsNumber(mask_item)) {
+    sensor_mask = static_cast<uint16_t>(mask_item->valuedouble);
+    sensor_mask_set = true;
+  }
+  cJSON* sensors_item = cJSON_GetObjectItem(root, "sensors");
+  if (sensors_item && cJSON_IsArray(sensors_item)) {
+    sensor_mask = 0;
+    const int len = cJSON_GetArraySize(sensors_item);
+    for (int i = 0; i < len; ++i) {
+      cJSON* entry = cJSON_GetArrayItem(sensors_item, i);
+      if (!entry || !cJSON_IsNumber(entry)) continue;
+      int idx = entry->valueint;
+      if (idx < 0 || idx >= MAX_TEMP_SENSORS) continue;
+      sensor_mask = static_cast<uint16_t>(sensor_mask | (1u << idx));
+    }
+    sensor_mask_set = true;
+  }
   cJSON_Delete(root);
 
   SharedState snapshot = CopyState();
@@ -1271,12 +1293,32 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   } else if (sensor < 0) {
     sensor = 0;
   }
+  if (sensor_mask_set) {
+    const uint16_t allowed = snapshot.temp_sensor_count > 0
+                                 ? static_cast<uint16_t>((1u << std::min(snapshot.temp_sensor_count, MAX_TEMP_SENSORS)) - 1u)
+                                 : 0;
+    sensor_mask = static_cast<uint16_t>(sensor_mask & allowed);
+    if (sensor_mask == 0 && snapshot.temp_sensor_count > 0) {
+      sensor_mask = static_cast<uint16_t>(1u << sensor);
+    }
+    for (int i = 0; i < MAX_TEMP_SENSORS; ++i) {
+      if (sensor_mask & (1u << i)) {
+        sensor = i;
+        break;
+      }
+    }
+  }
 
   pid_config.kp = kp;
   pid_config.ki = ki;
   pid_config.kd = kd;
   pid_config.setpoint = sp;
   pid_config.sensor_index = sensor;
+  if (sensor_mask_set) {
+    pid_config.sensor_mask = sensor_mask;
+  } else {
+    pid_config.sensor_mask = static_cast<uint16_t>(1u << sensor);
+  }
 
   UpdateState([&](SharedState& s) {
     s.pid_kp = kp;
@@ -1284,6 +1326,7 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
     s.pid_kd = kd;
     s.pid_setpoint = sp;
     s.pid_sensor_index = sensor;
+    s.pid_sensor_mask = pid_config.sensor_mask;
   });
 
   // Persist PID config and current enable state

@@ -54,6 +54,7 @@ struct PidConfig {
   float kd;
   float setpoint;
   int sensor_index;
+  uint16_t sensor_mask;
   bool from_file;
 };
 
@@ -89,6 +90,7 @@ struct SharedState {
   float pid_kd;
   float pid_setpoint;
   int pid_sensor_index;
+  uint16_t pid_sensor_mask;
   float pid_output;
   bool stepper_enabled;
   bool stepper_moving;
