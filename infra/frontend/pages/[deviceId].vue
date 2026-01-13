@@ -985,13 +985,13 @@ label { font-size: 14px; font-weight: 600; color: #1f1f1f; }
 input { width: 100%; box-sizing: border-box; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .muted { color: var(--muted); font-size: 13px; }
-.chart-stack { display: flex; flex-direction: column; gap: 16px; }
-.chart-box { background: #f8fafc; border-radius: 12px; border: 1px solid var(--border); padding: 16px; height: 340px; display: flex; flex-direction: column; gap: 12px; }
-.chart-box h4 { margin: 0; font-size: 16px; }
+.chart-stack { display: flex; flex-direction: column; gap: 20px; }
+.chart-box { background: transparent; border: none; padding: 0; height: 320px; display: flex; flex-direction: column; gap: 8px; }
+.chart-box h4 { margin: 0; font-size: 16px; color: #1f2933; }
 .chart-body { position: relative; flex: 1; min-height: 0; }
 .chart-body canvas { width: 100% !important; height: 100% !important; }
 @media (max-width: 640px) {
-  .chart-box { height: 280px; padding: 14px; }
+  .chart-box { height: 260px; }
 }
 .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
