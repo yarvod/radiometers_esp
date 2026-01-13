@@ -7,22 +7,7 @@
       </div>
       <button class="btn ghost" @click="navigateTo('/users')">Пользователи</button>
     </div>
-    <div class="card">
-      <div class="card-head">
-        <h3>Добавить устройство</h3>
-        <span class="badge">Ручное добавление</span>
-      </div>
-      <div class="inline fields">
-        <label class="compact">ID
-          <input v-model="createForm.id" placeholder="dev1" />
-        </label>
-        <label class="compact">Название
-          <input v-model="createForm.display_name" placeholder="Лаборатория" />
-        </label>
-      </div>
-      <button class="btn primary" @click="createDevice">Добавить</button>
-      <p class="muted" v-if="createStatus">{{ createStatus }}</p>
-    </div>
+    <p class="muted" v-if="createStatus">{{ createStatus }}</p>
     <div class="device-list">
       <div
         v-for="dev in deviceArray"
@@ -56,7 +41,6 @@ const devicesStore = useDevicesStore()
 devicesStore.init(nuxtApp.$mqtt)
 
 const dbDevices = ref<any[]>([])
-const createForm = reactive({ id: '', display_name: '' })
 const createStatus = ref('')
 
 const deviceArray = computed(() => {
@@ -81,22 +65,6 @@ async function loadDevices() {
   }
 }
 
-async function createDevice() {
-  if (!createForm.id) {
-    createStatus.value = 'Введите ID устройства'
-    return
-  }
-  createStatus.value = ''
-  try {
-    await apiFetch('/api/devices', { method: 'POST', body: { ...createForm } })
-    createForm.id = ''
-    createForm.display_name = ''
-    await loadDevices()
-  } catch (e: any) {
-    createStatus.value = e?.data?.detail || e?.message || 'Не удалось добавить устройство'
-  }
-}
-
 function go(id: string) {
   navigateTo(`/${id}`)
 }
@@ -116,7 +84,4 @@ onMounted(loadDevices)
 .meta { font-size: 13px; color: var(--muted); margin-top: 8px; }
 .chip { padding: 6px 10px; border-radius: 999px; background: #f1f3f4; border: 1px solid var(--border); color: var(--muted); font-weight: 600; }
 .chip.online { background: #e6f8ed; color: #2e8b57; border-color: rgba(46, 139, 87, 0.35); }
-.inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.fields > * { flex: 1 1 160px; }
-.compact input { width: 100%; }
 </style>

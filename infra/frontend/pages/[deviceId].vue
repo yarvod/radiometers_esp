@@ -807,8 +807,8 @@ input { width: 100%; box-sizing: border-box; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .muted { color: var(--muted); font-size: 13px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-.chart-box { background: #f8fafc; border-radius: 12px; border: 1px solid var(--border); padding: 12px; min-height: 260px; display: flex; flex-direction: column; gap: 8px; }
-.chart-box canvas { width: 100%; height: 220px; }
+.chart-box { background: #f8fafc; border-radius: 12px; border: 1px solid var(--border); padding: 12px; height: 320px; display: flex; flex-direction: column; gap: 8px; }
+.chart-box canvas { width: 100%; height: 100%; flex: 1; }
 .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
 .temp-card.subtle { background: #f7f7f7; box-shadow: none; }

@@ -13,9 +13,10 @@ export default defineNuxtPlugin((nuxtApp) => {
 
   if (!client) {
     client = mqtt.connect(url, {
-      protocolVersion: 5,
+      protocolVersion: 4,
       reconnectPeriod: 3000,
       connectTimeout: 8000,
+      clean: true,
       username: config.public.mqttUser || undefined,
       password: config.public.mqttPassword || undefined,
     })
