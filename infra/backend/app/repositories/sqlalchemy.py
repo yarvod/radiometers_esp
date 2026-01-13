@@ -6,7 +6,7 @@ from typing import Sequence
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities import AccessToken, Device, Measurement, User
+from app.domain.entities import AccessToken, Device, Measurement, MeasurementPoint, User
 from app.db.models import AccessTokenModel, DeviceModel, MeasurementModel, UserModel
 from app.repositories.interfaces import DeviceRepository, MeasurementRepository, TokenRepository, UserRepository
 
@@ -39,6 +39,23 @@ def to_measurement(model: MeasurementModel) -> Measurement:
         log_use_motor=model.log_use_motor,
         log_duration=model.log_duration,
         log_filename=model.log_filename,
+    )
+
+
+def to_point_from_measurement(model: MeasurementModel) -> MeasurementPoint:
+    return MeasurementPoint(
+        timestamp=model.timestamp,
+        timestamp_ms=model.timestamp_ms,
+        adc1=model.adc1,
+        adc2=model.adc2,
+        adc3=model.adc3,
+        temps=list(model.temps or []),
+        bus_v=model.bus_v,
+        bus_i=model.bus_i,
+        bus_p=model.bus_p,
+        adc1_cal=model.adc1_cal,
+        adc2_cal=model.adc2_cal,
+        adc3_cal=model.adc3_cal,
     )
 
 
@@ -138,6 +155,85 @@ class SqlMeasurementRepository(MeasurementRepository):
         query = query.order_by(MeasurementModel.timestamp.asc()).limit(limit)
         result = await self._session.execute(query)
         return [to_measurement(row) for row in result.scalars().all()]
+
+    async def count(self, device_id: str, start: datetime | None, end: datetime | None) -> int:
+        query = select(func.count()).select_from(MeasurementModel).where(MeasurementModel.device_id == device_id)
+        if start:
+            query = query.where(MeasurementModel.timestamp >= start)
+        if end:
+            query = query.where(MeasurementModel.timestamp <= end)
+        result = await self._session.execute(query)
+        return int(result.scalar_one())
+
+    async def bounds(self, device_id: str, start: datetime | None, end: datetime | None) -> tuple[datetime | None, datetime | None]:
+        query = select(func.min(MeasurementModel.timestamp), func.max(MeasurementModel.timestamp)).where(
+            MeasurementModel.device_id == device_id
+        )
+        if start:
+            query = query.where(MeasurementModel.timestamp >= start)
+        if end:
+            query = query.where(MeasurementModel.timestamp <= end)
+        result = await self._session.execute(query)
+        row = result.one()
+        return row[0], row[1]
+
+    async def list_aggregated(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        bucket_seconds: int,
+        limit: int,
+    ) -> Sequence[MeasurementPoint]:
+        bucket = func.floor(func.extract("epoch", MeasurementModel.timestamp) / bucket_seconds) * bucket_seconds
+        bucket_ts = func.to_timestamp(bucket).label("bucket_ts")
+        columns = [
+            bucket_ts,
+            func.avg(MeasurementModel.adc1).label("adc1"),
+            func.avg(MeasurementModel.adc2).label("adc2"),
+            func.avg(MeasurementModel.adc3).label("adc3"),
+            func.avg(MeasurementModel.bus_v).label("bus_v"),
+            func.avg(MeasurementModel.bus_i).label("bus_i"),
+            func.avg(MeasurementModel.bus_p).label("bus_p"),
+            func.avg(MeasurementModel.adc1_cal).label("adc1_cal"),
+            func.avg(MeasurementModel.adc2_cal).label("adc2_cal"),
+            func.avg(MeasurementModel.adc3_cal).label("adc3_cal"),
+        ]
+        max_temps = 8
+        for idx in range(1, max_temps + 1):
+            columns.append(func.avg(MeasurementModel.temps[idx]).label(f"temp{idx}"))
+
+        query = select(*columns).where(MeasurementModel.device_id == device_id)
+        if start:
+            query = query.where(MeasurementModel.timestamp >= start)
+        if end:
+            query = query.where(MeasurementModel.timestamp <= end)
+        query = query.group_by(bucket_ts).order_by(bucket_ts.asc()).limit(limit)
+
+        result = await self._session.execute(query)
+        points: list[MeasurementPoint] = []
+        for row in result:
+            temps = [getattr(row, f"temp{idx}") for idx in range(1, max_temps + 1)]
+            while temps and temps[-1] is None:
+                temps.pop()
+            timestamp = row.bucket_ts
+            points.append(
+                MeasurementPoint(
+                    timestamp=timestamp,
+                    timestamp_ms=int(timestamp.timestamp() * 1000) if timestamp else None,
+                    adc1=float(row.adc1 or 0.0),
+                    adc2=float(row.adc2 or 0.0),
+                    adc3=float(row.adc3 or 0.0),
+                    temps=[float(v) for v in temps if v is not None],
+                    bus_v=float(row.bus_v or 0.0),
+                    bus_i=float(row.bus_i or 0.0),
+                    bus_p=float(row.bus_p or 0.0),
+                    adc1_cal=float(row.adc1_cal) if row.adc1_cal is not None else None,
+                    adc2_cal=float(row.adc2_cal) if row.adc2_cal is not None else None,
+                    adc3_cal=float(row.adc3_cal) if row.adc3_cal is not None else None,
+                )
+            )
+        return points
 
 
 class SqlUserRepository(UserRepository):

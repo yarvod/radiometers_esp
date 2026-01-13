@@ -8,8 +8,8 @@
     "start": "nuxt start"
   },
   "dependencies": {
+    "chart.js": "^4.5.1",
     "mqtt": "^5.1.4",
-    "nuxt-plotly": "^1.0.14",
     "nuxt": "^3.10.0",
     "pinia": "^2.1.7"
   },

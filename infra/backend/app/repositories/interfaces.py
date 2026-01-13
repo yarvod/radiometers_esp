@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Iterable, Sequence
 
-from app.domain.entities import AccessToken, Device, Measurement, User
+from app.domain.entities import AccessToken, Device, Measurement, MeasurementPoint, User
 
 
 class DeviceRepository(ABC):
@@ -36,6 +36,25 @@ class MeasurementRepository(ABC):
 
     @abstractmethod
     async def list(self, device_id: str, start: datetime | None, end: datetime | None, limit: int) -> Sequence[Measurement]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count(self, device_id: str, start: datetime | None, end: datetime | None) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def bounds(self, device_id: str, start: datetime | None, end: datetime | None) -> tuple[datetime | None, datetime | None]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_aggregated(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        bucket_seconds: int,
+        limit: int,
+    ) -> Sequence[MeasurementPoint]:
         raise NotImplementedError
 
 

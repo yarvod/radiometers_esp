@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from dishka.integrations.fastapi import FromDishka, inject
 
 from app.api.deps import get_current_user
-from app.api.schemas import MeasurementOut
+from app.api.schemas import MeasurementPointOut, MeasurementsResponse
 from app.domain.entities import User
 from app.services.measurements import MeasurementService
 
@@ -20,7 +20,7 @@ def parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(raw)
 
 
-@router.get("", response_model=list[MeasurementOut])
+@router.get("", response_model=MeasurementsResponse)
 @inject
 async def list_measurements(
     measurements: FromDishka[MeasurementService],
@@ -32,5 +32,14 @@ async def list_measurements(
 ):
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)
-    result = await measurements.list(device_id=device_id, start=start_dt, end=end_dt, limit=limit)
-    return [MeasurementOut.model_validate(item, from_attributes=True) for item in result]
+    points, raw_count, bucket_seconds, bucket_label, aggregated = await measurements.list_series(
+        device_id=device_id, start=start_dt, end=end_dt, limit=limit
+    )
+    return MeasurementsResponse(
+        points=[MeasurementPointOut.model_validate(item, from_attributes=True) for item in points],
+        raw_count=raw_count,
+        limit=limit,
+        bucket_seconds=bucket_seconds,
+        bucket_label=bucket_label,
+        aggregated=aggregated,
+    )

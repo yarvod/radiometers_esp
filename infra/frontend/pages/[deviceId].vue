@@ -226,19 +226,24 @@
         <span class="badge">Графики</span>
       </div>
       <div class="inline fields">
-        <label class="compact">C
-          <input type="datetime-local" v-model="historyFilters.from" />
+        <label class="compact">С
+          <input type="datetime-local" lang="ru" v-model="historyFilters.from" />
         </label>
         <label class="compact">По
-          <input type="datetime-local" v-model="historyFilters.to" />
+          <input type="datetime-local" lang="ru" v-model="historyFilters.to" />
         </label>
         <label class="compact">Лимит
           <input type="number" min="100" max="10000" step="100" v-model.number="historyFilters.limit" />
         </label>
       </div>
+      <p class="muted" v-if="historyRangeLabel">{{ historyRangeLabel }}</p>
       <div class="actions">
         <button class="btn primary" @click="loadHistory" :disabled="historyLoading">Загрузить</button>
         <span class="muted" v-if="historyStatus">{{ historyStatus }}</span>
+      </div>
+      <div class="status-row" v-if="historyBucketLabel && historyBucketLabel !== 'raw'">
+        <span class="chip subtle">Окно: {{ historyBucketLabel }}</span>
+        <span class="chip subtle">Исходно: {{ historyRawCount }}</span>
       </div>
       <div class="form-group">
         <label>Температурные датчики</label>
@@ -270,15 +275,11 @@
       <div class="chart-stack">
         <div class="chart-box">
           <h4>Температуры</h4>
-          <ClientOnly>
-            <Plotly :data="tempPlotData" :layout="tempPlotLayout" :config="plotConfig" />
-          </ClientOnly>
+          <canvas ref="tempChartEl"></canvas>
         </div>
         <div class="chart-box">
           <h4>ADC + Cal</h4>
-          <ClientOnly>
-            <Plotly :data="adcPlotData" :layout="adcPlotLayout" :config="plotConfig" />
-          </ClientOnly>
+          <canvas ref="adcChartEl"></canvas>
         </div>
       </div>
     </div>
@@ -288,9 +289,7 @@
 <script setup lang="ts">
 import { useDevicesStore } from '~/stores/devices'
 
-type MeasurementRow = {
-  id: string
-  device_id: string
+type MeasurementPoint = {
   timestamp: string
   timestamp_ms: number | null
   adc1: number
@@ -303,9 +302,15 @@ type MeasurementRow = {
   adc1_cal: number | null
   adc2_cal: number | null
   adc3_cal: number | null
-  log_use_motor: boolean
-  log_duration: number
-  log_filename: string | null
+}
+
+type MeasurementsResponse = {
+  points: MeasurementPoint[]
+  raw_count: number
+  limit: number
+  bucket_seconds: number
+  bucket_label: string
+  aggregated: boolean
 }
 
 const { apiFetch } = useApi()
@@ -350,10 +355,16 @@ const historySelection = reactive({
   showAdc: true,
   showCal: false,
 })
-const historyData = ref<MeasurementRow[]>([])
+const historyData = ref<MeasurementPoint[]>([])
 const historyLoading = ref(false)
 const historyStatus = ref('')
-const plotConfig = { displayModeBar: false, responsive: true }
+const historyBucketLabel = ref('')
+const historyRawCount = ref(0)
+const tempChartEl = ref<HTMLCanvasElement | null>(null)
+const adcChartEl = ref<HTMLCanvasElement | null>(null)
+let tempChart: any = null
+let adcChart: any = null
+let ChartCtor: any = null
 
 const maskToIndices = (mask: number, count: number) => {
   const out: number[] = []
@@ -432,10 +443,27 @@ const wifiStaIpDisplay = computed(() => device.value?.state?.wifiStaIp || '--')
 const wifiApIpDisplay = computed(() => device.value?.state?.wifiApIp || '--')
 const wifiSsidDisplay = computed(() => device.value?.state?.wifiSsid || '--')
 
+const formatTimestamp = (value: string) => {
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return value
+  return dt.toLocaleString('ru-RU', { hour12: false })
+}
+
 const toLocalInputValue = (date: Date) => {
   const offset = date.getTimezoneOffset() * 60000
   return new Date(date.getTime() - offset).toISOString().slice(0, 16)
 }
+
+const formatRangeDate = (value: string) => {
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return value
+  return dt.toLocaleString('ru-RU', { hour12: false })
+}
+
+const historyRangeLabel = computed(() => {
+  if (!historyFilters.from || !historyFilters.to) return ''
+  return `Диапазон: ${formatRangeDate(historyFilters.from)} — ${formatRangeDate(historyFilters.to)}`
+})
 
 const palette = [
   '#1f77b4',
@@ -453,9 +481,19 @@ const normalizeHistorySelection = (indices: number[], count: number) => {
   return normalized.length ? normalized : (count ? [0] : [])
 }
 
-const historyLabels = computed(() => historyData.value.map((row) => row.timestamp))
+const historyLabels = computed(() => historyData.value.map((row) => formatTimestamp(row.timestamp)))
 
-const tempPlotData = computed(() => {
+const buildDataset = (label: string, data: (number | null)[], color: string) => ({
+  label,
+  data,
+  borderColor: color,
+  backgroundColor: color,
+  borderWidth: 2,
+  tension: 0.25,
+  pointRadius: 0,
+})
+
+const buildTempDatasets = () => {
   const selected = normalizeHistorySelection(historySelection.tempIndices, tempEntries.value.length)
   return selected.map((idx, seriesIdx) => {
     const color = palette[seriesIdx % palette.length]
@@ -464,57 +502,78 @@ const tempPlotData = computed(() => {
       return Number.isFinite(value) ? Number(value) : null
     })
     const label = tempEntries.value[idx]?.label || `t${idx + 1}`
-    return {
-      x: historyLabels.value,
-      y: data,
-      type: 'scatter',
-      mode: 'lines',
-      name: label,
-      line: { color, width: 2 },
-    }
+    return buildDataset(label, data, color)
   })
-})
+}
 
-const adcPlotData = computed(() => {
+const buildAdcDatasets = () => {
   const sets: any[] = []
   const baseColors = ['#1f77b4', '#2ca02c', '#d62728']
-  const x = historyLabels.value
   if (historySelection.showAdc) {
     sets.push(
-      { x, y: historyData.value.map((row) => row.adc1 ?? null), type: 'scatter', mode: 'lines', name: 'ADC1', line: { color: baseColors[0], width: 2 } },
-      { x, y: historyData.value.map((row) => row.adc2 ?? null), type: 'scatter', mode: 'lines', name: 'ADC2', line: { color: baseColors[1], width: 2 } },
-      { x, y: historyData.value.map((row) => row.adc3 ?? null), type: 'scatter', mode: 'lines', name: 'ADC3', line: { color: baseColors[2], width: 2 } },
+      buildDataset('ADC1', historyData.value.map((row) => row.adc1 ?? null), baseColors[0]),
+      buildDataset('ADC2', historyData.value.map((row) => row.adc2 ?? null), baseColors[1]),
+      buildDataset('ADC3', historyData.value.map((row) => row.adc3 ?? null), baseColors[2]),
     )
   }
   if (historySelection.showCal) {
     sets.push(
-      { x, y: historyData.value.map((row) => row.adc1_cal ?? null), type: 'scatter', mode: 'lines', name: 'CAL1', line: { color: '#9ecae1', width: 2, dash: 'dot' } },
-      { x, y: historyData.value.map((row) => row.adc2_cal ?? null), type: 'scatter', mode: 'lines', name: 'CAL2', line: { color: '#98df8a', width: 2, dash: 'dot' } },
-      { x, y: historyData.value.map((row) => row.adc3_cal ?? null), type: 'scatter', mode: 'lines', name: 'CAL3', line: { color: '#ff9896', width: 2, dash: 'dot' } },
+      buildDataset('CAL1', historyData.value.map((row) => row.adc1_cal ?? null), '#9ecae1'),
+      buildDataset('CAL2', historyData.value.map((row) => row.adc2_cal ?? null), '#98df8a'),
+      buildDataset('CAL3', historyData.value.map((row) => row.adc3_cal ?? null), '#ff9896'),
     )
   }
   return sets
-})
+}
 
-const tempPlotLayout = computed(() => ({
-  autosize: true,
-  margin: { l: 40, r: 20, t: 10, b: 40 },
-  paper_bgcolor: 'transparent',
-  plot_bgcolor: 'transparent',
-  xaxis: { title: 'Время', showgrid: false },
-  yaxis: { title: '°C' },
-  legend: { orientation: 'h', x: 0, y: -0.2 },
-}))
+const renderCharts = () => {
+  if (!ChartCtor) return
+  if (!tempChartEl.value || !adcChartEl.value) return
 
-const adcPlotLayout = computed(() => ({
-  autosize: true,
-  margin: { l: 40, r: 20, t: 10, b: 40 },
-  paper_bgcolor: 'transparent',
-  plot_bgcolor: 'transparent',
-  xaxis: { title: 'Время', showgrid: false },
-  yaxis: { title: 'V' },
-  legend: { orientation: 'h', x: 0, y: -0.2 },
-}))
+  const labels = historyLabels.value
+  const tempDatasets = buildTempDatasets()
+  const adcDatasets = buildAdcDatasets()
+
+  if (!tempChart) {
+    tempChart = new ChartCtor(tempChartEl.value, {
+      type: 'line',
+      data: { labels, datasets: tempDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8 } },
+        },
+      },
+    })
+  } else {
+    tempChart.data.labels = labels
+    tempChart.data.datasets = tempDatasets
+    tempChart.update('none')
+  }
+
+  if (!adcChart) {
+    adcChart = new ChartCtor(adcChartEl.value, {
+      type: 'line',
+      data: { labels, datasets: adcDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8 } },
+        },
+      },
+    })
+  } else {
+    adcChart.data.labels = labels
+    adcChart.data.datasets = adcDatasets
+    adcChart.update('none')
+  }
+}
 
 watch(
   () => device.value?.state,
@@ -548,6 +607,14 @@ watch(
   (count) => {
     historySelection.tempIndices = normalizeHistorySelection(historySelection.tempIndices, count)
   }
+)
+
+watch(
+  () => [historyData.value, historySelection.tempIndices, historySelection.showAdc, historySelection.showCal],
+  () => {
+    renderCharts()
+  },
+  { deep: true }
 )
 
 async function refreshState() {
@@ -682,9 +749,15 @@ async function loadHistory() {
     if (historyFilters.to) {
       params.set('to', new Date(historyFilters.to).toISOString())
     }
-    const data = await apiFetch<MeasurementRow[]>(`/api/measurements?${params.toString()}`)
-    historyData.value = data
-    historyStatus.value = `Получено ${data.length} точек`
+    const response = await apiFetch<MeasurementsResponse>(`/api/measurements?${params.toString()}`)
+    historyData.value = response.points
+    historyBucketLabel.value = response.bucket_label
+    historyRawCount.value = response.raw_count
+    if (response.aggregated) {
+      historyStatus.value = `Получено ${response.points.length} из ${response.raw_count} (окно ${response.bucket_label})`
+    } else {
+      historyStatus.value = `Получено ${response.points.length} точек`
+    }
   } catch (e: any) {
     historyStatus.value = e?.message || 'Не удалось загрузить историю'
   } finally {
@@ -696,6 +769,23 @@ onMounted(() => {
   historyFilters.to = toLocalInputValue(new Date())
   historyFilters.from = toLocalInputValue(new Date(Date.now() - 60 * 60 * 1000))
   refreshState()
+  if (!ChartCtor) {
+    import('chart.js/auto').then((mod: any) => {
+      ChartCtor = mod?.Chart || mod?.default || mod
+      renderCharts()
+    })
+  }
+})
+
+onBeforeUnmount(() => {
+  if (tempChart) {
+    tempChart.destroy()
+    tempChart = null
+  }
+  if (adcChart) {
+    adcChart.destroy()
+    adcChart = null
+  }
 })
 </script>
 
@@ -750,7 +840,7 @@ input { width: 100%; box-sizing: border-box; }
 .muted { color: var(--muted); font-size: 13px; }
 .chart-stack { display: flex; flex-direction: column; gap: 16px; }
 .chart-box { background: #f8fafc; border-radius: 12px; border: 1px solid var(--border); padding: 12px; height: 360px; display: flex; flex-direction: column; gap: 8px; }
-.chart-box :deep(.js-plotly-plot) { width: 100%; height: 100%; flex: 1; }
+.chart-box canvas { width: 100%; height: 100%; flex: 1; }
 .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
 .temp-card.subtle { background: #f7f7f7; box-shadow: none; }

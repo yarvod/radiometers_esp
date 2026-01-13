@@ -35,6 +35,22 @@ class Measurement:
 
 
 @dataclass
+class MeasurementPoint:
+    timestamp: datetime
+    timestamp_ms: Optional[int]
+    adc1: float
+    adc2: float
+    adc3: float
+    temps: list[float]
+    bus_v: float
+    bus_i: float
+    bus_p: float
+    adc1_cal: Optional[float]
+    adc2_cal: Optional[float]
+    adc3_cal: Optional[float]
+
+
+@dataclass
 class User:
     id: str
     username: str
