@@ -105,13 +105,13 @@ async def run_worker() -> None:
             async with Client(hostname=host, port=port, username=settings.mqtt_user, password=settings.mqtt_password) as client:
                 await client.subscribe(settings.mqtt_measure_topic)
                 await client.subscribe(settings.mqtt_state_topic)
-                async with client.messages() as messages:
-                    async for message in messages:
-                        topic = str(message.topic)
-                        if topic.endswith("/measure"):
-                            await handle_measurement(topic, message.payload, container)
-                        elif topic.endswith("/state"):
-                            await handle_state(topic, container)
+                messages = client.messages
+                async for message in messages:
+                    topic = str(message.topic)
+                    if topic.endswith("/measure"):
+                        await handle_measurement(topic, message.payload, container)
+                    elif topic.endswith("/state"):
+                        await handle_state(topic, container)
         except MqttError:
             await asyncio.sleep(2)
 

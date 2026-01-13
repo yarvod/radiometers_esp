@@ -1,3 +1,5 @@
+import pytest
+
 from app.core.config import Settings
 from app import worker
 from app.worker import device_from_topic, parse_iso, parse_mqtt
@@ -26,5 +28,9 @@ def test_parse_mqtt_default():
     assert port == 1883
 
 
-def test_worker_uses_aiomqtt_messages_api():
-    assert hasattr(worker.Client, "messages")
+@pytest.mark.asyncio
+async def test_worker_uses_aiomqtt_messages_api():
+    client = worker.Client(hostname="localhost")
+    messages = client.messages
+    assert hasattr(messages, "__aiter__")
+    assert not callable(messages)
