@@ -20,6 +20,8 @@ inline constexpr char DEFAULT_WIFI_PASS[] = "89852936257";
 inline constexpr size_t WIFI_SSID_MAX_LEN = 32;
 inline constexpr size_t WIFI_PASSWORD_MAX_LEN = 64;
 inline constexpr char TAG[] = "APP";
+inline constexpr char TO_UPLOAD_DIR[] = "/sdcard/to_upload";
+inline constexpr char UPLOADED_DIR[] = "/sdcard/uploaded";
 
 struct AppConfig {
   std::string wifi_ssid;
@@ -33,6 +35,17 @@ struct AppConfig {
   bool logging_use_motor;
   float logging_duration_s;
   int stepper_speed_us;
+  // Cloud / remote control
+  std::string device_id;
+  std::string minio_endpoint;
+  std::string minio_access_key;
+  std::string minio_secret_key;
+  std::string minio_bucket;
+  bool minio_enabled;
+  std::string mqtt_uri;
+  std::string mqtt_user;
+  std::string mqtt_password;
+  bool mqtt_enabled;
 };
 
 struct PidConfig {
@@ -41,6 +54,7 @@ struct PidConfig {
   float kd;
   float setpoint;
   int sensor_index;
+  uint16_t sensor_mask;
   bool from_file;
 };
 
@@ -48,6 +62,9 @@ struct SharedState {
   float voltage1;
   float voltage2;
   float voltage3;
+  float voltage1_cal;
+  float voltage2_cal;
+  float voltage3_cal;
   float offset1;
   float offset2;
   float offset3;
@@ -73,6 +90,7 @@ struct SharedState {
   float pid_kd;
   float pid_setpoint;
   int pid_sensor_index;
+  uint16_t pid_sensor_mask;
   float pid_output;
   bool stepper_enabled;
   bool stepper_moving;
@@ -86,6 +104,11 @@ struct SharedState {
   bool calibrating;
   bool usb_msc_mode;
   std::string usb_error;
+  int wifi_rssi_dbm;
+  int wifi_quality;
+  std::string wifi_ip;
+  std::string wifi_ip_sta;
+  std::string wifi_ip_ap;
 };
 
 enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };
@@ -112,11 +135,14 @@ extern UsbMode usb_mode;
 extern TaskHandle_t calibration_task;
 extern TaskHandle_t find_zero_task;
 extern TaskHandle_t log_task;
+extern TaskHandle_t upload_task;
+extern TaskHandle_t mqtt_state_task;
 
 extern sdmmc_card_t* sd_card;
 extern sdmmc_card_t* log_sd_card;
 extern FILE* log_file;
 extern bool log_sd_mounted;
+extern std::string current_log_path;
 
 SharedState CopyState();
 void UpdateState(const std::function<void(SharedState&)>& updater);

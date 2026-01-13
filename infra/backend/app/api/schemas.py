@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class UserOut(BaseModel):
+    id: str
+    username: str
+    created_at: datetime
+
+
+class AuthStatusResponse(BaseModel):
+    has_users: bool
+    user: Optional[UserOut] = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+
+
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserUpdateRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+class DeviceCreateRequest(BaseModel):
+    id: str = Field(..., min_length=1)
+    display_name: Optional[str] = None
+
+
+class DeviceUpdateRequest(BaseModel):
+    display_name: Optional[str] = None
+
+
+class DeviceOut(BaseModel):
+    id: str
+    display_name: Optional[str] = None
+    created_at: datetime
+    last_seen_at: Optional[datetime] = None
+
+
+class MeasurementOut(BaseModel):
+    id: str
+    device_id: str
+    timestamp: datetime
+    timestamp_ms: Optional[int]
+    adc1: float
+    adc2: float
+    adc3: float
+    temps: list[float]
+    bus_v: float
+    bus_i: float
+    bus_p: float
+    adc1_cal: Optional[float]
+    adc2_cal: Optional[float]
+    adc3_cal: Optional[float]
+    log_use_motor: bool
+    log_duration: float
+    log_filename: Optional[str]

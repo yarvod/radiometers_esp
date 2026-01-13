@@ -1,0 +1,116 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-radiometer}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    user: "0"
+    ports:
+      - "1883:1883"
+      - "9001:9001"  # WebSocket
+      - "8883:8883"  # TLS
+    environment:
+      MQTT_USER: ${MQTT_USER:?set MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_passwd:/mosquitto/secrets
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+      - ./certs:/mosquitto/certs
+    command: >
+      sh -c 'set -e;
+      if [ ! -s /mosquitto/secrets/passwd ]; then
+        mosquitto_passwd -b -c /mosquitto/secrets/passwd "$MQTT_USER" "$MQTT_PASSWORD";
+        chmod 0700 /mosquitto/secrets/passwd;
+      fi;
+      if [ -d /mosquitto/certs ]; then
+        chown -R mosquitto:mosquitto /mosquitto/certs || true;
+        chmod 600 /mosquitto/certs/server.key || true;
+      fi;
+      exec mosquitto -c /mosquitto/config/mosquitto.conf'
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-02-24T17-11-14Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+      MINIO_SERVER_URL: "${MINIO_SERVER_URL:-https://s3.yoowee.ru}"
+      MINIO_BROWSER_REDIRECT_URL: "${MINIO_BROWSER_REDIRECT_URL:-https://s3-console.yoowee.ru}"
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9002:9001"
+    volumes:
+      - minio_data:/data
+
+  backend:
+    image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}
+    restart: unless-stopped
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+      APP_MQTT_URL: mqtt://mosquitto:1883
+      APP_MQTT_USER: ${MQTT_USER}
+      APP_MQTT_PASSWORD: ${MQTT_PASSWORD}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - mosquitto
+      - migrate
+    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+
+  worker:
+    image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}
+    restart: unless-stopped
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+      APP_MQTT_URL: mqtt://mosquitto:1883
+      APP_MQTT_USER: ${MQTT_USER}
+      APP_MQTT_PASSWORD: ${MQTT_PASSWORD}
+    depends_on:
+      - db
+      - mosquitto
+      - migrate
+    command: ["python", "-m", "app.worker"]
+
+  migrate:
+    image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}
+    restart: "no"
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+    depends_on:
+      - db
+    command: ["alembic", "upgrade", "head"]
+
+  frontend:
+    image: ${IMAGE_NAME:-ghcr.io/yarvod/esp-frontend:latest}
+    restart: unless-stopped
+    environment:
+      NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-wss://yoowee.ru/mqtt}
+      NUXT_PUBLIC_MQTT_USER: ${MQTT_USER}
+      NUXT_PUBLIC_MQTT_PASSWORD: ${MQTT_PASSWORD}
+      NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-https://yoowee.ru}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mosquitto
+      - backend
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+  mosquitto_passwd:
+  db_data:
+  minio_data:

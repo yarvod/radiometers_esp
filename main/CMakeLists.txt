@@ -6,10 +6,13 @@ idf_component_register(
         "web_ui.cpp"
         "ltc2440.cpp"
         "onewire_m1820.cpp"
+        "control_actions.cpp"
+        "mqtt_bridge.cpp"
        
     PRIV_REQUIRES
         esp_wifi
         esp_http_server
+        esp_http_client
         esp_netif
         nvs_flash
         driver
@@ -21,7 +24,11 @@ idf_component_register(
         sdmmc
         fatfs
         onewire_bus
+    mqtt
     INCLUDE_DIRS "."
+    EMBED_TXTFILES
+        "ca.crt"
+        "isrgrootx1.pem"
 )
 
 set_property(TARGET ${COMPONENT_LIB} PROPERTY CXX_STANDARD 17)

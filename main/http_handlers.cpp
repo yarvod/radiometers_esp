@@ -12,7 +12,9 @@
 #include "cJSON.h"
 #include "app_state.h"
 #include "app_services.h"
+#include "control_actions.h"
 #include "web_ui.h"
+#include "mqtt_bridge.h"
 #include "hw_pins.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
@@ -26,6 +28,69 @@
 #include "sdmmc_cmd.h"
 #include "tusb_msc_storage.h"
 #include "sdkconfig.h"
+
+static bool UrlDecode(const char* src, std::string* out) {
+  if (!src || !out) return false;
+  out->clear();
+  for (size_t i = 0; src[i] != '\0'; ++i) {
+    char c = src[i];
+    if (c == '%') {
+      if (!std::isxdigit(static_cast<unsigned char>(src[i + 1])) || !std::isxdigit(static_cast<unsigned char>(src[i + 2]))) {
+        return false;
+      }
+      auto hex = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+        if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+        return 0;
+      };
+      int v = (hex(src[i + 1]) << 4) | hex(src[i + 2]);
+      out->push_back(static_cast<char>(v));
+      i += 2;
+    } else if (c == '+') {
+      out->push_back(' ');
+    } else {
+      out->push_back(c);
+    }
+    if (out->size() > 512) return false;
+  }
+  return true;
+}
+
+static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const SharedState& base,
+                                  const SharedState* cal) {
+  cJSON* root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
+  cJSON_AddNumberToObject(root, "timestampMs", static_cast<double>(ts_ms));
+  cJSON_AddNumberToObject(root, "adc1", base.voltage1);
+  cJSON_AddNumberToObject(root, "adc2", base.voltage2);
+  cJSON_AddNumberToObject(root, "adc3", base.voltage3);
+  cJSON* temps = cJSON_CreateArray();
+  for (int i = 0; i < base.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+    cJSON_AddItemToArray(temps, cJSON_CreateNumber(base.temps_c[i]));
+  }
+  cJSON_AddItemToObject(root, "temps", temps);
+  cJSON_AddNumberToObject(root, "busV", base.ina_bus_voltage);
+  cJSON_AddNumberToObject(root, "busI", base.ina_current);
+  cJSON_AddNumberToObject(root, "busP", base.ina_power);
+  cJSON_AddBoolToObject(root, "logUseMotor", log_config.use_motor);
+  cJSON_AddNumberToObject(root, "logDuration", log_config.duration_s);
+  SharedState current = CopyState();
+  if (!current.log_filename.empty()) {
+    cJSON_AddStringToObject(root, "logFilename", current.log_filename.c_str());
+  }
+  if (cal) {
+    cJSON_AddNumberToObject(root, "adc1Cal", cal->voltage1);
+    cJSON_AddNumberToObject(root, "adc2Cal", cal->voltage2);
+    cJSON_AddNumberToObject(root, "adc3Cal", cal->voltage3);
+  }
+  const char* json = cJSON_PrintUnformatted(root);
+  if (json) {
+    PublishMeasurementPayload(json);
+  }
+  cJSON_free((void*)json);
+  cJSON_Delete(root);
+}
 
 // HTTP handlers
 esp_err_t RootHandler(httpd_req_t* req) {
@@ -42,34 +107,29 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "inaBusVoltage", snapshot.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "inaCurrent", snapshot.ina_current);
   cJSON_AddNumberToObject(root, "inaPower", snapshot.ina_power);
+  cJSON_AddNumberToObject(root, "wifiRssi", snapshot.wifi_rssi_dbm);
+  cJSON_AddNumberToObject(root, "wifiQuality", snapshot.wifi_quality);
+  cJSON_AddStringToObject(root, "wifiIp", snapshot.wifi_ip.c_str());
+  cJSON_AddStringToObject(root, "wifiStaIp", snapshot.wifi_ip_sta.c_str());
+  cJSON_AddStringToObject(root, "wifiApIp", snapshot.wifi_ip_ap.c_str());
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
   cJSON_AddNumberToObject(root, "tempSensorCount", snapshot.temp_sensor_count);
-  cJSON* temp_array = cJSON_CreateArray();
+  cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    cJSON_AddItemToArray(temp_array, cJSON_CreateNumber(snapshot.temps_c[i]));
-  }
-  cJSON_AddItemToObject(root, "tempSensors", temp_array);
-  cJSON* label_array = cJSON_CreateArray();
-  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    const std::string& name = snapshot.temp_labels[i];
-    if (!name.empty()) {
-      cJSON_AddItemToArray(label_array, cJSON_CreateString(name.c_str()));
-    } else {
-      char buf[16];
-      std::snprintf(buf, sizeof(buf), "Sensor %d", i + 1);
-      cJSON_AddItemToArray(label_array, cJSON_CreateString(buf));
+    std::string label = snapshot.temp_labels[i];
+    if (label.empty()) {
+      label = "t" + std::to_string(i + 1);
     }
-  }
-  cJSON_AddItemToObject(root, "tempLabels", label_array);
-  cJSON* addr_array = cJSON_CreateArray();
-  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     const std::string& addr = snapshot.temp_addresses[i];
-    cJSON_AddItemToArray(addr_array, cJSON_CreateString(addr.c_str()));
+    cJSON* entry = cJSON_CreateObject();
+    cJSON_AddNumberToObject(entry, "value", snapshot.temps_c[i]);
+    cJSON_AddStringToObject(entry, "address", addr.c_str());
+    cJSON_AddItemToObject(temp_obj, label.c_str(), entry);
   }
-  cJSON_AddItemToObject(root, "tempAddresses", addr_array);
+  cJSON_AddItemToObject(root, "tempSensors", temp_obj);
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddBoolToObject(root, "logUseMotor", snapshot.log_use_motor);
@@ -77,16 +137,31 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
   cJSON_AddStringToObject(root, "wifiPassword", app_config.wifi_password.c_str());
+  cJSON_AddStringToObject(root, "deviceId", app_config.device_id.c_str());
+  cJSON_AddStringToObject(root, "minioEndpoint", app_config.minio_endpoint.c_str());
+  cJSON_AddStringToObject(root, "minioAccessKey", app_config.minio_access_key.c_str());
+  cJSON_AddStringToObject(root, "minioSecretKey", app_config.minio_secret_key.c_str());
+  cJSON_AddStringToObject(root, "minioBucket", app_config.minio_bucket.c_str());
+  cJSON_AddBoolToObject(root, "minioEnabled", app_config.minio_enabled);
+  cJSON_AddStringToObject(root, "mqttUri", app_config.mqtt_uri.c_str());
+  cJSON_AddStringToObject(root, "mqttUser", app_config.mqtt_user.c_str());
+  cJSON_AddStringToObject(root, "mqttPassword", app_config.mqtt_password.c_str());
+  cJSON_AddBoolToObject(root, "mqttEnabled", app_config.mqtt_enabled);
   cJSON_AddBoolToObject(root, "pidEnabled", snapshot.pid_enabled);
   cJSON_AddNumberToObject(root, "pidSetpoint", snapshot.pid_setpoint);
   cJSON_AddNumberToObject(root, "pidSensorIndex", snapshot.pid_sensor_index);
+  cJSON_AddNumberToObject(root, "pidSensorMask", snapshot.pid_sensor_mask);
   cJSON_AddNumberToObject(root, "pidKp", snapshot.pid_kp);
   cJSON_AddNumberToObject(root, "pidKi", snapshot.pid_ki);
   cJSON_AddNumberToObject(root, "pidKd", snapshot.pid_kd);
   cJSON_AddNumberToObject(root, "pidOutput", snapshot.pid_output);
   cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
+  const std::string iso = IsoUtcNow();
+  cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
+  cJSON_AddBoolToObject(root, "stepperHoming", snapshot.homing);
+  cJSON_AddBoolToObject(root, "stepperDirForward", snapshot.stepper_direction_forward);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
   cJSON_AddNumberToObject(root, "stepperSpeedUs", snapshot.stepper_speed_us);
@@ -114,14 +189,22 @@ esp_err_t CalibrateHandler(httpd_req_t* req) {
 }
 
 esp_err_t StepperEnableHandler(httpd_req_t* req) {
-  EnableStepper();
+  ActionResult res = ActionStepperEnable();
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"stepper_enabled\"}");
 }
 
 esp_err_t StepperDisableHandler(httpd_req_t* req) {
-  DisableStepper();
+  ActionResult res = ActionStepperDisable();
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"stepper_disabled\"}");
 }
 
@@ -167,20 +250,15 @@ esp_err_t StepperMoveHandler(httpd_req_t* req) {
   int speed = cJSON_GetObjectItem(root, "speed") ? cJSON_GetObjectItem(root, "speed")->valueint : app_config.stepper_speed_us;
   cJSON_Delete(root);
 
-  steps = std::clamp(steps, 1, 10000);
-  if (speed <= 0) {
-    speed = 1;
-  }
-
-  SharedState snapshot = CopyState();
-  if (!snapshot.stepper_enabled) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stepper not enabled");
+  StepperMoveRequest move_req;
+  move_req.steps = steps;
+  move_req.forward = forward;
+  move_req.speed_us = speed;
+  ActionResult res = ActionStepperMove(move_req);
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;
   }
-
-  StartStepperMove(steps, forward, speed);
-  app_config.stepper_speed_us = speed;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"movement_started\"}");
@@ -316,7 +394,34 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   fprintf(f, "pid_kd = %.6f\n", pid.kd);
   fprintf(f, "pid_setpoint = %.6f\n", pid.setpoint);
   fprintf(f, "pid_sensor = %d\n", pid.sensor_index);
+  fprintf(f, "pid_sensor_mask = %u\n", static_cast<unsigned int>(pid.sensor_mask));
   fprintf(f, "pid_enabled = %s\n", (CopyState().pid_enabled ? "true" : "false"));
+  if (!cfg.device_id.empty()) {
+    fprintf(f, "device_id = %s\n", cfg.device_id.c_str());
+  }
+  if (!cfg.minio_endpoint.empty()) {
+    fprintf(f, "minio_endpoint = %s\n", cfg.minio_endpoint.c_str());
+  }
+  if (!cfg.minio_access_key.empty()) {
+    fprintf(f, "minio_access_key = %s\n", cfg.minio_access_key.c_str());
+  }
+  if (!cfg.minio_secret_key.empty()) {
+    fprintf(f, "minio_secret_key = %s\n", cfg.minio_secret_key.c_str());
+  }
+  if (!cfg.minio_bucket.empty()) {
+    fprintf(f, "minio_bucket = %s\n", cfg.minio_bucket.c_str());
+  }
+  fprintf(f, "minio_enabled = %s\n", (cfg.minio_enabled ? "true" : "false"));
+  if (!cfg.mqtt_uri.empty()) {
+    fprintf(f, "mqtt_uri = %s\n", cfg.mqtt_uri.c_str());
+  }
+  if (!cfg.mqtt_user.empty()) {
+    fprintf(f, "mqtt_user = %s\n", cfg.mqtt_user.c_str());
+  }
+  if (!cfg.mqtt_password.empty()) {
+    fprintf(f, "mqtt_password = %s\n", cfg.mqtt_password.c_str());
+  }
+  fprintf(f, "mqtt_enabled = %s\n", (cfg.mqtt_enabled ? "true" : "false"));
   fclose(f);
   // Keep mounted if logging is active to avoid invalidating open log file.
   if (!already_mounted && !log_file) {
@@ -327,15 +432,18 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
 }
 
 void StopLogging() {
-  SdLockGuard guard;
-  if (guard.locked()) {
-    if (log_file) {
+  // First try to flush/close and queue the current file for upload.
+  if (!QueueCurrentLogForUpload()) {
+    SdLockGuard guard;
+    if (guard.locked()) {
+      if (log_file) {
+        fclose(log_file);
+        log_file = nullptr;
+      }
+    } else if (log_file) {
       fclose(log_file);
       log_file = nullptr;
     }
-  } else if (log_file) {
-    fclose(log_file);
-    log_file = nullptr;
   }
   UnmountLogSd();
   UpdateState([](SharedState& s) {
@@ -464,6 +572,7 @@ void LoggingTask(void*) {
     const uint64_t now_us = esp_timer_get_time();
     if (log_config.file_start_us > 0 && (now_us - log_config.file_start_us) >= 3'600'000'000ULL) {
       ESP_LOGI(TAG, "Rotating log file after 1 hour");
+      (void)QueueCurrentLogForUpload();
       if (!OpenLogFileWithPostfix(log_config.postfix)) {
         StopLogging();
         vTaskDelete(nullptr);
@@ -531,15 +640,22 @@ void LoggingTask(void*) {
         }
         uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
         const std::string iso = IsoUtcNow();
-        fprintf(log_file, "%s,%llu,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, pending_base.voltage1, pending_base.voltage2);
+        fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms,
+                pending_base.voltage1, pending_base.voltage2, pending_base.voltage3);
         for (int i = 0; i < pending_base.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
           fprintf(log_file, ",%.2f", pending_base.temps_c[i]);
         }
         fprintf(log_file, ",%.3f,%.3f,%.3f", pending_base.ina_bus_voltage, pending_base.ina_current, pending_base.ina_power);
-        fprintf(log_file, ",%.6f,%.6f", avg.voltage1, avg.voltage2);
+        fprintf(log_file, ",%.6f,%.6f,%.6f", avg.voltage1, avg.voltage2, avg.voltage3);
         fprintf(log_file, "\n");
         FlushLogFile();
         ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+        PublishLogMeasurement(iso, ts_ms, pending_base, &avg);
+        UpdateState([&](SharedState& s) {
+          s.voltage1_cal = avg.voltage1;
+          s.voltage2_cal = avg.voltage2;
+          s.voltage3_cal = avg.voltage3;
+        });
       }
 
       // Вернуться вперёд на 200 и продолжить цикл
@@ -572,17 +688,24 @@ void LoggingTask(void*) {
     }
     uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
     const std::string iso = IsoUtcNow();
-    fprintf(log_file, "%s,%llu,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms, avg1.voltage1, avg1.voltage2);
+    fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms,
+            avg1.voltage1, avg1.voltage2, avg1.voltage3);
     for (int i = 0; i < avg1.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
       fprintf(log_file, ",%.2f", avg1.temps_c[i]);
     }
     fprintf(log_file, ",%.3f,%.3f,%.3f", avg1.ina_bus_voltage, avg1.ina_current, avg1.ina_power);
     if (log_config.use_motor && have_cal) {
-      fprintf(log_file, ",%.6f,%.6f", avg2.voltage1, avg2.voltage2);
+      fprintf(log_file, ",%.6f,%.6f,%.6f", avg2.voltage1, avg2.voltage2, avg2.voltage3);
     }
     fprintf(log_file, "\n");
     FlushLogFile();
     ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+    PublishLogMeasurement(iso, ts_ms, avg1, nullptr);
+    UpdateState([&](SharedState& s) {
+      s.voltage1_cal = avg1.voltage1;
+      s.voltage2_cal = avg1.voltage2;
+      s.voltage3_cal = avg1.voltage3;
+    });
   }
 }
 
@@ -658,9 +781,13 @@ esp_err_t HeaterSetHandler(httpd_req_t* req) {
   }
   cJSON_Delete(root);
 
-  HeaterSetPowerPercent(power);
+  ActionResult res = ActionHeaterSet(power);
 
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }
 
@@ -692,9 +819,13 @@ esp_err_t FanSetHandler(httpd_req_t* req) {
   float p = static_cast<float>(val->valuedouble);
   cJSON_Delete(root);
 
-  FanSetPowerPercent(p);
+  ActionResult res = ActionFanSet(p);
 
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
 }
 
@@ -731,35 +862,23 @@ esp_err_t LogStartHandler(httpd_req_t* req) {
   log_config.use_motor = use_motor;
   log_config.duration_s = duration_s;
 
-  if (!StartLoggingToFile(filename, usb_mode)) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to start logging");
+  LogRequest log_req{filename, use_motor, duration_s};
+  ActionResult res = ActionStartLog(log_req);
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;
   }
-
-  app_config.logging_active = true;
-  app_config.logging_postfix = SanitizePostfix(filename);
-  app_config.logging_use_motor = use_motor;
-  app_config.logging_duration_s = duration_s;
-  UpdateState([&](SharedState& s) {
-    s.logging = true;
-    s.log_use_motor = use_motor;
-    s.log_duration_s = duration_s;
-  });
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"logging_started\"}");
 }
 
 esp_err_t LogStopHandler(httpd_req_t* req) {
-  StopLogging();
-  app_config.logging_active = false;
-  app_config.logging_use_motor = false;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
-  UpdateState([](SharedState& s) {
-    s.logging = false;
-    s.log_use_motor = false;
-  });
+  ActionResult res = ActionStopLog();
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"logging_stopped\"}");
 }
@@ -769,6 +888,34 @@ esp_err_t FsListHandler(httpd_req_t* req) {
   if (snapshot.usb_msc_mode) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC mode active");
     return ESP_FAIL;
+  }
+
+  std::string rel_path;
+  int page = 0;
+  int page_size = 10;
+  int qs_len = httpd_req_get_url_query_len(req) + 1;
+  if (qs_len > 1) {
+    std::string qs(qs_len, '\0');
+    if (httpd_req_get_url_query_str(req, qs.data(), qs_len) == ESP_OK) {
+      char buf[256] = {};
+      if (httpd_query_key_value(qs.c_str(), "path", buf, sizeof(buf)) == ESP_OK) {
+        std::string decoded;
+        if (!UrlDecode(buf, &decoded)) {
+          httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
+          return ESP_FAIL;
+        }
+        rel_path = decoded;
+      }
+      if (httpd_query_key_value(qs.c_str(), "page", buf, sizeof(buf)) == ESP_OK) {
+        page = std::max(0, atoi(buf));
+      }
+      if (httpd_query_key_value(qs.c_str(), "pageSize", buf, sizeof(buf)) == ESP_OK) {
+        int p = atoi(buf);
+        if (p > 0 && p <= 100) {
+          page_size = p;
+        }
+      }
+    }
   }
 
   SdLockGuard guard;
@@ -781,35 +928,74 @@ esp_err_t FsListHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
 
-  DIR* dir = opendir(CONFIG_MOUNT_POINT);
+  std::string full_dir = CONFIG_MOUNT_POINT;
+  if (!rel_path.empty()) {
+    if (!SanitizePath(rel_path, &full_dir)) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+      return ESP_FAIL;
+    }
+  }
+  DIR* dir = opendir(full_dir.c_str());
   if (!dir) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Open dir failed");
     return ESP_FAIL;
   }
 
-  cJSON* arr = cJSON_CreateArray();
+  struct Entry {
+    std::string name;
+    uint64_t size;
+    bool is_dir;
+  };
+  std::vector<Entry> entries;
   struct dirent* ent = nullptr;
   while ((ent = readdir(dir)) != nullptr) {
     if (ent->d_name[0] == '.') continue;
-    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
-    std::string full_path = std::string(CONFIG_MOUNT_POINT) + "/" + ent->d_name;
+    const bool maybe_dir = ent->d_type == DT_DIR;
+    if (ent->d_type != DT_REG && ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN) continue;
+    std::string full_path = full_dir + "/" + ent->d_name;
     struct stat st {};
     uint64_t size = 0;
     if (stat(full_path.c_str(), &st) == 0) {
       size = static_cast<uint64_t>(st.st_size);
     }
-    cJSON* obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "name", ent->d_name);
-    cJSON_AddNumberToObject(obj, "size", static_cast<double>(size));
-    cJSON_AddItemToArray(arr, obj);
+    bool is_dir = maybe_dir || S_ISDIR(st.st_mode);
+    entries.push_back({ent->d_name, size, is_dir});
   }
   closedir(dir);
 
-  const char* json = cJSON_PrintUnformatted(arr);
+  std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.name < b.name; });
+  int total = static_cast<int>(entries.size());
+  int total_pages = (total + page_size - 1) / page_size;
+  int start = page * page_size;
+  if (start >= total) {
+    page = 0;
+    start = 0;
+  }
+
+  cJSON* root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "path", rel_path.c_str());
+  cJSON_AddNumberToObject(root, "page", page);
+  cJSON_AddNumberToObject(root, "pageSize", page_size);
+  cJSON_AddNumberToObject(root, "total", total);
+  cJSON_AddNumberToObject(root, "totalPages", total_pages);
+  cJSON* arr = cJSON_CreateArray();
+  for (int i = start; i < total && i < start + page_size; ++i) {
+    const Entry& e = entries[i];
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "name", e.name.c_str());
+    cJSON_AddStringToObject(obj, "type", e.is_dir ? "dir" : "file");
+    cJSON_AddNumberToObject(obj, "size", static_cast<double>(e.size));
+    std::string child_path = rel_path.empty() ? e.name : (rel_path + "/" + e.name);
+    cJSON_AddStringToObject(obj, "path", child_path.c_str());
+    cJSON_AddItemToArray(arr, obj);
+  }
+  cJSON_AddItemToObject(root, "entries", arr);
+
+  const char* json = cJSON_PrintUnformatted(root);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, json);
   cJSON_free((void*)json);
-  cJSON_Delete(arr);
+  cJSON_Delete(root);
   return ESP_OK;
 }
 
@@ -830,13 +1016,27 @@ esp_err_t FsDownloadHandler(httpd_req_t* req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
     return ESP_FAIL;
   }
-  char file_param[96] = {};
-  if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
+  char file_param[256] = {};
+  bool has_path = httpd_query_key_value(qs.c_str(), "path", file_param, sizeof(file_param)) == ESP_OK;
+  if (!has_path) {
+    if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
+      return ESP_FAIL;
+    }
+  }
+  std::string req_path = file_param;
+  std::string decoded_path;
+  if (!UrlDecode(req_path.c_str(), &decoded_path)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
     return ESP_FAIL;
   }
   std::string full_path;
-  if (!SanitizeFilename(file_param, &full_path)) {
+  if (has_path) {
+    if (!SanitizePath(decoded_path, &full_path)) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+      return ESP_FAIL;
+    }
+  } else if (!SanitizeFilename(decoded_path, &full_path)) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
     return ESP_FAIL;
   }
@@ -863,8 +1063,13 @@ esp_err_t FsDownloadHandler(httpd_req_t* req) {
     ctype = "text/csv";
   }
   httpd_resp_set_type(req, ctype);
+  std::string download_name = decoded_path;
+  size_t slash = download_name.find_last_of('/');
+  if (slash != std::string::npos) {
+    download_name = download_name.substr(slash + 1);
+  }
   std::string disp = "attachment; filename=\"";
-  disp.append(file_param);
+  disp.append(download_name);
   disp.push_back('"');
   httpd_resp_set_hdr(req, "Content-Disposition", disp.c_str());
 
@@ -951,12 +1156,18 @@ esp_err_t FsDeleteHandler(httpd_req_t* req) {
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
       return ESP_FAIL;
     }
-    char file_param[96] = {};
-    if (httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
+    char file_param[256] = {};
+    if (httpd_query_key_value(qs.c_str(), "path", file_param, sizeof(file_param)) != ESP_OK &&
+        httpd_query_key_value(qs.c_str(), "file", file_param, sizeof(file_param)) != ESP_OK) {
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing file param");
       return ESP_FAIL;
     }
-    requested_files.emplace_back(file_param);
+    std::string decoded;
+    if (!UrlDecode(file_param, &decoded)) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+      return ESP_FAIL;
+    }
+    requested_files.emplace_back(decoded);
   }
 
   auto is_protected_config = [](const std::string& name) {
@@ -979,20 +1190,26 @@ esp_err_t FsDeleteHandler(httpd_req_t* req) {
   std::vector<std::string> failed;
   std::set<std::string> seen;
 
+  auto basename = [](const std::string& path) {
+    size_t pos = path.find_last_of('/');
+    return (pos == std::string::npos) ? path : path.substr(pos + 1);
+  };
+
   for (const auto& raw_name : requested_files) {
     if (!seen.insert(raw_name).second) continue;
-    if (is_protected_config(raw_name)) {
+    const std::string name_only = basename(raw_name);
+    if (is_protected_config(name_only)) {
       skipped.push_back(raw_name + " (protected)");
       continue;
     }
 
     std::string full_path;
-    if (!SanitizeFilename(raw_name, &full_path)) {
+    if (!SanitizePath(raw_name, &full_path) && !SanitizeFilename(raw_name, &full_path)) {
       failed.push_back(raw_name + " (invalid)");
       continue;
     }
 
-    if (snapshot.logging && snapshot.log_filename == raw_name) {
+    if (snapshot.logging && snapshot.log_filename == name_only) {
       skipped.push_back(raw_name + " (active log)");
       continue;
     }
@@ -1077,6 +1294,8 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   float kd = pid_config.kd;
   float sp = pid_config.setpoint;
   int sensor = pid_config.sensor_index;
+  uint16_t sensor_mask = pid_config.sensor_mask;
+  bool sensor_mask_set = false;
 
   get_number("kp", &kp);
   get_number("ki", &ki);
@@ -1086,6 +1305,24 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   if (sensor_item && cJSON_IsNumber(sensor_item)) {
     sensor = sensor_item->valueint;
   }
+  cJSON* mask_item = cJSON_GetObjectItem(root, "sensorMask");
+  if (mask_item && cJSON_IsNumber(mask_item)) {
+    sensor_mask = static_cast<uint16_t>(mask_item->valuedouble);
+    sensor_mask_set = true;
+  }
+  cJSON* sensors_item = cJSON_GetObjectItem(root, "sensors");
+  if (sensors_item && cJSON_IsArray(sensors_item)) {
+    sensor_mask = 0;
+    const int len = cJSON_GetArraySize(sensors_item);
+    for (int i = 0; i < len; ++i) {
+      cJSON* entry = cJSON_GetArrayItem(sensors_item, i);
+      if (!entry || !cJSON_IsNumber(entry)) continue;
+      int idx = entry->valueint;
+      if (idx < 0 || idx >= MAX_TEMP_SENSORS) continue;
+      sensor_mask = static_cast<uint16_t>(sensor_mask | (1u << idx));
+    }
+    sensor_mask_set = true;
+  }
   cJSON_Delete(root);
 
   SharedState snapshot = CopyState();
@@ -1094,12 +1331,32 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   } else if (sensor < 0) {
     sensor = 0;
   }
+  if (sensor_mask_set) {
+    const uint16_t allowed = snapshot.temp_sensor_count > 0
+                                 ? static_cast<uint16_t>((1u << std::min(snapshot.temp_sensor_count, MAX_TEMP_SENSORS)) - 1u)
+                                 : 0;
+    sensor_mask = static_cast<uint16_t>(sensor_mask & allowed);
+    if (sensor_mask == 0 && snapshot.temp_sensor_count > 0) {
+      sensor_mask = static_cast<uint16_t>(1u << sensor);
+    }
+    for (int i = 0; i < MAX_TEMP_SENSORS; ++i) {
+      if (sensor_mask & (1u << i)) {
+        sensor = i;
+        break;
+      }
+    }
+  }
 
   pid_config.kp = kp;
   pid_config.ki = ki;
   pid_config.kd = kd;
   pid_config.setpoint = sp;
   pid_config.sensor_index = sensor;
+  if (sensor_mask_set) {
+    pid_config.sensor_mask = sensor_mask;
+  } else {
+    pid_config.sensor_mask = static_cast<uint16_t>(1u << sensor);
+  }
 
   UpdateState([&](SharedState& s) {
     s.pid_kp = kp;
@@ -1107,6 +1364,7 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
     s.pid_kd = kd;
     s.pid_setpoint = sp;
     s.pid_sensor_index = sensor;
+    s.pid_sensor_mask = pid_config.sensor_mask;
   });
 
   // Persist PID config and current enable state
@@ -1238,11 +1496,58 @@ esp_err_t WifiApplyHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"wifi_applied\"}");
 }
 
+esp_err_t CloudApplyHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 512);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  auto get_str = [&](const char* key) -> std::string {
+    cJSON* item = cJSON_GetObjectItem(root, key);
+    return (item && cJSON_IsString(item) && item->valuestring) ? std::string(item->valuestring) : std::string();
+  };
+  auto get_bool = [&](const char* key, bool def) -> bool {
+    cJSON* item = cJSON_GetObjectItem(root, key);
+    if (item && cJSON_IsBool(item)) return cJSON_IsTrue(item);
+    if (item && cJSON_IsNumber(item)) return item->valueint != 0;
+    return def;
+  };
+  app_config.device_id = get_str("deviceId");
+  app_config.minio_endpoint = get_str("minioEndpoint");
+  app_config.minio_access_key = get_str("minioAccessKey");
+  app_config.minio_secret_key = get_str("minioSecretKey");
+  app_config.minio_bucket = get_str("minioBucket");
+  app_config.minio_enabled = get_bool("minioEnabled", app_config.minio_enabled);
+  app_config.mqtt_uri = get_str("mqttUri");
+  app_config.mqtt_user = get_str("mqttUser");
+  app_config.mqtt_password = get_str("mqttPassword");
+  app_config.mqtt_enabled = get_bool("mqttEnabled", app_config.mqtt_enabled);
+  cJSON_Delete(root);
+
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"cloud_applied\"}");
+}
+
 httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 26;
+  config.max_uri_handlers = 28;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -1262,6 +1567,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
   httpd_uri_t wifi_apply_uri = {.uri = "/wifi/apply", .method = HTTP_POST, .handler = WifiApplyHandler, .user_ctx = nullptr};
+  httpd_uri_t cloud_apply_uri = {.uri = "/cloud/apply", .method = HTTP_POST, .handler = CloudApplyHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
   httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
   httpd_uri_t log_start_uri = {.uri = "/log/start", .method = HTTP_POST, .handler = LogStartHandler, .user_ctx = nullptr};
@@ -1285,6 +1591,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &usb_mode_get_uri);
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   httpd_register_uri_handler(http_server, &wifi_apply_uri);
+  httpd_register_uri_handler(http_server, &cloud_apply_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
   httpd_register_uri_handler(http_server, &fan_set_uri);
   httpd_register_uri_handler(http_server, &log_start_uri);
