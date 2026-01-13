@@ -2,7 +2,7 @@ name: Build and Deploy Nuxt
 
 on:
   push:
-    branches: [ "s3ui" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 env:
