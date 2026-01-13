@@ -293,11 +293,15 @@
       <div class="chart-stack">
         <div class="chart-box">
           <h4>Температуры</h4>
-          <canvas ref="tempChartEl"></canvas>
+          <div class="chart-body">
+            <canvas ref="tempChartEl"></canvas>
+          </div>
         </div>
         <div class="chart-box">
           <h4>ADC + Cal</h4>
-          <canvas ref="adcChartEl"></canvas>
+          <div class="chart-body">
+            <canvas ref="adcChartEl"></canvas>
+          </div>
         </div>
       </div>
     </div>
@@ -467,7 +471,14 @@ const wifiSsidDisplay = computed(() => device.value?.state?.wifiSsid || '--')
 const formatTimestamp = (value: string) => {
   const dt = new Date(value)
   if (Number.isNaN(dt.getTime())) return value
-  return dt.toLocaleString('ru-RU', { hour12: false })
+  return dt.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
 }
 
 const toLocalInputValue = (date: Date) => {
@@ -563,9 +574,17 @@ const renderCharts = () => {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
-        plugins: { legend: { position: 'bottom' } },
+        plugins: {
+          legend: {
+            position: 'top',
+            align: 'start',
+            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
+          },
+        },
+        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
         scales: {
-          x: { ticks: { maxTicksLimit: 8 } },
+          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
+          y: { ticks: { maxTicksLimit: 6 } },
         },
       },
     })
@@ -583,9 +602,17 @@ const renderCharts = () => {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
-        plugins: { legend: { position: 'bottom' } },
+        plugins: {
+          legend: {
+            position: 'top',
+            align: 'start',
+            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
+          },
+        },
+        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
         scales: {
-          x: { ticks: { maxTicksLimit: 8 } },
+          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
+          y: { ticks: { maxTicksLimit: 6 } },
         },
       },
     })
@@ -866,8 +893,13 @@ input { width: 100%; box-sizing: border-box; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .muted { color: var(--muted); font-size: 13px; }
 .chart-stack { display: flex; flex-direction: column; gap: 16px; }
-.chart-box { background: #f8fafc; border-radius: 12px; border: 1px solid var(--border); padding: 12px; height: 360px; display: flex; flex-direction: column; gap: 8px; }
-.chart-box canvas { width: 100%; height: 100%; flex: 1; }
+.chart-box { background: #f8fafc; border-radius: 12px; border: 1px solid var(--border); padding: 16px; height: 340px; display: flex; flex-direction: column; gap: 12px; }
+.chart-box h4 { margin: 0; font-size: 16px; }
+.chart-body { position: relative; flex: 1; min-height: 0; }
+.chart-body canvas { width: 100% !important; height: 100% !important; }
+@media (max-width: 640px) {
+  .chart-box { height: 280px; padding: 14px; }
+}
 .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
 .temp-card.subtle { background: #f7f7f7; box-shadow: none; }
