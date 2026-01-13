@@ -68,7 +68,8 @@ services:
     depends_on:
       - db
       - mosquitto
-    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+      - migrate
+    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
 
   worker:
     image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}
@@ -81,7 +82,17 @@ services:
     depends_on:
       - db
       - mosquitto
+      - migrate
     command: ["python", "-m", "app.worker"]
+
+  migrate:
+    image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}
+    restart: "no"
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+    depends_on:
+      - db
+    command: ["alembic", "upgrade", "head"]
 
   frontend:
     image: ${IMAGE_NAME:-ghcr.io/yarvod/esp-frontend:latest}
