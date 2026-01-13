@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from fastapi import APIRouter, HTTPException, Request, status
 from dishka.integrations.fastapi import FromDishka, inject
 
