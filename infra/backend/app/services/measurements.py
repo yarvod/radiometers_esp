@@ -60,6 +60,10 @@ class MeasurementService:
         )
         return points, raw_count, bucket_seconds, self._format_bucket(bucket_seconds), True
 
+    async def latest_timestamp(self, device_id: str) -> datetime | None:
+        _, max_ts = await self._measurements.bounds(device_id=device_id, start=None, end=None)
+        return max_ts
+
     @staticmethod
     def _to_point(row: Measurement) -> MeasurementPoint:
         return MeasurementPoint(

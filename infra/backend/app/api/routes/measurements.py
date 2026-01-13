@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from dishka.integrations.fastapi import FromDishka, inject
 
 from app.api.deps import get_current_user
-from app.api.schemas import MeasurementPointOut, MeasurementsResponse
+from app.api.schemas import MeasurementLatestResponse, MeasurementPointOut, MeasurementsResponse
 from app.domain.entities import User
 from app.services.measurements import MeasurementService
 
@@ -47,4 +47,20 @@ async def list_measurements(
         bucket_seconds=bucket_seconds,
         bucket_label=bucket_label,
         aggregated=aggregated,
+    )
+
+
+@router.get("/last", response_model=MeasurementLatestResponse)
+@inject
+async def last_measurement(
+    measurements: FromDishka[MeasurementService],
+    device_id: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_user),
+):
+    timestamp = await measurements.latest_timestamp(device_id=device_id)
+    if not timestamp:
+        return MeasurementLatestResponse(timestamp=None, timestamp_ms=None)
+    return MeasurementLatestResponse(
+        timestamp=timestamp,
+        timestamp_ms=int(timestamp.timestamp() * 1000),
     )

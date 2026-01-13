@@ -274,6 +274,15 @@
         <button class="btn primary" @click="loadHistory" :disabled="historyLoading">Загрузить</button>
         <span class="muted" v-if="historyStatus">{{ historyStatus }}</span>
       </div>
+      <div class="inline fields">
+        <label class="checkbox">
+          <input type="checkbox" v-model="historyAutoRefresh" />
+          <span>Автообновление</span>
+        </label>
+        <label class="compact">Интервал (сек)
+          <input type="number" min="5" max="300" step="5" v-model.number="historyRefreshSec" />
+        </label>
+      </div>
       <div class="status-row" v-if="historyBucketLabel && historyBucketLabel !== 'raw'">
         <span class="chip subtle">Окно: {{ historyBucketLabel }}</span>
         <span class="chip subtle">Исходно: {{ historyRawCount }}</span>
@@ -402,6 +411,9 @@ const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
 const historyRawCount = ref(0)
+const historyAutoRefresh = ref(false)
+const historyRefreshSec = ref(15)
+let historyTimer: ReturnType<typeof setInterval> | null = null
 const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
 let tempChart: any = null
@@ -566,6 +578,16 @@ const applyHistoryDate = (field: 'from' | 'to') => {
   }
 }
 
+const getHistoryWindowEnd = (timestamp: string) => {
+  const dt = new Date(timestamp)
+  return Number.isNaN(dt.getTime()) ? null : dt
+}
+
+const setHistoryWindow = (end: Date) => {
+  historyFilters.to = toLocalInputValue(end)
+  historyFilters.from = toLocalInputValue(new Date(end.getTime() - 24 * 60 * 60 * 1000))
+}
+
 const palette = [
   '#1f77b4',
   '#ff7f0e',
@@ -634,6 +656,24 @@ const renderCharts = () => {
   const labels = historyLabels.value
   const tempDatasets = buildTempDatasets()
   const adcDatasets = buildAdcDatasets()
+  const tempHidden = new Map<string, boolean>()
+  const adcHidden = new Map<string, boolean>()
+  if (tempChart?.data?.datasets) {
+    tempChart.data.datasets.forEach((dataset: any) => {
+      if (dataset?.label) tempHidden.set(dataset.label, !!dataset.hidden)
+    })
+  }
+  if (adcChart?.data?.datasets) {
+    adcChart.data.datasets.forEach((dataset: any) => {
+      if (dataset?.label) adcHidden.set(dataset.label, !!dataset.hidden)
+    })
+  }
+  tempDatasets.forEach((dataset) => {
+    if (tempHidden.has(dataset.label)) dataset.hidden = tempHidden.get(dataset.label)
+  })
+  adcDatasets.forEach((dataset) => {
+    if (adcHidden.has(dataset.label)) dataset.hidden = adcHidden.get(dataset.label)
+  })
 
   if (!tempChart) {
     tempChart = new ChartCtor(tempChartEl.value, {
@@ -740,6 +780,17 @@ watch(
   (value) => {
     if (!historyDateEditing.to) {
       historyFilters.toDisplay = formatRuInput(value)
+    }
+  }
+)
+
+watch(
+  () => [historyAutoRefresh.value, historyRefreshSec.value],
+  () => {
+    if (historyAutoRefresh.value) {
+      startHistoryTimer()
+    } else {
+      stopHistoryTimer()
     }
   }
 )
@@ -911,10 +962,43 @@ async function loadHistory() {
   }
 }
 
+async function loadLatestWindow() {
+  if (!deviceId.value) return
+  try {
+    const res = await apiFetch<{ timestamp: string | null }>(`/api/measurements/last?device_id=${deviceId.value}`)
+    if (res.timestamp) {
+      const end = getHistoryWindowEnd(res.timestamp)
+      if (end) {
+        setHistoryWindow(end)
+        return
+      }
+    }
+    setHistoryWindow(new Date())
+    historyStatus.value = 'Нет данных, показываю последние сутки'
+  } catch (e) {
+    setHistoryWindow(new Date())
+  }
+}
+
+const startHistoryTimer = () => {
+  if (historyTimer) clearInterval(historyTimer)
+  historyTimer = setInterval(() => {
+    if (historyLoading.value) return
+    if (historyDateEditing.from || historyDateEditing.to || historyDateError.value) return
+    loadHistory()
+  }, Math.max(5, historyRefreshSec.value) * 1000)
+}
+
+const stopHistoryTimer = () => {
+  if (historyTimer) {
+    clearInterval(historyTimer)
+    historyTimer = null
+  }
+}
+
 onMounted(() => {
-  historyFilters.to = toLocalInputValue(new Date())
-  historyFilters.from = toLocalInputValue(new Date(Date.now() - 60 * 60 * 1000))
   refreshState()
+  loadLatestWindow().then(loadHistory)
   if (!ChartCtor) {
     import('chart.js/auto').then((mod: any) => {
       ChartCtor = mod?.Chart || mod?.default || mod
@@ -924,6 +1008,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopHistoryTimer()
   if (tempChart) {
     tempChart.destroy()
     tempChart = null

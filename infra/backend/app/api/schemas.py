@@ -99,3 +99,8 @@ class MeasurementsResponse(BaseModel):
     bucket_seconds: int
     bucket_label: str
     aggregated: bool
+
+
+class MeasurementLatestResponse(BaseModel):
+    timestamp: Optional[datetime]
+    timestamp_ms: Optional[int]
