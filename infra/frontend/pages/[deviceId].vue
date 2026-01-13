@@ -227,15 +227,30 @@
       </div>
       <div class="inline fields">
         <label class="compact">С
-          <input type="datetime-local" lang="ru" v-model="historyFilters.from" />
+          <input
+            type="text"
+            inputmode="numeric"
+            placeholder="ДД.ММ.ГГГГ ЧЧ:ММ"
+            v-model="historyFilters.fromDisplay"
+            @focus="historyDateEditing.from = true"
+            @blur="applyHistoryDate('from')"
+          />
         </label>
         <label class="compact">По
-          <input type="datetime-local" lang="ru" v-model="historyFilters.to" />
+          <input
+            type="text"
+            inputmode="numeric"
+            placeholder="ДД.ММ.ГГГГ ЧЧ:ММ"
+            v-model="historyFilters.toDisplay"
+            @focus="historyDateEditing.to = true"
+            @blur="applyHistoryDate('to')"
+          />
         </label>
         <label class="compact">Лимит
           <input type="number" min="100" max="10000" step="100" v-model.number="historyFilters.limit" />
         </label>
       </div>
+      <p class="muted" v-if="historyDateError">{{ historyDateError }}</p>
       <div class="inline fields">
         <label class="compact">Усреднение
           <select v-model="historyFilters.bucketMode">
@@ -370,6 +385,8 @@ const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
 const historyFilters = reactive({
   from: '',
   to: '',
+  fromDisplay: '',
+  toDisplay: '',
   limit: 2000,
   bucketMode: 'auto',
   bucketValue: 10,
@@ -489,13 +506,65 @@ const toLocalInputValue = (date: Date) => {
 const formatRangeDate = (value: string) => {
   const dt = new Date(value)
   if (Number.isNaN(dt.getTime())) return value
-  return dt.toLocaleString('ru-RU', { hour12: false })
+  return dt.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
 }
 
 const historyRangeLabel = computed(() => {
   if (!historyFilters.from || !historyFilters.to) return ''
   return `Диапазон: ${formatRangeDate(historyFilters.from)} — ${formatRangeDate(historyFilters.to)}`
 })
+
+const historyDateEditing = reactive({ from: false, to: false })
+const historyDateError = ref('')
+
+const pad2 = (value: number) => String(value).padStart(2, '0')
+
+const formatRuInput = (value: string) => {
+  if (!value) return ''
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return ''
+  return `${pad2(dt.getDate())}.${pad2(dt.getMonth() + 1)}.${dt.getFullYear()} ${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`
+}
+
+const parseRuInput = (value: string) => {
+  const match = value.trim().match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})$/)
+  if (!match) return null
+  const [, dd, mm, yyyy, hh, min] = match
+  const day = Number(dd)
+  const month = Number(mm)
+  const year = Number(yyyy)
+  const hour = Number(hh)
+  const minute = Number(min)
+  const dt = new Date(year, month - 1, day, hour, minute, 0)
+  if (Number.isNaN(dt.getTime())) return null
+  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) {
+    return null
+  }
+  return toLocalInputValue(dt)
+}
+
+const applyHistoryDate = (field: 'from' | 'to') => {
+  historyDateEditing[field] = false
+  const displayValue = field === 'from' ? historyFilters.fromDisplay : historyFilters.toDisplay
+  const parsed = parseRuInput(displayValue)
+  if (!parsed) {
+    historyDateError.value = 'Введите дату в формате ДД.ММ.ГГГГ ЧЧ:ММ'
+    return
+  }
+  historyDateError.value = ''
+  if (field === 'from') {
+    historyFilters.from = parsed
+  } else {
+    historyFilters.to = parsed
+  }
+}
 
 const palette = [
   '#1f77b4',
@@ -658,6 +727,24 @@ watch(
 )
 
 watch(
+  () => historyFilters.from,
+  (value) => {
+    if (!historyDateEditing.from) {
+      historyFilters.fromDisplay = formatRuInput(value)
+    }
+  }
+)
+
+watch(
+  () => historyFilters.to,
+  (value) => {
+    if (!historyDateEditing.to) {
+      historyFilters.toDisplay = formatRuInput(value)
+    }
+  }
+)
+
+watch(
   () => [historyData.value, historySelection.tempIndices, historySelection.showAdc, historySelection.showCal],
   () => {
     renderCharts()
@@ -787,6 +874,12 @@ async function loadHistory() {
   historyLoading.value = true
   historyStatus.value = ''
   try {
+    applyHistoryDate('from')
+    applyHistoryDate('to')
+    if (historyDateError.value) {
+      historyLoading.value = false
+      return
+    }
     const params = new URLSearchParams({
       device_id: deviceId.value,
       limit: String(historyFilters.limit),
