@@ -19,11 +19,25 @@ class MeasurementService:
         return await self._measurements.list(device_id=device_id, start=start, end=end, limit=limit)
 
     async def list_series(
-        self, device_id: str, start: datetime | None, end: datetime | None, limit: int
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        limit: int,
+        bucket_seconds: int | None = None,
     ) -> tuple[Sequence[MeasurementPoint], int, int, str, bool]:
         raw_count = await self._measurements.count(device_id=device_id, start=start, end=end)
         if raw_count == 0:
             return [], 0, 0, "raw", False
+        if bucket_seconds is not None and bucket_seconds > 0:
+            points = await self._measurements.list_aggregated(
+                device_id=device_id,
+                start=start,
+                end=end,
+                bucket_seconds=bucket_seconds,
+                limit=limit,
+            )
+            return points, raw_count, bucket_seconds, self._format_bucket(bucket_seconds), True
         if raw_count <= limit:
             rows = await self._measurements.list(device_id=device_id, start=start, end=end, limit=limit)
             points = [self._to_point(row) for row in rows]

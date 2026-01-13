@@ -28,12 +28,17 @@ async def list_measurements(
     start: str | None = Query(None, alias="from"),
     end: str | None = Query(None, alias="to"),
     limit: int = Query(2000, ge=1, le=10000),
+    bucket_seconds: int | None = Query(None, ge=0, le=86400),
     current_user: User = Depends(get_current_user),
 ):
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)
     points, raw_count, bucket_seconds, bucket_label, aggregated = await measurements.list_series(
-        device_id=device_id, start=start_dt, end=end_dt, limit=limit
+        device_id=device_id,
+        start=start_dt,
+        end=end_dt,
+        limit=limit,
+        bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
     )
     return MeasurementsResponse(
         points=[MeasurementPointOut.model_validate(item, from_attributes=True) for item in points],

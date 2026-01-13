@@ -236,6 +236,24 @@
           <input type="number" min="100" max="10000" step="100" v-model.number="historyFilters.limit" />
         </label>
       </div>
+      <div class="inline fields">
+        <label class="compact">Усреднение
+          <select v-model="historyFilters.bucketMode">
+            <option value="auto">Авто</option>
+            <option value="manual">Вручную</option>
+          </select>
+        </label>
+        <label class="compact" v-if="historyFilters.bucketMode === 'manual'">Окно
+          <div class="inline">
+            <input type="number" min="1" step="1" v-model.number="historyFilters.bucketValue" />
+            <select v-model="historyFilters.bucketUnit">
+              <option value="s">сек</option>
+              <option value="m">мин</option>
+              <option value="h">ч</option>
+            </select>
+          </div>
+        </label>
+      </div>
       <p class="muted" v-if="historyRangeLabel">{{ historyRangeLabel }}</p>
       <div class="actions">
         <button class="btn primary" @click="loadHistory" :disabled="historyLoading">Загрузить</button>
@@ -349,6 +367,9 @@ const historyFilters = reactive({
   from: '',
   to: '',
   limit: 2000,
+  bucketMode: 'auto',
+  bucketValue: 10,
+  bucketUnit: 's',
 })
 const historySelection = reactive({
   tempIndices: [] as number[],
@@ -743,6 +764,11 @@ async function loadHistory() {
       device_id: deviceId.value,
       limit: String(historyFilters.limit),
     })
+    if (historyFilters.bucketMode === 'manual') {
+      const multiplier = historyFilters.bucketUnit === 'h' ? 3600 : historyFilters.bucketUnit === 'm' ? 60 : 1
+      const seconds = Math.max(1, Math.floor(historyFilters.bucketValue * multiplier))
+      params.set('bucket_seconds', String(seconds))
+    }
     if (historyFilters.from) {
       params.set('from', new Date(historyFilters.from).toISOString())
     }
@@ -824,6 +850,7 @@ onBeforeUnmount(() => {
 .inline > * { min-width: 0; }
 .fields > * { flex: 1 1 180px; }
 .fields .compact input { width: 100%; }
+.fields .compact select { width: 100%; }
 .range-row { display: flex; align-items: center; gap: 10px; }
 .range-row input[type="range"] { flex: 1; }
 .divider { height: 1px; background: var(--border); margin: 12px 0; }
