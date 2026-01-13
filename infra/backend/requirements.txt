@@ -4,6 +4,7 @@ dishka==1.1.1
 SQLAlchemy==2.0.30
 asyncpg==0.29.0
 alembic==1.13.1
+greenlet==3.3.0
 pydantic==2.7.3
 pydantic-settings==2.3.2
 passlib[bcrypt]==1.7.4
