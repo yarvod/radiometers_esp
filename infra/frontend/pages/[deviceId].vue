@@ -704,7 +704,7 @@ onMounted(() => {
 .header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .title { font-size: 24px; font-weight: 800; color: #1f2933; }
 .status-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.card { display: flex; flex-direction: column; gap: 10px; resize: vertical; overflow-y: auto; overflow-x: hidden; max-width: 100%; box-sizing: border-box; }
+.card { display: flex; flex-direction: column; gap: 10px; overflow: visible; max-width: 100%; box-sizing: border-box; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .metrics { border: 1px solid var(--border); }
 .metrics-top { display: flex; flex-direction: column; gap: 14px; }
