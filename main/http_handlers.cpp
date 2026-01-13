@@ -561,6 +561,16 @@ void LoggingTask(void*) {
   bool has_pending_base = false;
   bool at_zero = true;
 
+  if (log_config.use_motor || !log_config.homed_once) {
+    home_blocking();
+    log_config.homed_once = true;
+    if (CopyState().stepper_abort) {
+      ESP_LOGW(TAG, "Logging aborted during initial homing");
+      StopLogging();
+      vTaskDelete(nullptr);
+    }
+  }
+
   while (true) {
     SharedState current = CopyState();
     if (!current.logging || !log_file) {
@@ -581,29 +591,8 @@ void LoggingTask(void*) {
     }
 
     if (log_config.use_motor) {
-      if (!log_config.homed_once) {
-        EnableStepper();
-        home_blocking();
-        DisableStepper();
-        log_config.homed_once = true;
-        if (CopyState().stepper_abort) {
-          ESP_LOGW(TAG, "Logging aborted during homing");
-          StopLogging();
-          vTaskDelete(nullptr);
-        }
-      }
       // Между движениями держим мотор отключенным, включая только в move_blocking
       DisableStepper();
-    } else if (!log_config.homed_once) {
-      EnableStepper();
-      home_blocking();
-      DisableStepper();
-      log_config.homed_once = true;
-      if (CopyState().stepper_abort) {
-        ESP_LOGW(TAG, "Logging aborted during initial homing");
-        StopLogging();
-        vTaskDelete(nullptr);
-      }
     }
 
     if (log_config.use_motor) {
