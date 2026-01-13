@@ -36,13 +36,18 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        process_revision_directives=process_revision_directives,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        process_revision_directives=process_revision_directives,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
@@ -57,6 +62,26 @@ async def run_migrations_online() -> None:
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()
+
+
+def _next_revision_id() -> str:
+    versions_dir = Path(__file__).resolve().parent / "versions"
+    max_rev = 0
+    for path in versions_dir.glob("*.py"):
+        stem = path.stem
+        prefix = stem.split("_", 1)[0]
+        if prefix.isdigit():
+            max_rev = max(max_rev, int(prefix))
+    return f"{max_rev + 1:05d}"
+
+
+def process_revision_directives(context, revision, directives) -> None:
+    if not directives:
+        return
+    script = directives[0]
+    if getattr(script, "rev_id", None):
+        return
+    script.rev_id = _next_revision_id()
 
 
 if context.is_offline_mode():
