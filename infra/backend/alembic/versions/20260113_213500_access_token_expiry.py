@@ -1,7 +1,7 @@
 """add access token expiry
 
 Revision ID: 20260113_213500_access_token_expiry
-Revises: 20240307_120000_init
+Revises: 0001
 Create Date: 2026-01-13 21:35:00.000000
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "20260113_213500_access_token_expiry"
-down_revision = "20240307_120000_init"
+down_revision = "0001"
 branch_labels = None
 depends_on = None
 
