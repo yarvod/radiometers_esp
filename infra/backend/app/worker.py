@@ -36,8 +36,12 @@ def parse_mqtt(settings: Settings):
 
 
 def device_from_topic(topic: str) -> str | None:
+    if not topic:
+        return None
     parts = topic.split("/", 1)
-    return parts[0] if parts else None
+    if not parts or not parts[0]:
+        return None
+    return parts[0]
 
 
 async def handle_measurement(topic: str, payload: bytes, container) -> None:

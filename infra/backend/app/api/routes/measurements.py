@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
@@ -25,12 +23,12 @@ def parse_datetime(value: str | None) -> datetime | None:
 @router.get("", response_model=list[MeasurementOut])
 @inject
 async def list_measurements(
+    measurements: FromDishka[MeasurementService],
     device_id: str = Query(..., min_length=1),
     start: str | None = Query(None, alias="from"),
     end: str | None = Query(None, alias="to"),
     limit: int = Query(2000, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    measurements: FromDishka[MeasurementService],
 ):
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)

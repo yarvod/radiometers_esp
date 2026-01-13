@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from fastapi import APIRouter, Depends
 from dishka.integrations.fastapi import FromDishka, inject
 
@@ -14,8 +12,8 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 @router.get("", response_model=list[DeviceOut])
 @inject
 async def list_devices(
-    current_user: User = Depends(get_current_user),
     devices: FromDishka[DeviceService],
+    current_user: User = Depends(get_current_user),
 ):
     result = await devices.list_devices()
     return [DeviceOut.model_validate(device, from_attributes=True) for device in result]
@@ -25,8 +23,8 @@ async def list_devices(
 @inject
 async def create_device(
     payload: DeviceCreateRequest,
-    current_user: User = Depends(get_current_user),
     devices: FromDishka[DeviceService],
+    current_user: User = Depends(get_current_user),
 ):
     device = await devices.create_device(payload.id, payload.display_name)
     return DeviceOut.model_validate(device, from_attributes=True)
@@ -37,8 +35,8 @@ async def create_device(
 async def update_device(
     device_id: str,
     payload: DeviceUpdateRequest,
-    current_user: User = Depends(get_current_user),
     devices: FromDishka[DeviceService],
+    current_user: User = Depends(get_current_user),
 ):
     device = await devices.update_device(device_id, payload.display_name)
     return DeviceOut.model_validate(device, from_attributes=True)

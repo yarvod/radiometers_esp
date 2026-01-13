@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from dishka.integrations.fastapi import FromDishka, inject
 
@@ -14,8 +12,8 @@ router = APIRouter(prefix="/users", tags=["users"])
 @router.get("", response_model=list[UserOut])
 @inject
 async def list_users(
-    current_user: User = Depends(get_current_user),
     users: FromDishka[UserService],
+    current_user: User = Depends(get_current_user),
 ):
     result = await users.list()
     return [UserOut.model_validate(user, from_attributes=True) for user in result]
@@ -25,8 +23,8 @@ async def list_users(
 @inject
 async def create_user(
     payload: UserCreateRequest,
-    current_user: User = Depends(get_current_user),
     users: FromDishka[UserService],
+    current_user: User = Depends(get_current_user),
 ):
     user = await users.create(payload.username, payload.password)
     return UserOut.model_validate(user, from_attributes=True)
@@ -37,8 +35,8 @@ async def create_user(
 async def update_user(
     user_id: str,
     payload: UserUpdateRequest,
-    current_user: User = Depends(get_current_user),
     users: FromDishka[UserService],
+    current_user: User = Depends(get_current_user),
 ):
     try:
         user = await users.update(user_id, payload.username, payload.password)
@@ -51,8 +49,8 @@ async def update_user(
 @inject
 async def delete_user(
     user_id: str,
-    current_user: User = Depends(get_current_user),
     users: FromDishka[UserService],
+    current_user: User = Depends(get_current_user),
 ):
     await users.delete(user_id)
     return {"status": "ok"}
