@@ -227,47 +227,23 @@
       </div>
       <div class="inline fields">
         <label class="compact">С
-          <div class="date-input">
-            <input
-              type="text"
-              inputmode="numeric"
-              placeholder="ДД.ММ.ГГГГ ЧЧ:ММ"
-              :value="historyFilters.fromDisplay"
-              @input="onHistoryDateInput('from', $event)"
-              @focus="historyDateEditing.from = true"
-              @blur="applyHistoryDate('from')"
-            />
-            <button type="button" class="icon-btn" @click="openHistoryPicker('from')">Выбрать</button>
-            <input
-              ref="fromPickerEl"
-              type="datetime-local"
-              class="hidden-picker"
-              :value="historyFilters.from"
-              @change="onHistoryPickerChange('from', $event)"
-            />
-          </div>
+          <input
+            type="datetime-local"
+            class="date-input"
+            v-model="historyFilters.from"
+            @focus="historyDateEditing.from = true"
+            @blur="validateHistoryDate('from')"
+          />
         </label>
         <label class="compact">По
-          <div class="date-input">
-            <input
-              type="text"
-              inputmode="numeric"
-              placeholder="ДД.ММ.ГГГГ ЧЧ:ММ"
-              :value="historyFilters.toDisplay"
-              :disabled="historyAutoRefresh"
-              @input="onHistoryDateInput('to', $event)"
-              @focus="historyDateEditing.to = true"
-              @blur="applyHistoryDate('to')"
-            />
-            <button type="button" class="icon-btn" :disabled="historyAutoRefresh" @click="openHistoryPicker('to')">Выбрать</button>
-            <input
-              ref="toPickerEl"
-              type="datetime-local"
-              class="hidden-picker"
-              :value="historyFilters.to"
-              @change="onHistoryPickerChange('to', $event)"
-            />
-          </div>
+          <input
+            type="datetime-local"
+            class="date-input"
+            v-model="historyFilters.to"
+            :disabled="historyAutoRefresh"
+            @focus="historyDateEditing.to = true"
+            @blur="validateHistoryDate('to')"
+          />
         </label>
         <label class="compact">Лимит
           <input type="number" min="100" max="10000" step="100" v-model.number="historyFilters.limit" />
@@ -421,10 +397,6 @@ const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
 const historyFilters = reactive({
   from: '',
   to: '',
-  fromDisplay: '',
-  toDisplay: '',
-  fromDigits: '',
-  toDigits: '',
   limit: 2000,
   bucketMode: 'auto',
   bucketValue: 10,
@@ -444,8 +416,6 @@ const historyRefreshSec = ref(15)
 let historyTimer: ReturnType<typeof setInterval> | null = null
 const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
-const fromPickerEl = ref<HTMLInputElement | null>(null)
-const toPickerEl = ref<HTMLInputElement | null>(null)
 let tempChart: any = null
 let adcChart: any = null
 let ChartCtor: any = null
@@ -569,132 +539,20 @@ const historyRangeLabel = computed(() => {
 const historyDateEditing = reactive({ from: false, to: false })
 const historyDateError = ref('')
 
-const pad2 = (value: number) => String(value).padStart(2, '0')
-
-const digitsMaxLength = 12
-const stripDigits = (value: string) => value.replace(/\D/g, '').slice(0, digitsMaxLength)
-const formatDigits = (digits: string) => {
-  const dd = digits.slice(0, 2)
-  const mm = digits.slice(2, 4)
-  const yyyy = digits.slice(4, 8)
-  const hh = digits.slice(8, 10)
-  const min = digits.slice(10, 12)
-  let out = ''
-  if (dd) out += dd
-  if (mm) out += `${out ? '.' : ''}${mm}`
-  if (yyyy) out += `${out ? '.' : ''}${yyyy}`
-  if (hh || min) {
-    out += ' '
-    if (hh) out += hh
-    if (min) out += `:${min}`
-  }
-  return out
-}
-
-const isoToDigits = (value: string) => {
-  if (!value) return ''
-  const dt = new Date(value)
-  if (Number.isNaN(dt.getTime())) return ''
-  return `${pad2(dt.getDate())}${pad2(dt.getMonth() + 1)}${dt.getFullYear()}${pad2(dt.getHours())}${pad2(dt.getMinutes())}`
-}
-
-const digitsToIso = (digits: string) => {
-  if (digits.length < digitsMaxLength) return null
-  const day = Number(digits.slice(0, 2))
-  const month = Number(digits.slice(2, 4))
-  const year = Number(digits.slice(4, 8))
-  const hour = Number(digits.slice(8, 10))
-  const minute = Number(digits.slice(10, 12))
-  const dt = new Date(year, month - 1, day, hour, minute, 0)
-  if (Number.isNaN(dt.getTime())) return null
-  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) {
-    return null
-  }
-  return toLocalInputValue(dt)
-}
-
-const syncHistoryDisplay = (field: 'from' | 'to', value: string) => {
-  const digits = isoToDigits(value)
-  const display = formatDigits(digits)
-  if (field === 'from') {
-    historyFilters.fromDigits = digits
-    historyFilters.fromDisplay = display
-  } else {
-    historyFilters.toDigits = digits
-    historyFilters.toDisplay = display
-  }
-}
-
-const updateHistoryDateInput = (field: 'from' | 'to', rawValue: string) => {
-  const digits = stripDigits(rawValue)
-  const display = formatDigits(digits)
-  historyDateEditing[field] = true
-  historyDateError.value = ''
-  if (field === 'from') {
-    historyFilters.fromDigits = digits
-    historyFilters.fromDisplay = display
-  } else {
-    historyFilters.toDigits = digits
-    historyFilters.toDisplay = display
-  }
-}
-
-const onHistoryDateInput = (field: 'from' | 'to', event: Event) => {
-  const target = event.target as HTMLInputElement | null
-  updateHistoryDateInput(field, target?.value ?? '')
-}
-
-const openHistoryPicker = (field: 'from' | 'to') => {
-  if (field === 'to' && historyAutoRefresh.value) return
-  const input = field === 'from' ? fromPickerEl.value : toPickerEl.value
-  if (!input) return
-  const picker = input as HTMLInputElement & { showPicker?: () => void }
-  if (!input.value) {
-    const seed = field === 'from' ? historyFilters.from : historyFilters.to
-    input.value = seed || toLocalInputValue(new Date())
-  }
-  if (typeof picker.showPicker === 'function') {
-    picker.showPicker()
-  } else {
-    input.click()
-  }
-}
-
-const onHistoryPickerChange = (field: 'from' | 'to', event: Event) => {
-  const target = event.target as HTMLInputElement | null
-  if (!target?.value) return
+const validateHistoryDate = (field: 'from' | 'to') => {
   historyDateEditing[field] = false
-  historyDateError.value = ''
-  if (field === 'from') {
-    historyFilters.from = target.value
-  } else {
-    historyFilters.to = target.value
-  }
-}
-
-const applyHistoryDate = (field: 'from' | 'to') => {
-  historyDateEditing[field] = false
-  const digits = field === 'from' ? historyFilters.fromDigits : historyFilters.toDigits
-  if (!digits) {
-    if (field === 'from') {
-      historyFilters.from = ''
-    } else {
-      historyFilters.to = ''
-    }
+  const value = field === 'from' ? historyFilters.from : historyFilters.to
+  if (!value) {
     historyDateError.value = ''
-    return
+    return true
   }
-  const parsed = digitsToIso(digits)
-  if (!parsed) {
-    historyDateError.value = 'Введите дату в формате ДД.ММ.ГГГГ ЧЧ:ММ'
-    return
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) {
+    historyDateError.value = 'Введите корректную дату и время'
+    return false
   }
   historyDateError.value = ''
-  if (field === 'from') {
-    historyFilters.from = parsed
-  } else {
-    historyFilters.to = parsed
-  }
+  return true
 }
 
 const getHistoryWindowEnd = (timestamp: string) => {
@@ -890,24 +748,6 @@ watch(
 )
 
 watch(
-  () => historyFilters.from,
-  (value) => {
-    if (!historyDateEditing.from) {
-      syncHistoryDisplay('from', value)
-    }
-  }
-)
-
-watch(
-  () => historyFilters.to,
-  (value) => {
-    if (!historyDateEditing.to) {
-      syncHistoryDisplay('to', value)
-    }
-  }
-)
-
-watch(
   () => [historyAutoRefresh.value, historyRefreshSec.value],
   () => {
     if (historyAutoRefresh.value) {
@@ -1059,14 +899,12 @@ async function loadHistory() {
   historyLoading.value = true
   historyStatus.value = ''
   try {
-    applyHistoryDate('from')
-    if (historyDateError.value) {
+    if (!validateHistoryDate('from')) {
       historyLoading.value = false
       return
     }
     if (!historyAutoRefresh.value) {
-      applyHistoryDate('to')
-      if (historyDateError.value) {
+      if (!validateHistoryDate('to')) {
         historyLoading.value = false
         return
       }
@@ -1208,11 +1046,8 @@ onBeforeUnmount(() => {
 .checkbox input { margin: 0; width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
 .compact input { width: 120px; }
 .form-group { display: flex; flex-direction: column; gap: 6px; }
-.date-input { display: flex; align-items: center; gap: 8px; width: 100%; position: relative; }
-.date-input input[type="text"] { flex: 1; min-width: 0; }
-.icon-btn { border: 1px solid var(--border); background: #f5f7fb; color: #1f1f1f; border-radius: 10px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.icon-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.hidden-picker { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.date-input { width: 100%; border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; background: #f8fafc; color: #1f2d3d; box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04); }
+.date-input:focus { outline: 2px solid rgba(52, 152, 219, 0.3); border-color: rgba(41, 128, 185, 0.4); }
 label { font-size: 14px; font-weight: 600; color: #1f1f1f; }
 input { width: 100%; box-sizing: border-box; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
