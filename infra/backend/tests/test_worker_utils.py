@@ -1,4 +1,5 @@
 from app.core.config import Settings
+from app import worker
 from app.worker import device_from_topic, parse_iso, parse_mqtt
 
 
@@ -23,3 +24,7 @@ def test_parse_mqtt_default():
     host, port = parse_mqtt(settings)
     assert host == "localhost"
     assert port == 1883
+
+
+def test_worker_uses_aiomqtt_messages_api():
+    assert hasattr(worker.Client, "messages")

@@ -105,7 +105,7 @@ async def run_worker() -> None:
             async with Client(hostname=host, port=port, username=settings.mqtt_user, password=settings.mqtt_password) as client:
                 await client.subscribe(settings.mqtt_measure_topic)
                 await client.subscribe(settings.mqtt_state_topic)
-                async with client.unfiltered_messages() as messages:
+                async with client.messages() as messages:
                     async for message in messages:
                         topic = str(message.topic)
                         if topic.endswith("/measure"):
