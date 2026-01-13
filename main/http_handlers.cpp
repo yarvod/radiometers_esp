@@ -14,6 +14,7 @@
 #include "app_services.h"
 #include "control_actions.h"
 #include "web_ui.h"
+#include "mqtt_bridge.h"
 #include "hw_pins.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
@@ -54,6 +55,41 @@ static bool UrlDecode(const char* src, std::string* out) {
     if (out->size() > 512) return false;
   }
   return true;
+}
+
+static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const SharedState& base,
+                                  const SharedState* cal) {
+  cJSON* root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
+  cJSON_AddNumberToObject(root, "timestampMs", static_cast<double>(ts_ms));
+  cJSON_AddNumberToObject(root, "adc1", base.voltage1);
+  cJSON_AddNumberToObject(root, "adc2", base.voltage2);
+  cJSON_AddNumberToObject(root, "adc3", base.voltage3);
+  cJSON* temps = cJSON_CreateArray();
+  for (int i = 0; i < base.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+    cJSON_AddItemToArray(temps, cJSON_CreateNumber(base.temps_c[i]));
+  }
+  cJSON_AddItemToObject(root, "temps", temps);
+  cJSON_AddNumberToObject(root, "busV", base.ina_bus_voltage);
+  cJSON_AddNumberToObject(root, "busI", base.ina_current);
+  cJSON_AddNumberToObject(root, "busP", base.ina_power);
+  cJSON_AddBoolToObject(root, "logUseMotor", log_config.use_motor);
+  cJSON_AddNumberToObject(root, "logDuration", log_config.duration_s);
+  SharedState current = CopyState();
+  if (!current.log_filename.empty()) {
+    cJSON_AddStringToObject(root, "logFilename", current.log_filename.c_str());
+  }
+  if (cal) {
+    cJSON_AddNumberToObject(root, "adc1Cal", cal->voltage1);
+    cJSON_AddNumberToObject(root, "adc2Cal", cal->voltage2);
+    cJSON_AddNumberToObject(root, "adc3Cal", cal->voltage3);
+  }
+  const char* json = cJSON_PrintUnformatted(root);
+  if (json) {
+    PublishMeasurementPayload(json);
+  }
+  cJSON_free((void*)json);
+  cJSON_Delete(root);
 }
 
 // HTTP handlers
@@ -614,6 +650,7 @@ void LoggingTask(void*) {
         fprintf(log_file, "\n");
         FlushLogFile();
         ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+        PublishLogMeasurement(iso, ts_ms, pending_base, &avg);
         UpdateState([&](SharedState& s) {
           s.voltage1_cal = avg.voltage1;
           s.voltage2_cal = avg.voltage2;
@@ -663,6 +700,7 @@ void LoggingTask(void*) {
     fprintf(log_file, "\n");
     FlushLogFile();
     ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+    PublishLogMeasurement(iso, ts_ms, avg1, nullptr);
     UpdateState([&](SharedState& s) {
       s.voltage1_cal = avg1.voltage1;
       s.voltage2_cal = avg1.voltage2;

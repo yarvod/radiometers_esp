@@ -1,6 +1,18 @@
 version: "3.9"
 
 services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-radiometer}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
   mosquitto:
     image: eclipse-mosquitto:2
     restart: unless-stopped
@@ -45,6 +57,38 @@ services:
     volumes:
       - minio_data:/data
 
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+      APP_MQTT_URL: mqtt://mosquitto:1883
+      APP_MQTT_USER: ${MQTT_USER}
+      APP_MQTT_PASSWORD: ${MQTT_PASSWORD}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - mosquitto
+    volumes:
+      - ./backend:/app
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+      APP_MQTT_URL: mqtt://mosquitto:1883
+      APP_MQTT_USER: ${MQTT_USER}
+      APP_MQTT_PASSWORD: ${MQTT_PASSWORD}
+    depends_on:
+      - db
+      - mosquitto
+    volumes:
+      - ./backend:/app
+    command: ["python", "-m", "app.worker"]
+
   frontend:
     build: ./frontend
     restart: unless-stopped
@@ -52,10 +96,12 @@ services:
       NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-ws://mosquitto:9001/mqtt}
       NUXT_PUBLIC_MQTT_USER: ${MQTT_USER}
       NUXT_PUBLIC_MQTT_PASSWORD: ${MQTT_PASSWORD}
+      NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-http://localhost:8000}
     ports:
       - "3000:3000"
     depends_on:
       - mosquitto
+      - backend
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -65,4 +111,5 @@ volumes:
   mosquitto_data:
   mosquitto_log:
   mosquitto_passwd:
+  db_data:
   minio_data:

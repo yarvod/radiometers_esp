@@ -10,6 +10,7 @@ export default defineNuxtConfig({
       mqttUrl: process.env.NUXT_PUBLIC_MQTT_URL || 'ws://localhost:9001',
       mqttUser: process.env.NUXT_PUBLIC_MQTT_USER || '',
       mqttPassword: process.env.NUXT_PUBLIC_MQTT_PASSWORD || '',
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:8000',
     },
   },
 });

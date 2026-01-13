@@ -219,12 +219,92 @@
         <p class="muted" v-if="wifiApplyStatus">{{ wifiApplyStatus }}</p>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>История измерений</h3>
+        <span class="badge">Графики</span>
+      </div>
+      <div class="inline fields">
+        <label class="compact">C
+          <input type="datetime-local" v-model="historyFilters.from" />
+        </label>
+        <label class="compact">По
+          <input type="datetime-local" v-model="historyFilters.to" />
+        </label>
+        <label class="compact">Лимит
+          <input type="number" min="100" max="10000" step="100" v-model.number="historyFilters.limit" />
+        </label>
+      </div>
+      <div class="actions">
+        <button class="btn primary" @click="loadHistory" :disabled="historyLoading">Загрузить</button>
+        <span class="muted" v-if="historyStatus">{{ historyStatus }}</span>
+      </div>
+      <div class="form-group">
+        <label>Температурные датчики</label>
+        <div class="chip-select">
+          <button
+            v-for="(sensor, idx) in tempEntries"
+            :key="`history-temp-${sensor.key}`"
+            type="button"
+            class="chip-option"
+            :class="{ selected: historySelection.tempIndices.includes(idx) }"
+            @click="toggleHistoryTemp(idx)"
+          >
+            {{ sensor.label }}
+          </button>
+          <span v-if="tempEntries.length === 0" class="muted">Нет датчиков</span>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Серии ADC</label>
+        <div class="chip-select">
+          <button type="button" class="chip-option" :class="{ selected: historySelection.showAdc }" @click="historySelection.showAdc = !historySelection.showAdc">
+            ADC
+          </button>
+          <button type="button" class="chip-option" :class="{ selected: historySelection.showCal }" @click="historySelection.showCal = !historySelection.showCal">
+            Cal
+          </button>
+        </div>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-box">
+          <h4>Температуры</h4>
+          <canvas ref="tempChartEl"></canvas>
+        </div>
+        <div class="chart-box">
+          <h4>ADC + Cal</h4>
+          <canvas ref="adcChartEl"></canvas>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { useDevicesStore } from '~/stores/devices'
 
+type MeasurementRow = {
+  id: string
+  device_id: string
+  timestamp: string
+  timestamp_ms: number | null
+  adc1: number
+  adc2: number
+  adc3: number
+  temps: number[]
+  bus_v: number
+  bus_i: number
+  bus_p: number
+  adc1_cal: number | null
+  adc2_cal: number | null
+  adc3_cal: number | null
+  log_use_motor: boolean
+  log_duration: number
+  log_filename: string | null
+}
+
+const { apiFetch } = useApi()
 const route = useRoute()
 const deviceId = computed(() => route.params.deviceId as string)
 const store = useDevicesStore()
@@ -256,6 +336,24 @@ const pidApplyStatus = ref('')
 const wifiApplyStatus = ref('')
 const pidForm = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
 const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
+const historyFilters = reactive({
+  from: '',
+  to: '',
+  limit: 2000,
+})
+const historySelection = reactive({
+  tempIndices: [] as number[],
+  showAdc: true,
+  showCal: false,
+})
+const historyData = ref<MeasurementRow[]>([])
+const historyLoading = ref(false)
+const historyStatus = ref('')
+const tempChartEl = ref<HTMLCanvasElement | null>(null)
+const adcChartEl = ref<HTMLCanvasElement | null>(null)
+let tempChart: any = null
+let adcChart: any = null
+let ChartCtor: any = null
 
 const maskToIndices = (mask: number, count: number) => {
   const out: number[] = []
@@ -334,6 +432,125 @@ const wifiStaIpDisplay = computed(() => device.value?.state?.wifiStaIp || '--')
 const wifiApIpDisplay = computed(() => device.value?.state?.wifiApIp || '--')
 const wifiSsidDisplay = computed(() => device.value?.state?.wifiSsid || '--')
 
+const formatTimestamp = (value: string) => {
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return value
+  return dt.toLocaleString()
+}
+
+const toLocalInputValue = (date: Date) => {
+  const offset = date.getTimezoneOffset() * 60000
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
+}
+
+const palette = [
+  '#1f77b4',
+  '#ff7f0e',
+  '#2ca02c',
+  '#d62728',
+  '#9467bd',
+  '#8c564b',
+  '#e377c2',
+  '#7f7f7f',
+]
+
+const buildDataset = (label: string, data: (number | null)[], color: string) => ({
+  label,
+  data,
+  borderColor: color,
+  backgroundColor: color,
+  borderWidth: 2,
+  tension: 0.25,
+  pointRadius: 0,
+})
+
+const normalizeHistorySelection = (indices: number[], count: number) => {
+  const normalized = normalizeIndices(indices, count)
+  return normalized.length ? normalized : (count ? [0] : [])
+}
+
+const buildTempDatasets = () => {
+  const selected = normalizeHistorySelection(historySelection.tempIndices, tempEntries.value.length)
+  return selected.map((idx, seriesIdx) => {
+    const color = palette[seriesIdx % palette.length]
+    const data = historyData.value.map((row) => {
+      const value = row.temps?.[idx]
+      return Number.isFinite(value) ? Number(value) : null
+    })
+    const label = tempEntries.value[idx]?.label || `t${idx + 1}`
+    return buildDataset(label, data, color)
+  })
+}
+
+const buildAdcDatasets = () => {
+  const sets: any[] = []
+  const baseColors = ['#1f77b4', '#2ca02c', '#d62728']
+  if (historySelection.showAdc) {
+    sets.push(
+      buildDataset('ADC1', historyData.value.map((row) => row.adc1 ?? null), baseColors[0]),
+      buildDataset('ADC2', historyData.value.map((row) => row.adc2 ?? null), baseColors[1]),
+      buildDataset('ADC3', historyData.value.map((row) => row.adc3 ?? null), baseColors[2]),
+    )
+  }
+  if (historySelection.showCal) {
+    sets.push(
+      buildDataset('CAL1', historyData.value.map((row) => row.adc1_cal ?? null), '#9ecae1'),
+      buildDataset('CAL2', historyData.value.map((row) => row.adc2_cal ?? null), '#98df8a'),
+      buildDataset('CAL3', historyData.value.map((row) => row.adc3_cal ?? null), '#ff9896'),
+    )
+  }
+  return sets
+}
+
+const renderCharts = () => {
+  if (!ChartCtor) return
+  if (!tempChartEl.value || !adcChartEl.value) return
+
+  const labels = historyData.value.map((row) => formatTimestamp(row.timestamp))
+  const tempDatasets = buildTempDatasets()
+  const adcDatasets = buildAdcDatasets()
+
+  if (!tempChart) {
+    tempChart = new ChartCtor(tempChartEl.value, {
+      type: 'line',
+      data: { labels, datasets: tempDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8 } },
+        },
+      },
+    })
+  } else {
+    tempChart.data.labels = labels
+    tempChart.data.datasets = tempDatasets
+    tempChart.update('none')
+  }
+
+  if (!adcChart) {
+    adcChart = new ChartCtor(adcChartEl.value, {
+      type: 'line',
+      data: { labels, datasets: adcDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8 } },
+        },
+      },
+    })
+  } else {
+    adcChart.data.labels = labels
+    adcChart.data.datasets = adcDatasets
+    adcChart.update('none')
+  }
+}
+
 watch(
   () => device.value?.state,
   (state) => {
@@ -359,6 +576,21 @@ watch(
     }
   },
   { immediate: true }
+)
+
+watch(
+  () => tempEntries.value.length,
+  (count) => {
+    historySelection.tempIndices = normalizeHistorySelection(historySelection.tempIndices, count)
+  }
+)
+
+watch(
+  () => [historySelection.tempIndices, historySelection.showAdc, historySelection.showCal],
+  () => {
+    renderCharts()
+  },
+  { deep: true }
 )
 
 async function refreshState() {
@@ -467,8 +699,61 @@ async function applyWifi() {
   }
 }
 
+function toggleHistoryTemp(idx: number) {
+  if (historySelection.tempIndices.includes(idx)) {
+    historySelection.tempIndices = historySelection.tempIndices.filter((value) => value !== idx)
+  } else {
+    historySelection.tempIndices = normalizeIndices([...historySelection.tempIndices, idx], tempEntries.value.length)
+  }
+}
+
+async function loadHistory() {
+  if (!deviceId.value) return
+  historyLoading.value = true
+  historyStatus.value = ''
+  try {
+    const params = new URLSearchParams({
+      device_id: deviceId.value,
+      limit: String(historyFilters.limit),
+    })
+    if (historyFilters.from) {
+      params.set('from', new Date(historyFilters.from).toISOString())
+    }
+    if (historyFilters.to) {
+      params.set('to', new Date(historyFilters.to).toISOString())
+    }
+    const data = await apiFetch<MeasurementRow[]>(`/api/measurements?${params.toString()}`)
+    historyData.value = data
+    historyStatus.value = `Получено ${data.length} точек`
+    renderCharts()
+  } catch (e: any) {
+    historyStatus.value = e?.message || 'Не удалось загрузить историю'
+  } finally {
+    historyLoading.value = false
+  }
+}
+
 onMounted(() => {
+  historyFilters.to = toLocalInputValue(new Date())
+  historyFilters.from = toLocalInputValue(new Date(Date.now() - 60 * 60 * 1000))
   refreshState()
+  if (!ChartCtor) {
+    import('chart.js/auto').then((mod: any) => {
+      ChartCtor = mod?.Chart || mod?.default || mod
+      renderCharts()
+    })
+  }
+})
+
+onBeforeUnmount(() => {
+  if (tempChart) {
+    tempChart.destroy()
+    tempChart = null
+  }
+  if (adcChart) {
+    adcChart.destroy()
+    adcChart = null
+  }
 })
 </script>
 
@@ -521,6 +806,9 @@ label { font-size: 14px; font-weight: 600; color: #1f1f1f; }
 input { width: 100%; box-sizing: border-box; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .muted { color: var(--muted); font-size: 13px; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.chart-box { background: #f8fafc; border-radius: 12px; border: 1px solid var(--border); padding: 12px; min-height: 260px; display: flex; flex-direction: column; gap: 8px; }
+.chart-box canvas { width: 100%; height: 220px; }
 .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
 .temp-card.subtle { background: #f7f7f7; box-shadow: none; }

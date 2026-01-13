@@ -8,6 +8,7 @@
     "start": "nuxt start"
   },
   "dependencies": {
+    "chart.js": "^4.4.3",
     "mqtt": "^5.1.4",
     "nuxt": "^3.10.0",
     "pinia": "^2.1.7"

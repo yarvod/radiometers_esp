@@ -26,6 +26,13 @@ void MqttPublish(const std::string& topic, const std::string& payload, int qos =
   esp_mqtt_client_publish(mqtt_client, topic.c_str(), payload.c_str(), payload.size(), qos, retain ? 1 : 0);
 }
 
+void PublishMeasurementPayloadInternal(const std::string& payload) {
+  if (!mqtt_connected || !mqtt_client) return;
+  const std::string device = SanitizeId(app_config.device_id);
+  const std::string topic = device + "/measure";
+  MqttPublish(topic, payload);
+}
+
 void MqttSendResponse(const std::string& device, const std::string& req_id, const ActionResult& res) {
   cJSON* root = cJSON_CreateObject();
   cJSON_AddBoolToObject(root, "ok", res.ok);
@@ -302,4 +309,8 @@ void StartMqttBridge() {
   if (mqtt_state_task == nullptr) {
     xTaskCreatePinnedToCore(&MqttStateTask, "mqtt_state", 4096, nullptr, 2, &mqtt_state_task, 0);
   }
+}
+
+void PublishMeasurementPayload(const std::string& payload) {
+  PublishMeasurementPayloadInternal(payload);
 }
