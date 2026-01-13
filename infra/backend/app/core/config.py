@@ -10,5 +10,6 @@ class Settings(BaseSettings):
     mqtt_state_topic: str = "+/state"
     access_token_cookie: str = "access_token"
     access_token_header: str = "Authorization"
+    access_token_ttl_minutes: int = 720
 
     model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", extra="ignore")

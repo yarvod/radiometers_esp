@@ -56,6 +56,7 @@ def to_token(model: AccessTokenModel) -> AccessToken:
         token=model.token,
         user_id=model.user_id,
         created_at=model.created_at,
+        expires_at=model.expires_at,
     )
 
 
@@ -187,8 +188,8 @@ class SqlTokenRepository(TokenRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(self, token: str, user_id: str) -> AccessToken:
-        model = AccessTokenModel(token=token, user_id=user_id)
+    async def create(self, token: str, user_id: str, expires_at: datetime) -> AccessToken:
+        model = AccessTokenModel(token=token, user_id=user_id, expires_at=expires_at)
         self._session.add(model)
         await self._session.flush()
         return to_token(model)

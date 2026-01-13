@@ -1,5 +1,5 @@
-from app.worker import device_from_topic, parse_iso, parse_mqtt
 from app.core.config import Settings
+from app.worker import device_from_topic, parse_iso, parse_mqtt
 
 
 def test_parse_iso_defaults():

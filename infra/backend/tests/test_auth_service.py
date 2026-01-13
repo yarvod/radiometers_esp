@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.domain.entities import AccessToken, User
+from app.core.config import Settings
 from app.repositories.interfaces import TokenRepository, UserRepository
 from app.services.auth import AuthService
 
@@ -51,8 +52,13 @@ class InMemoryTokenRepo(TokenRepository):
     def __init__(self) -> None:
         self._tokens: dict[str, AccessToken] = {}
 
-    async def create(self, token: str, user_id: str):
-        entry = AccessToken(token=token, user_id=user_id, created_at=datetime.now(timezone.utc))
+    async def create(self, token: str, user_id: str, expires_at: datetime):
+        entry = AccessToken(
+            token=token,
+            user_id=user_id,
+            created_at=datetime.now(timezone.utc),
+            expires_at=expires_at,
+        )
         self._tokens[token] = entry
         return entry
 
@@ -67,7 +73,8 @@ class InMemoryTokenRepo(TokenRepository):
 async def test_auth_flow():
     users = InMemoryUserRepo()
     tokens = InMemoryTokenRepo()
-    auth = AuthService(users, tokens)
+    settings = Settings(access_token_ttl_minutes=720)
+    auth = AuthService(users, tokens, settings)
 
     assert await auth.has_users() is False
 
@@ -93,7 +100,8 @@ async def test_auth_flow():
 async def test_auth_invalid_login():
     users = InMemoryUserRepo()
     tokens = InMemoryTokenRepo()
-    auth = AuthService(users, tokens)
+    settings = Settings(access_token_ttl_minutes=720)
+    auth = AuthService(users, tokens, settings)
 
     await auth.signup("admin", "secret")
     with pytest.raises(ValueError):

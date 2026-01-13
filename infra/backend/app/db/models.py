@@ -66,5 +66,6 @@ class AccessTokenModel(Base):
     token: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
     user: Mapped[UserModel] = relationship("UserModel", back_populates="tokens")

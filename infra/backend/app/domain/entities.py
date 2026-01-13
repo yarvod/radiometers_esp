@@ -47,3 +47,4 @@ class AccessToken:
     token: str
     user_id: str
     created_at: datetime
+    expires_at: datetime

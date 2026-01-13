@@ -71,7 +71,7 @@ class UserRepository(ABC):
 
 class TokenRepository(ABC):
     @abstractmethod
-    async def create(self, token: str, user_id: str) -> AccessToken:
+    async def create(self, token: str, user_id: str, expires_at: datetime) -> AccessToken:
         raise NotImplementedError
 
     @abstractmethod

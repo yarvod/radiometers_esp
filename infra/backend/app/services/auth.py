@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from passlib.context import CryptContext
 
 from app.domain.entities import AccessToken, User
+from app.core.config import Settings
 from app.repositories.interfaces import TokenRepository, UserRepository
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class AuthService:
-    def __init__(self, users: UserRepository, tokens: TokenRepository) -> None:
+    def __init__(self, users: UserRepository, tokens: TokenRepository, settings: Settings) -> None:
         self._users = users
         self._tokens = tokens
+        self._settings = settings
 
     async def has_users(self) -> bool:
         return (await self._users.count()) > 0
@@ -34,13 +36,18 @@ class AuthService:
 
     async def _issue_token(self, user_id: str) -> AccessToken:
         token = secrets.token_urlsafe(32)
-        return await self._tokens.create(token=token, user_id=user_id)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=self._settings.access_token_ttl_minutes)
+        return await self._tokens.create(token=token, user_id=user_id, expires_at=expires_at)
 
     async def authenticate(self, token: str | None) -> User | None:
         if not token:
             return None
         token_entry = await self._tokens.get(token)
         if not token_entry:
+            return None
+        now = datetime.now(timezone.utc)
+        if token_entry.expires_at <= now:
+            await self._tokens.delete(token)
             return None
         return await self._users.get(token_entry.user_id)
 

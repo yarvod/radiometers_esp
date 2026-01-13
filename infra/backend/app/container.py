@@ -57,8 +57,8 @@ class AppProvider(Provider):
         return SqlTokenRepository(session)
 
     @provide(scope=Scope.REQUEST)
-    def provide_auth_service(self, users: UserRepository, tokens: TokenRepository) -> AuthService:
-        return AuthService(users, tokens)
+    def provide_auth_service(self, users: UserRepository, tokens: TokenRepository, settings: Settings) -> AuthService:
+        return AuthService(users, tokens, settings)
 
     @provide(scope=Scope.REQUEST)
     def provide_device_service(self, devices: DeviceRepository) -> DeviceService:
