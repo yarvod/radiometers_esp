@@ -90,7 +90,9 @@ services:
     command: ["python", "-m", "app.worker"]
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      target: dev
     restart: unless-stopped
     environment:
       NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-ws://mosquitto:9001/mqtt}
