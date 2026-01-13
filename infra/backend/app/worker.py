@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from asyncio_mqtt import Client, MqttError
+from aiomqtt import Client, MqttError
 from dishka import make_async_container
 
 from app.container import AppProvider
@@ -107,7 +107,7 @@ async def run_worker() -> None:
                 await client.subscribe(settings.mqtt_state_topic)
                 async with client.unfiltered_messages() as messages:
                     async for message in messages:
-                        topic = message.topic
+                        topic = str(message.topic)
                         if topic.endswith("/measure"):
                             await handle_measurement(topic, message.payload, container)
                         elif topic.endswith("/state"):

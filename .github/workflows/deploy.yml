@@ -19,28 +19,48 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            frontend:
+              - 'infra/frontend/**'
+            backend:
+              - 'infra/backend/**'
+            compose:
+              - 'infra/compose-prod.yml'
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
       - name: Build frontend image
+        if: steps.changes.outputs.frontend == 'true' || steps.changes.outputs.compose == 'true'
         run: |
           docker build -t $IMAGE_NAME:latest infra/frontend
 
       - name: Build backend image
+        if: steps.changes.outputs.backend == 'true' || steps.changes.outputs.compose == 'true'
         run: |
           docker build -t $BACKEND_IMAGE_NAME:latest infra/backend
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Push image
+      - name: Push frontend image
+        if: steps.changes.outputs.frontend == 'true' || steps.changes.outputs.compose == 'true'
         run: |
           docker push $IMAGE_NAME:latest
+
+      - name: Push backend image
+        if: steps.changes.outputs.backend == 'true' || steps.changes.outputs.compose == 'true'
+        run: |
           docker push $BACKEND_IMAGE_NAME:latest
 
       - name: Deploy to server
+        if: steps.changes.outputs.frontend == 'true' || steps.changes.outputs.backend == 'true' || steps.changes.outputs.compose == 'true'
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -52,5 +72,14 @@ jobs:
             cd /home/${{ secrets.DEPLOY_USER }}/radiometers_esp/infra
             git pull
             docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-            docker compose -f compose-prod.yml pull frontend backend worker
+            SERVICES=""
+            if [ "${{ steps.changes.outputs.frontend }}" = "true" ] || [ "${{ steps.changes.outputs.compose }}" = "true" ]; then
+              SERVICES="$SERVICES frontend"
+            fi
+            if [ "${{ steps.changes.outputs.backend }}" = "true" ] || [ "${{ steps.changes.outputs.compose }}" = "true" ]; then
+              SERVICES="$SERVICES backend worker"
+            fi
+            if [ -n "$SERVICES" ]; then
+              docker compose -f compose-prod.yml pull $SERVICES
+            fi
             docker compose --env-file .env -f compose-prod.yml up -d --remove-orphans
