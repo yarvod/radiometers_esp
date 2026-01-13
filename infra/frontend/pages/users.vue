@@ -1,7 +1,7 @@
 <template>
   <div class="page">
     <div class="header">
-      <button class="btn ghost" @click="navigateTo('/')">← Назад</button>
+      <button class="btn ghost back" @click="navigateTo('/')">← Назад</button>
       <div>
         <h2>Пользователи</h2>
         <p class="muted">Управляйте доступом к системе.</p>
@@ -193,6 +193,7 @@ onMounted(loadUsers)
 <style scoped>
 .page { max-width: 1100px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.back { align-self: flex-start; }
 .table-card { padding: 20px; }
 .table-wrap { overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; min-width: 520px; }
