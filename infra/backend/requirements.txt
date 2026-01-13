@@ -9,4 +9,5 @@ pydantic-settings==2.3.2
 passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
 asyncio-mqtt==0.16.1
+paho-mqtt==1.6.1
 python-dotenv==1.0.1
