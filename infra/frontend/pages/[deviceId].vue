@@ -123,6 +123,18 @@
 
       <div class="card">
         <div class="card-head">
+          <h3>Система</h3>
+          <span class="badge">Управление</span>
+        </div>
+        <p class="muted">Полная перезагрузка устройства (использовать при зависаниях).</p>
+        <div class="actions">
+          <button class="btn danger" @click="restartDevice" :disabled="restarting">Перезагрузить</button>
+        </div>
+        <p class="muted" v-if="restartStatus">{{ restartStatus }}</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
           <h3>Термоконтроль</h3>
           <span class="badge accent">Heater + PID</span>
         </div>
@@ -624,6 +636,8 @@ const pidDirty = ref(false)
 const wifiDirty = ref(false)
 const pidApplyStatus = ref('')
 const wifiApplyStatus = ref('')
+const restartStatus = ref('')
+const restarting = ref(false)
 const pidForm = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
 const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
 const historyFilters = reactive({
@@ -1120,6 +1134,22 @@ function startLog() {
 function stopLog() {
   if (!deviceId.value) return
   store.logStop(nuxtApp.$mqtt, deviceId.value)
+}
+
+async function restartDevice() {
+  if (!deviceId.value) return
+  const confirmed = window.confirm('Перезагрузить устройство? Текущая запись может прерваться.')
+  if (!confirmed) return
+  restartStatus.value = ''
+  restarting.value = true
+  try {
+    await store.restartDevice(nuxtApp.$mqtt, deviceId.value)
+    restartStatus.value = 'Команда на перезагрузку отправлена'
+  } catch (e: any) {
+    restartStatus.value = e?.message || 'Не удалось отправить команду'
+  } finally {
+    restarting.value = false
+  }
 }
 function stepperEnable() {
   if (!deviceId.value) return

@@ -32,6 +32,7 @@ ActionResult ActionStepperFindZero();
 ActionResult ActionStepperZero();
 ActionResult ActionHeaterSet(float power_percent);
 ActionResult ActionFanSet(float power_percent);
+ActionResult ActionRestart();
 ActionResult ActionGetState();
 
 // Serialize current state to JSON (same payload as ActionGetState)

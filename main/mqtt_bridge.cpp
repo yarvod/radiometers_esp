@@ -225,6 +225,8 @@ void HandleMqttCommand(const std::string& topic, const uint8_t* data, int len) {
       InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
       res = {true, "wifi_applied", {}};
     }
+  } else if (type == "restart") {
+    res = ActionRestart();
   }
 
   MqttSendResponse(device, req_id, res);

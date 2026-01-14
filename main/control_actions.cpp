@@ -168,6 +168,14 @@ ActionResult ActionFanSet(float power_percent) {
   return {true, "fan_set", {}};
 }
 
+ActionResult ActionRestart() {
+  if (CopyState().logging) {
+    StopLogging();
+  }
+  ScheduleRestart();
+  return {true, "restarting", {}};
+}
+
 ActionResult ActionGetState() {
   return {true, {}, BuildStateJsonInternal()};
 }

@@ -140,6 +140,9 @@ export const useDevicesStore = defineStore('devices', {
     async pidDisable(mqtt: MqttClient, deviceId: string) {
       return this.sendCommand(mqtt, deviceId, { type: 'pid_disable' })
     },
+    async restartDevice(mqtt: MqttClient, deviceId: string) {
+      return this.sendCommand(mqtt, deviceId, { type: 'restart' })
+    },
     async wifiApply(mqtt: MqttClient, deviceId: string, payload: { mode: string; ssid: string; password: string }) {
       return this.sendCommand(mqtt, deviceId, { type: 'wifi_apply', ...payload })
     },
