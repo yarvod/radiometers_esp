@@ -782,7 +782,7 @@ esp_err_t StepperFindZeroHandler(httpd_req_t* req) {
   }
   std::string msg;
   if (!StartFindZeroTask(&msg)) {
-    httpd_resp_send_err(req, HTTPD_409_CONFLICT, msg.c_str());
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg.c_str());
     return ESP_FAIL;
   }
   httpd_resp_set_type(req, "application/json");
