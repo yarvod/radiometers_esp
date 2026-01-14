@@ -101,6 +101,24 @@
           <button class="btn warning ghost" @click="stopLog">Стоп</button>
         </div>
         <p class="muted">Текущий файл: {{ device?.state?.logFilename || '—' }}</p>
+        <div class="log-stats">
+          <div class="log-stat">
+            <div class="log-stat-label">SD занято</div>
+            <div class="log-stat-value">{{ sdUsageLabel }}</div>
+          </div>
+          <div class="log-stat">
+            <div class="log-stat-label">data_ в корне</div>
+            <div class="log-stat-value">{{ sdRootFiles }}</div>
+          </div>
+          <div class="log-stat">
+            <div class="log-stat-label">to_upload</div>
+            <div class="log-stat-value">{{ sdToUploadFiles }}</div>
+          </div>
+          <div class="log-stat">
+            <div class="log-stat-label">uploaded</div>
+            <div class="log-stat-value">{{ sdUploadedFiles }}</div>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -754,6 +772,30 @@ const wifiIpDisplay = computed(() => device.value?.state?.wifiIp || '--')
 const wifiStaIpDisplay = computed(() => device.value?.state?.wifiStaIp || '--')
 const wifiApIpDisplay = computed(() => device.value?.state?.wifiApIp || '--')
 const wifiSsidDisplay = computed(() => device.value?.state?.wifiSsid || '--')
+
+const formatBytes = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) return '--'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let idx = 0
+  let v = value
+  while (v >= 1024 && idx < units.length - 1) {
+    v /= 1024
+    idx++
+  }
+  const digits = idx === 0 ? 0 : idx <= 2 ? 1 : 2
+  return `${v.toFixed(digits)} ${units[idx]}`
+}
+
+const sdTotalBytes = computed(() => Number(device.value?.state?.sdTotalBytes ?? 0))
+const sdUsedBytes = computed(() => Number(device.value?.state?.sdUsedBytes ?? 0))
+const sdUsageLabel = computed(() => {
+  if (!sdTotalBytes.value || sdTotalBytes.value <= 0) return '--'
+  const percent = Math.round((sdUsedBytes.value * 100) / sdTotalBytes.value)
+  return `${formatBytes(sdUsedBytes.value)} / ${formatBytes(sdTotalBytes.value)} (${percent}%)`
+})
+const sdRootFiles = computed(() => device.value?.state?.sdRootDataFiles ?? 0)
+const sdToUploadFiles = computed(() => device.value?.state?.sdToUploadFiles ?? 0)
+const sdUploadedFiles = computed(() => device.value?.state?.sdUploadedFiles ?? 0)
 
 const formatTimestamp = (value: string) => {
   const dt = new Date(value)

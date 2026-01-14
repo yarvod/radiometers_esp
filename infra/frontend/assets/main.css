@@ -405,3 +405,7 @@ input { width: 100%; box-sizing: border-box; }
 .device-page .temp-title { font-size: 12px; color: var(--muted); }
 .device-page .temp-value { font-weight: 700; font-size: 16px; color: #1f2d3d; }
 .device-page .temp-value.small { font-size: 16px; }
+.device-page .log-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 10px; }
+.device-page .log-stat { background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 4px; font-variant-numeric: tabular-nums; }
+.device-page .log-stat-label { font-size: 12px; color: var(--muted); font-weight: 700; }
+.device-page .log-stat-value { font-size: 14px; font-weight: 700; color: #1f2d3d; }
