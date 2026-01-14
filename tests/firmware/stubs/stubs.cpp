@@ -13,18 +13,21 @@
 #include "test_stubs.h"
 
 uint64_t stub_time_us = 0;
+time_t stub_time_sec = 0;
 int stub_led_red = -1;
 int stub_led_green = -1;
 int stub_timer_period_ms = 0;
 int stub_timer_started = 0;
-std::string stub_iso = "2026-01-13T00:00:00Z";
 
 uint64_t esp_timer_get_time() {
   return stub_time_us;
 }
 
-std::string IsoUtcNow() {
-  return stub_iso;
+extern "C" time_t time(time_t* out) {
+  if (out) {
+    *out = stub_time_sec;
+  }
+  return stub_time_sec;
 }
 
 int gpio_set_level(gpio_num_t pin, int level) {
