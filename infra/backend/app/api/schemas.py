@@ -99,6 +99,7 @@ class MeasurementsResponse(BaseModel):
     bucket_seconds: int
     bucket_label: str
     aggregated: bool
+    temp_labels: list[str] = Field(default_factory=list)
 
 
 class MeasurementLatestResponse(BaseModel):

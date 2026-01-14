@@ -40,6 +40,8 @@ async def list_measurements(
         limit=limit,
         bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
     )
+    max_temp = max((len(point.temps) for point in points), default=0)
+    temp_labels = [f"t{idx + 1}" for idx in range(max_temp)]
     return MeasurementsResponse(
         points=[MeasurementPointOut.model_validate(item, from_attributes=True) for item in points],
         raw_count=raw_count,
@@ -47,6 +49,7 @@ async def list_measurements(
         bucket_seconds=bucket_seconds,
         bucket_label=bucket_label,
         aggregated=aggregated,
+        temp_labels=temp_labels,
     )
 
 

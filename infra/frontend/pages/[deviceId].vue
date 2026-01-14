@@ -290,16 +290,16 @@
         <label>Температурные датчики</label>
         <div class="chip-select">
           <button
-            v-for="(sensor, idx) in tempEntries"
-            :key="`history-temp-${sensor.key}`"
+            v-for="sensor in historyTempOptions"
+            :key="`history-temp-${sensor.idx}`"
             type="button"
             class="chip-option"
-            :class="{ selected: historySelection.tempIndices.includes(idx) }"
-            @click="toggleHistoryTemp(idx)"
+            :class="{ selected: historySelection.tempIndices.includes(sensor.idx) }"
+            @click="toggleHistoryTemp(sensor.idx)"
           >
             {{ sensor.label }}
           </button>
-          <span v-if="tempEntries.length === 0" class="muted">Нет датчиков</span>
+          <span v-if="historyTempOptions.length === 0" class="muted">Нет датчиков</span>
         </div>
       </div>
       <div class="form-group">
@@ -360,6 +360,7 @@ type MeasurementsResponse = {
   bucket_seconds: number
   bucket_label: string
   aggregated: boolean
+  temp_labels: string[]
 }
 
 const { apiFetch } = useApi()
@@ -382,6 +383,12 @@ const tempEntries = computed(() => {
     }
     return { key: label, label, value: entry, address: '' }
   })
+})
+const historyTempOptions = computed(() => {
+  const labels = historyTempLabels.value.length
+    ? historyTempLabels.value
+    : tempEntries.value.map((entry, idx) => entry.label || `t${idx + 1}`)
+  return labels.map((label, idx) => ({ label, idx }))
 })
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
@@ -407,6 +414,7 @@ const historySelection = reactive({
   adcSeries: ['adc1', 'adc2', 'adc3'] as string[],
 })
 const historyData = ref<MeasurementPoint[]>([])
+const historyTempLabels = ref<string[]>([])
 const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
@@ -612,14 +620,15 @@ const buildDataset = (label: string, data: (number | null)[], color: string) => 
 })
 
 const buildTempDatasets = () => {
-  const selected = normalizeHistorySelection(historySelection.tempIndices, tempEntries.value.length)
+  const labels = historyTempOptions.value.map((entry) => entry.label)
+  const selected = normalizeHistorySelection(historySelection.tempIndices, labels.length)
   return selected.map((idx, seriesIdx) => {
     const color = palette[seriesIdx % palette.length]
     const data = historyData.value.map((row) => {
       const value = row.temps?.[idx]
       return Number.isFinite(value) ? Number(value) : null
     })
-    const label = tempEntries.value[idx]?.label || `t${idx + 1}`
+    const label = labels[idx] || `t${idx + 1}`
     return buildDataset(label, data, color)
   })
 }
@@ -741,7 +750,7 @@ watch(
 )
 
 watch(
-  () => tempEntries.value.length,
+  () => historyTempOptions.value.length,
   (count) => {
     historySelection.tempIndices = normalizeHistorySelection(historySelection.tempIndices, count)
   }
@@ -928,6 +937,7 @@ async function loadHistory() {
     }
     const response = await apiFetch<MeasurementsResponse>(`/api/measurements?${params.toString()}`)
     historyData.value = response.points
+    historyTempLabels.value = response.temp_labels || []
     historyBucketLabel.value = response.bucket_label
     historyRawCount.value = response.raw_count
     if (response.aggregated) {
