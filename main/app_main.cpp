@@ -186,7 +186,7 @@ static bool IsDataLogFilename(const char* name) {
   return std::strncmp(name, "data_", 5) == 0;
 }
 
-static int CountDataFilesInDir(const char* dir_path) {
+static int CountFilesInDir(const char* dir_path, bool only_data_logs) {
   if (!dir_path) return 0;
   DIR* dir = opendir(dir_path);
   if (!dir) return 0;
@@ -195,7 +195,7 @@ static int CountDataFilesInDir(const char* dir_path) {
   while ((ent = readdir(dir)) != nullptr) {
     if (ent->d_name[0] == '.') continue;
     if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
-    if (!IsDataLogFilename(ent->d_name)) continue;
+    if (only_data_logs && !IsDataLogFilename(ent->d_name)) continue;
     count++;
   }
   closedir(dir);
@@ -233,9 +233,9 @@ static void UpdateSdStatsLocked() {
     const uint64_t avail = static_cast<uint64_t>(stats.f_bavail) * stats.f_frsize;
     used = total > avail ? (total - avail) : 0;
   }
-  const int root_files = CountDataFilesInDir(CONFIG_MOUNT_POINT);
-  const int to_upload_files = CountDataFilesInDir(TO_UPLOAD_DIR);
-  const int uploaded_files = CountDataFilesInDir(UPLOADED_DIR);
+  const int root_files = CountFilesInDir(CONFIG_MOUNT_POINT, true);
+  const int to_upload_files = CountFilesInDir(TO_UPLOAD_DIR, false);
+  const int uploaded_files = CountFilesInDir(UPLOADED_DIR, false);
   UpdateState([&](SharedState& s) {
     s.sd_total_bytes = total;
     s.sd_used_bytes = used;
@@ -618,7 +618,6 @@ static bool UploadPendingOnce() {
     if (!EnsureUploadDirs()) {
       return false;
     }
-    (void)MoveRootDataFilesToUploadLocked(current_log_path);
     DIR* dir = opendir(TO_UPLOAD_DIR);
     if (!dir) {
       ESP_LOGI(TAG, "No upload dir, nothing to sync");
@@ -704,7 +703,6 @@ static void UpdateSdStats() {
     });
     return;
   }
-  (void)MoveRootDataFilesToUploadLocked(current_log_path);
   UpdateSdStatsLocked();
   if (!already_mounted && !log_file) {
     UnmountLogSd();
@@ -785,7 +783,6 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
     s.log_filename = filename;
   });
   current_log_path = full_path;
-  (void)MoveRootDataFilesToUploadLocked(current_log_path);
   UpdateSdStatsLocked();
   return true;
 }
@@ -2086,7 +2083,6 @@ extern "C" void app_main(void) {
       app_config.logging_duration_s = log_config.duration_s;
       UpdateState([&](SharedState& s) {
         s.logging = true;
-        s.log_filename = postfix;
         s.log_use_motor = log_config.use_motor;
         s.log_duration_s = log_config.duration_s;
       });
