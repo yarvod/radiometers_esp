@@ -1,11 +1,21 @@
 #pragma once
 
+#include <cstdint>
 #include <ctime>
 #include <dirent.h>
 #include <string>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <vector>
+
+#ifdef ESP_PLATFORM
+struct statvfs {
+  uint64_t f_blocks;
+  uint64_t f_bavail;
+  uint64_t f_frsize;
+};
+#else
+#include <sys/statvfs.h>
+#endif
 
 struct UploadedFileInfo {
   std::string path;

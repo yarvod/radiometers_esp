@@ -4,8 +4,11 @@
 #include <cerrno>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <unistd.h>
+
+#ifdef ESP_PLATFORM
+#include "esp_vfs_fat.h"
+#endif
 
 #include "esp_log.h"
 
@@ -46,7 +49,22 @@ void CollectUploadedFiles(const char* uploaded_dir, const FsOps& ops, std::vecto
 
 FsOps DefaultFsOps() {
   FsOps ops{};
+#ifdef ESP_PLATFORM
+  ops.statvfs_fn = [](const char* path, struct statvfs* out) -> int {
+    if (!path || !out) return -1;
+    size_t total = 0;
+    size_t free = 0;
+    if (esp_vfs_fat_info(path, &total, &free) != ESP_OK || total == 0) {
+      return -1;
+    }
+    out->f_frsize = 1;
+    out->f_blocks = total;
+    out->f_bavail = free;
+    return 0;
+  };
+#else
   ops.statvfs_fn = &statvfs;
+#endif
   ops.opendir_fn = &opendir;
   ops.readdir_fn = &readdir;
   ops.closedir_fn = &closedir;
