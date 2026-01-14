@@ -1940,6 +1940,9 @@ extern "C" void app_main(void) {
     s.pid_sensor_index = pid_config.sensor_index;
     s.pid_sensor_mask = pid_config.sensor_mask;
     s.stepper_speed_us = app_config.stepper_speed_us;
+    if (s.stepper_home_status.empty()) {
+      s.stepper_home_status = "idle";
+    }
   });
   InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
   StartSntp();

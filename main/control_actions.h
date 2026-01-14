@@ -28,6 +28,8 @@ ActionResult ActionStopLog();
 ActionResult ActionStepperEnable();
 ActionResult ActionStepperDisable();
 ActionResult ActionStepperMove(const StepperMoveRequest& req);
+ActionResult ActionStepperFindZero();
+ActionResult ActionStepperZero();
 ActionResult ActionHeaterSet(float power_percent);
 ActionResult ActionFanSet(float power_percent);
 ActionResult ActionGetState();

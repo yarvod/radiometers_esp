@@ -119,6 +119,12 @@ export const useDevicesStore = defineStore('devices', {
     async stepperDisable(mqtt: MqttClient, deviceId: string) {
       return this.sendCommand(mqtt, deviceId, { type: 'stepper_disable' })
     },
+    async stepperFindZero(mqtt: MqttClient, deviceId: string) {
+      return this.sendCommand(mqtt, deviceId, { type: 'stepper_find_zero' })
+    },
+    async stepperZero(mqtt: MqttClient, deviceId: string) {
+      return this.sendCommand(mqtt, deviceId, { type: 'stepper_zero' })
+    },
     async heaterSet(mqtt: MqttClient, deviceId: string, power: number) {
       return this.sendCommand(mqtt, deviceId, { type: 'heater_set', power })
     },

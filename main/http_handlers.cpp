@@ -174,6 +174,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
   cJSON_AddNumberToObject(root, "stepperSpeedUs", snapshot.stepper_speed_us);
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
+  cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
+  cJSON_AddStringToObject(root, "stepperHomeStatus", snapshot.stepper_home_status.c_str());
   cJSON_AddStringToObject(root, "usbMode", snapshot.usb_msc_mode ? "msc" : "cdc");
   cJSON_AddBoolToObject(root, "usbMscBuilt", CONFIG_TINYUSB_MSC_ENABLED);
   if (!snapshot.usb_error.empty()) {
@@ -282,6 +284,8 @@ esp_err_t StepperZeroHandler(httpd_req_t* req) {
   UpdateState([](SharedState& s) {
     s.stepper_position = 0;
     s.stepper_target = 0;
+    s.stepper_homed = true;
+    s.stepper_home_status = "manual_zero";
   });
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"position_zeroed\"}");
@@ -291,15 +295,21 @@ void FindZeroTask(void*) {
   UpdateState([](SharedState& s) { s.stepper_abort = false; });
   const bool hall_initial = IsHallTriggered();
   ESP_LOGI(TAG, "FindZero: start, hall_triggered=%s", hall_initial ? "yes" : "no");
-  UpdateState([](SharedState& s) { s.homing = true; });
+  UpdateState([](SharedState& s) {
+    s.homing = true;
+    s.stepper_home_status = "running";
+    s.stepper_homed = false;
+  });
   SharedState snapshot = CopyState();
   const int step_delay_us = std::max(snapshot.stepper_speed_us, 1);
   int steps = 0;
   const int max_steps = 20000;
   gpio_set_level(STEPPER_DIR, 0);
+  bool aborted = false;
   while (!IsHallTriggered() && steps < max_steps) {
     if (CopyState().stepper_abort) {
       ESP_LOGW(TAG, "FindZero: aborted by user after %d steps", steps);
+      aborted = true;
       break;
     }
     gpio_set_level(STEPPER_STEP, 1);
@@ -318,15 +328,41 @@ void FindZeroTask(void*) {
   } else {
     ESP_LOGW(TAG, "FindZero: hall NOT detected, stopped after %d steps", steps);
   }
-  UpdateState([](SharedState& s) {
+  UpdateState([&](SharedState& s) {
     s.stepper_position = 0;
     s.stepper_target = 0;
     s.stepper_moving = false;
     s.homing = false;
     s.stepper_abort = false;
+    if (aborted) {
+      s.stepper_home_status = "aborted";
+      s.stepper_homed = false;
+    } else if (hall_after) {
+      s.stepper_home_status = "ok";
+      s.stepper_homed = true;
+    } else {
+      s.stepper_home_status = "not_found";
+      s.stepper_homed = false;
+    }
   });
   find_zero_task = nullptr;
   vTaskDelete(nullptr);
+}
+
+bool StartFindZeroTask(std::string* out_message) {
+  if (find_zero_task) {
+    if (out_message) *out_message = "homing already running";
+    return false;
+  }
+  UpdateState([](SharedState& s) {
+    s.stepper_abort = false;
+    s.stepper_home_status = "running";
+    s.stepper_homed = false;
+    s.homing = true;
+  });
+  xTaskCreatePinnedToCore(&FindZeroTask, "find_zero", 4096, nullptr, 4, &find_zero_task, 1);
+  if (out_message) *out_message = "homing_started";
+  return true;
 }
 
 bool MountLogSd() {
@@ -744,8 +780,10 @@ esp_err_t StepperFindZeroHandler(httpd_req_t* req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stepper not enabled");
     return ESP_FAIL;
   }
-  if (find_zero_task == nullptr) {
-    xTaskCreatePinnedToCore(&FindZeroTask, "find_zero", 4096, nullptr, 4, &find_zero_task, 1);
+  std::string msg;
+  if (!StartFindZeroTask(&msg)) {
+    httpd_resp_send_err(req, HTTPD_409_CONFLICT, msg.c_str());
+    return ESP_FAIL;
   }
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"homing_started\"}");

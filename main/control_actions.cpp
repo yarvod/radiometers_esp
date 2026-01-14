@@ -34,6 +34,8 @@ std::string BuildStateJsonInternal() {
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
+  cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
+  cJSON_AddStringToObject(root, "stepperHomeStatus", snapshot.stepper_home_status.c_str());
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
@@ -127,6 +129,28 @@ ActionResult ActionStepperMove(const StepperMoveRequest& req) {
   app_config.stepper_speed_us = speed;
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
   return {true, "movement_started", {}};
+}
+
+ActionResult ActionStepperFindZero() {
+  SharedState snapshot = CopyState();
+  if (!snapshot.stepper_enabled) {
+    return {false, "Stepper not enabled", {}};
+  }
+  std::string msg;
+  if (!StartFindZeroTask(&msg)) {
+    return {false, msg, {}};
+  }
+  return {true, "homing_started", {}};
+}
+
+ActionResult ActionStepperZero() {
+  UpdateState([](SharedState& s) {
+    s.stepper_position = 0;
+    s.stepper_target = 0;
+    s.stepper_homed = true;
+    s.stepper_home_status = "manual_zero";
+  });
+  return {true, "position_zeroed", {}};
 }
 
 ActionResult ActionHeaterSet(float power_percent) {

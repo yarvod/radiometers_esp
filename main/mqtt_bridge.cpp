@@ -110,6 +110,10 @@ void HandleMqttCommand(const std::string& topic, const uint8_t* data, int len) {
     req.forward = !get_bool("reverse", false);
     req.speed_us = get_int("speedUs", app_config.stepper_speed_us);
     res = ActionStepperMove(req);
+  } else if (type == "stepper_find_zero") {
+    res = ActionStepperFindZero();
+  } else if (type == "stepper_zero") {
+    res = ActionStepperZero();
   } else if (type == "stepper_enable") {
     res = ActionStepperEnable();
   } else if (type == "stepper_disable") {

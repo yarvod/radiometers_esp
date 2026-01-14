@@ -95,11 +95,13 @@ struct SharedState {
   bool stepper_enabled;
   bool stepper_moving;
   bool stepper_direction_forward;
+  bool stepper_homed;
   int stepper_speed_us;
   int stepper_target;
   int stepper_position;
   int64_t last_step_timestamp_us;
   bool stepper_abort;
+  std::string stepper_home_status;
   uint64_t last_update_ms;
   bool calibrating;
   bool usb_msc_mode;

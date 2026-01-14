@@ -173,10 +173,13 @@
           <span class="chip" :class="{ warm: stepperMoving, subtle: !stepperMoving }">{{ stepperMoving ? 'Moving' : 'Idle' }}</span>
           <span class="chip" :class="{ warn: stepperHoming, subtle: !stepperHoming }">{{ stepperHoming ? 'Homing' : 'Ready' }}</span>
           <span class="chip subtle">Dir: {{ stepperDirText }}</span>
+          <span class="chip" :class="stepperHomeChipClass">Home: {{ stepperHomeLabel }}</span>
         </div>
         <div class="inline">
           <button class="btn success" @click="stepperEnable">Enable</button>
           <button class="btn ghost" @click="stepperDisable">Disable</button>
+          <button class="btn primary" @click="stepperFindZero">Найти дом (Hall)</button>
+          <button class="btn ghost" @click="stepperZero">Поставить 0</button>
         </div>
         <div class="form-group">
           <label>Шаги</label>
@@ -189,6 +192,7 @@
         <label class="inline checkbox"><input type="checkbox" v-model="stepper.reverse" /> <span>Реверс</span></label>
         <button class="btn primary" @click="stepperMove">Движение</button>
         <p class="muted">Pos: {{ device?.state?.stepperPosition }} Target: {{ device?.state?.stepperTarget }}</p>
+        <p class="muted" v-if="stepperStatus">{{ stepperStatus }}</p>
       </div>
 
       <div class="card">
@@ -595,6 +599,7 @@ const adcLabel = (key: string, fallback: string) => adcLabelMap.value[key] || fa
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1500, reverse: false })
+const stepperStatus = ref('')
 const heaterPower = ref(0)
 const heaterEditing = ref(false)
 const pidDirty = ref(false)
@@ -711,6 +716,29 @@ const pidSensorTemp = computed(() => {
 const stepperEnabled = computed(() => !!device.value?.state?.stepperEnabled)
 const stepperMoving = computed(() => !!device.value?.state?.stepperMoving)
 const stepperHoming = computed(() => !!device.value?.state?.stepperHoming)
+const stepperHomeStatus = computed(() => (device.value?.state?.stepperHomeStatus as string) || 'idle')
+const stepperHomeLabel = computed(() => {
+  switch (stepperHomeStatus.value) {
+    case 'ok':
+      return 'Найден'
+    case 'manual_zero':
+      return 'Ручной 0'
+    case 'not_found':
+      return 'Не найден'
+    case 'aborted':
+      return 'Отменен'
+    case 'running':
+      return 'Поиск...'
+    default:
+      return 'Нет'
+  }
+})
+const stepperHomeChipClass = computed(() => {
+  if (stepperHomeStatus.value === 'ok' || stepperHomeStatus.value === 'manual_zero') return 'online'
+  if (stepperHomeStatus.value === 'running') return 'cool'
+  if (stepperHomeStatus.value === 'not_found' || stepperHomeStatus.value === 'aborted') return 'warn'
+  return 'subtle'
+})
 const stepperDirText = computed(() => {
   const dir = device.value?.state?.stepperDirForward
   if (dir === undefined || dir === null) return '--'
@@ -1028,6 +1056,26 @@ function stepperEnable() {
 function stepperDisable() {
   if (!deviceId.value) return
   store.stepperDisable(nuxtApp.$mqtt, deviceId.value)
+}
+async function stepperFindZero() {
+  if (!deviceId.value) return
+  stepperStatus.value = 'Ищу дом по Hall...'
+  try {
+    await store.stepperFindZero(nuxtApp.$mqtt, deviceId.value)
+    stepperStatus.value = 'Поиск запущен'
+  } catch (e: any) {
+    stepperStatus.value = e?.message || 'Не удалось запустить поиск'
+  }
+}
+async function stepperZero() {
+  if (!deviceId.value) return
+  stepperStatus.value = 'Устанавливаю 0...'
+  try {
+    await store.stepperZero(nuxtApp.$mqtt, deviceId.value)
+    stepperStatus.value = 'Ноль установлен'
+  } catch (e: any) {
+    stepperStatus.value = e?.message || 'Не удалось установить 0'
+  }
 }
 function stepperMove() {
   if (!deviceId.value) return
@@ -1405,6 +1453,19 @@ watch(
   (value) => {
     if (value === 'errors') {
       loadErrors()
+    }
+  }
+)
+
+watch(
+  () => stepperHomeStatus.value,
+  (value) => {
+    if (value === 'not_found') {
+      stepperStatus.value = 'Дом не найден'
+    } else if (value === 'aborted') {
+      stepperStatus.value = 'Поиск остановлен'
+    } else if (value === 'ok') {
+      stepperStatus.value = 'Дом найден'
     }
   }
 )

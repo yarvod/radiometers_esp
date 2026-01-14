@@ -32,6 +32,7 @@ void StopStepper();
 void StartStepperMove(int steps, bool forward, int speed_us);
 bool IsHallTriggered();
 void FindZeroTask(void*);
+bool StartFindZeroTask(std::string* out_message);
 
 void HeaterSetPowerPercent(float percent);
 void FanSetPowerPercent(float percent);
