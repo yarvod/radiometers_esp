@@ -25,11 +25,16 @@ export const useDevicesStore = defineStore('devices', {
       if (this.mqttReady || !mqtt) return
       this.mqttReady = true
 
-      mqtt.on('connect', () => {
+      const subscribeTopics = () => {
         mqtt.subscribe("+/resp")
         mqtt.subscribe("+/state")
         console.info('MQTT connected')
-      })
+      }
+
+      mqtt.on('connect', subscribeTopics)
+      if (mqtt.connected) {
+        subscribeTopics()
+      }
 
       mqtt.on('message', (topic, payload) => {
         const parts = topic.split('/')
