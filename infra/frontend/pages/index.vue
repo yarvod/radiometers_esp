@@ -35,6 +35,7 @@
 import { useDevicesStore } from '~/stores/devices'
 
 definePageMeta({ layout: 'admin' })
+useHead({ title: 'Устройства' })
 
 const { apiFetch } = useApi()
 const nuxtApp = useNuxtApp()

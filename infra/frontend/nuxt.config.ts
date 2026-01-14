@@ -3,6 +3,13 @@ export default defineNuxtConfig({
   devtools: { enabled: false },
   modules: ['@pinia/nuxt'],
   css: ['~/assets/main.css'],
+  app: {
+    head: {
+      title: 'Radiometer',
+      titleTemplate: (titleChunk) => (titleChunk ? `${titleChunk} · Radiometer` : 'Radiometer'),
+      link: [{ rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    },
+  },
   imports: {
     dirs: ['stores'],
   },

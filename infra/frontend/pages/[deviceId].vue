@@ -500,6 +500,9 @@ const historyTempOptions = computed(() => {
   return labels.map((label, idx) => ({ label, idx }))
 })
 const deviceTitle = computed(() => deviceConfig.value?.display_name || deviceId.value || '—')
+useHead(() => ({
+  title: deviceTitle.value ? `Устройство ${deviceTitle.value}` : 'Устройство',
+}))
 const adcLabelMap = computed(() => deviceConfig.value?.adc_labels || {})
 const adcLabelDefaults: Record<string, string> = {
   adc1: 'ADC1',

@@ -95,6 +95,7 @@
 
 <script setup lang="ts">
 definePageMeta({ layout: 'admin' })
+useHead({ title: 'Пользователи' })
 
 const { apiFetch } = useApi()
 
