@@ -535,6 +535,8 @@ static bool UploadFileToMinio(const std::string& path) {
   return false;
 }
 
+static void CleanupUploadedDirIfNeeded(int max_percent);
+
 static bool UploadPendingOnce() {
   constexpr int kMaxSdUsagePercent = 60;
   std::vector<std::string> files;

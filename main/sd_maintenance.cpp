@@ -52,8 +52,8 @@ FsOps DefaultFsOps() {
 #ifdef ESP_PLATFORM
   ops.statvfs_fn = [](const char* path, struct statvfs* out) -> int {
     if (!path || !out) return -1;
-    size_t total = 0;
-    size_t free = 0;
+    uint64_t total = 0;
+    uint64_t free = 0;
     if (esp_vfs_fat_info(path, &total, &free) != ESP_OK || total == 0) {
       return -1;
     }
