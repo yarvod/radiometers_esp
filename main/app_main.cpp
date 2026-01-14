@@ -16,6 +16,8 @@
 #include <dirent.h>
 #include <memory>
 #include "isrgrootx1.pem.h"
+#include <sys/statvfs.h>
+#include <unistd.h>
 
 #include "cJSON.h"
 #include "app_state.h"
@@ -596,6 +598,7 @@ static bool UploadFileToMinio(const std::string& path) {
 }
 
 static bool UploadPendingOnce() {
+  constexpr int kMaxSdUsagePercent = 60;
   std::vector<std::string> files;
   {
     SdLockGuard guard(pdMS_TO_TICKS(50));
@@ -639,9 +642,81 @@ static bool UploadPendingOnce() {
   }
   if (uploaded > 0) {
     ESP_LOGI(TAG, "Uploaded %d file(s) to MinIO", uploaded);
+  }
+  CleanupUploadedDirIfNeeded(kMaxSdUsagePercent);
+  if (uploaded > 0) {
     return true;
   }
   return false;
+}
+
+struct UploadedFileInfo {
+  std::string path;
+  time_t mtime = 0;
+};
+
+static bool GetFsUsagePercent(const char* path, int* out_percent) {
+  if (!path || !out_percent) return false;
+  struct statvfs stats {};
+  if (statvfs(path, &stats) != 0 || stats.f_blocks == 0) {
+    return false;
+  }
+  const uint64_t total = static_cast<uint64_t>(stats.f_blocks) * stats.f_frsize;
+  const uint64_t avail = static_cast<uint64_t>(stats.f_bavail) * stats.f_frsize;
+  const uint64_t used = total > avail ? (total - avail) : 0;
+  *out_percent = static_cast<int>((used * 100ULL) / total);
+  return true;
+}
+
+static void CollectUploadedFiles(std::vector<UploadedFileInfo>* out) {
+  if (!out) return;
+  DIR* dir = opendir(UPLOADED_DIR);
+  if (!dir) return;
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr) {
+    if (ent->d_name[0] == '.') continue;
+    std::string full = std::string(UPLOADED_DIR) + "/" + ent->d_name;
+    struct stat st {};
+    if (stat(full.c_str(), &st) != 0) continue;
+    if (!S_ISREG(st.st_mode)) continue;
+    out->push_back({full, st.st_mtime});
+  }
+  closedir(dir);
+}
+
+static void CleanupUploadedDirIfNeeded(int max_percent) {
+  SdLockGuard guard(pdMS_TO_TICKS(200));
+  if (!guard.locked()) {
+    ESP_LOGW(TAG, "SD mutex unavailable, skip cleanup");
+    return;
+  }
+  if (!MountLogSd()) {
+    return;
+  }
+  int usage = 0;
+  if (!GetFsUsagePercent(CONFIG_MOUNT_POINT, &usage)) {
+    return;
+  }
+  if (usage <= max_percent) {
+    return;
+  }
+  std::vector<UploadedFileInfo> files;
+  CollectUploadedFiles(&files);
+  if (files.empty()) return;
+  std::sort(files.begin(), files.end(), [](const UploadedFileInfo& a, const UploadedFileInfo& b) {
+    return a.mtime < b.mtime;
+  });
+  for (const auto& file : files) {
+    if (usage <= max_percent) break;
+    if (unlink(file.path.c_str()) == 0) {
+      ESP_LOGI(TAG, "Deleted uploaded file: %s", file.path.c_str());
+      if (!GetFsUsagePercent(CONFIG_MOUNT_POINT, &usage)) {
+        break;
+      }
+    } else {
+      ESP_LOGW(TAG, "Failed to delete uploaded file: %s (errno %d)", file.path.c_str(), errno);
+    }
+  }
 }
 
 void UploadTask(void*) {
