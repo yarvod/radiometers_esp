@@ -516,7 +516,7 @@ const adcLabelKeys = Object.keys(adcLabelDefaults)
 const adcLabel = (key: string, fallback: string) => adcLabelMap.value[key] || fallback
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
-const stepper = reactive({ steps: 400, speedUs: 1000, reverse: false })
+const stepper = reactive({ steps: 400, speedUs: 1500, reverse: false })
 const heaterPower = ref(0)
 const heaterEditing = ref(false)
 const pidDirty = ref(false)

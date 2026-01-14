@@ -18,7 +18,7 @@ AppConfig app_config{
     "",                 // logging_postfix
     false,              // logging_use_motor
     1.0f,               // logging_duration_s
-    1000,               // stepper_speed_us
+    1500,               // stepper_speed_us
     "dev1",             // device_id
     "",                 // minio_endpoint
     "",                 // minio_access_key
