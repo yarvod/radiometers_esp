@@ -44,18 +44,8 @@ def device_from_topic(topic: str) -> str | None:
     return parts[0]
 
 
-async def handle_measurement(topic: str, payload: bytes, container) -> None:
-    device_id = device_from_topic(topic)
-    if not device_id:
-        return
-    try:
-        data = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError:
-        return
-
-    timestamp = parse_iso(data.get("timestampIso"))
-    timestamp_ms = data.get("timestampMs")
-    temps = []
+def parse_temp_sensors(data: dict) -> tuple[list[float], list[str]]:
+    temps: list[float] = []
     temp_addresses: list[str] = []
     temp_sensors = data.get("tempSensors")
     if isinstance(temp_sensors, dict):
@@ -82,6 +72,21 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
         for _, value, address in parsed:
             temps.append(value)
             temp_addresses.append(address)
+    return temps, temp_addresses
+
+
+async def handle_measurement(topic: str, payload: bytes, container) -> None:
+    device_id = device_from_topic(topic)
+    if not device_id:
+        return
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError:
+        return
+
+    timestamp = parse_iso(data.get("timestampIso"))
+    timestamp_ms = data.get("timestampMs")
+    temps, temp_addresses = parse_temp_sensors(data)
     if not temps:
         raw_temps = data.get("temps") or []
         if isinstance(raw_temps, list):
@@ -122,12 +127,26 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
         await measurements.add(measurement)
 
 
-async def handle_state(topic: str, container) -> None:
+async def handle_state(topic: str, payload: bytes, container) -> None:
     device_id = device_from_topic(topic)
     if not device_id:
         return
+    temp_addresses: list[str] = []
+    try:
+        data = json.loads(payload.decode("utf-8"))
+        _, temp_addresses = parse_temp_sensors(data)
+    except json.JSONDecodeError:
+        temp_addresses = []
     async with container() as request_container:
         devices = await request_container.get(DeviceService)
+        if temp_addresses:
+            await devices.update_device(
+                device_id=device_id,
+                display_name=None,
+                temp_labels=None,
+                temp_addresses=temp_addresses,
+                adc_labels=None,
+            )
         await devices.touch_device(device_id, datetime.now(timezone.utc))
 
 
@@ -147,7 +166,7 @@ async def run_worker() -> None:
                     if topic.endswith("/measure"):
                         await handle_measurement(topic, message.payload, container)
                     elif topic.endswith("/state"):
-                        await handle_state(topic, container)
+                        await handle_state(topic, message.payload, container)
         except MqttError:
             await asyncio.sleep(2)
 
