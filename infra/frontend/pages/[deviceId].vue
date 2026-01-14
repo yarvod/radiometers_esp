@@ -797,9 +797,39 @@ const sdRootFiles = computed(() => device.value?.state?.sdRootDataFiles ?? 0)
 const sdToUploadFiles = computed(() => device.value?.state?.sdToUploadFiles ?? 0)
 const sdUploadedFiles = computed(() => device.value?.state?.sdUploadedFiles ?? 0)
 
-const formatTimestamp = (value: string) => {
+const parseLocalInput = (value: string) => {
+  if (!value) return null
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  if (![year, month, day, hour, minute].every((n) => Number.isFinite(n))) return null
+  const dt = new Date(year, month - 1, day, hour, minute, 0, 0)
+  if (Number.isNaN(dt.getTime())) return null
+  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) return null
+  return dt
+}
+
+const parseDateAny = (value: string) => {
+  if (!value) return null
+  const local = parseLocalInput(value)
+  if (local) return local
   const dt = new Date(value)
-  if (Number.isNaN(dt.getTime())) return value
+  if (Number.isNaN(dt.getTime())) return null
+  return dt
+}
+
+const localInputToIso = (value: string) => {
+  const dt = parseLocalInput(value)
+  return dt ? dt.toISOString() : ''
+}
+
+const formatTimestamp = (value: string) => {
+  const dt = parseDateAny(value)
+  if (!dt || Number.isNaN(dt.getTime())) return value
   return dt.toLocaleString('ru-RU', {
     day: '2-digit',
     month: '2-digit',
@@ -816,8 +846,8 @@ const toLocalInputValue = (date: Date) => {
 }
 
 const formatRangeDate = (value: string) => {
-  const dt = new Date(value)
-  if (Number.isNaN(dt.getTime())) return value
+  const dt = parseDateAny(value)
+  if (!dt || Number.isNaN(dt.getTime())) return value
   return dt.toLocaleString('ru-RU', {
     day: '2-digit',
     month: '2-digit',
@@ -846,8 +876,8 @@ const validateHistoryDate = (field: 'from' | 'to') => {
     historyDateError.value = ''
     return true
   }
-  const dt = new Date(value)
-  if (Number.isNaN(dt.getTime())) {
+  const dt = parseDateAny(value)
+  if (!dt || Number.isNaN(dt.getTime())) {
     historyDateError.value = 'Введите корректную дату и время'
     return false
   }
@@ -856,8 +886,8 @@ const validateHistoryDate = (field: 'from' | 'to') => {
 }
 
 const getHistoryWindowEnd = (timestamp: string) => {
-  const dt = new Date(timestamp)
-  return Number.isNaN(dt.getTime()) ? null : dt
+  const dt = parseDateAny(timestamp)
+  return dt ?? null
 }
 
 const setHistoryWindow = (end: Date) => {
@@ -1224,10 +1254,12 @@ async function loadErrors() {
       offset: String(errorOffset.value),
     })
     if (errorFilters.from) {
-      params.set('from', new Date(errorFilters.from).toISOString())
+      const isoFrom = localInputToIso(errorFilters.from)
+      if (isoFrom) params.set('from', isoFrom)
     }
     if (errorFilters.to) {
-      params.set('to', new Date(errorFilters.to).toISOString())
+      const isoTo = localInputToIso(errorFilters.to)
+      if (isoTo) params.set('to', isoTo)
     }
     if (errorFilters.status && errorFilters.status !== 'all') {
       params.set('status', errorFilters.status)
@@ -1312,12 +1344,14 @@ async function loadHistory() {
       params.set('bucket_seconds', String(seconds))
     }
     if (historyFilters.from) {
-      params.set('from', new Date(historyFilters.from).toISOString())
+      const isoFrom = localInputToIso(historyFilters.from)
+      if (isoFrom) params.set('from', isoFrom)
     }
     if (historyAutoRefresh.value) {
       params.set('to', new Date().toISOString())
     } else if (historyFilters.to) {
-      params.set('to', new Date(historyFilters.to).toISOString())
+      const isoTo = localInputToIso(historyFilters.to)
+      if (isoTo) params.set('to', isoTo)
     }
     const response = await apiFetch<MeasurementsResponse>(`/api/measurements?${params.toString()}`)
     historyData.value = response.points
