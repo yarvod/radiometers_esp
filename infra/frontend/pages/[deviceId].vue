@@ -415,6 +415,7 @@ type MeasurementsResponse = {
   aggregated: boolean
   temp_labels: string[]
   adc_labels: Record<string, string>
+  temp_addresses: string[]
 }
 
 type DeviceConfig = {
@@ -423,7 +424,7 @@ type DeviceConfig = {
   created_at: string
   last_seen_at: string | null
   temp_labels: string[]
-  temp_address_labels: Record<string, string>
+  temp_addresses: string[]
   adc_labels: Record<string, string>
 }
 
@@ -470,12 +471,20 @@ const tempEntries = computed(() => {
     }))
   }
   if (!sensors || typeof sensors !== 'object') return []
-  const byAddress = deviceConfig.value?.temp_address_labels || {}
   const byIndex = deviceConfig.value?.temp_labels || []
-  return Object.entries(sensors as Record<string, any>).map(([label, entry], idx) => {
+  const entries = Object.entries(sensors as Record<string, any>)
+  entries.sort(([a], [b]) => {
+    const ai = a.startsWith('t') ? Number(a.slice(1)) : Number.NaN
+    const bi = b.startsWith('t') ? Number(b.slice(1)) : Number.NaN
+    if (Number.isFinite(ai) && Number.isFinite(bi)) return ai - bi
+    if (Number.isFinite(ai)) return -1
+    if (Number.isFinite(bi)) return 1
+    return a.localeCompare(b)
+  })
+  return entries.map(([label, entry], idx) => {
     if (entry && typeof entry === 'object') {
       const address = entry.address || ''
-      const renamed = (address && byAddress[address]) || byIndex[idx] || label
+      const renamed = byIndex[idx] || label
       return { key: label, label: renamed, value: entry.value, address }
     }
     const renamed = byIndex[idx] || label
@@ -1056,6 +1065,12 @@ async function loadHistory() {
     const response = await apiFetch<MeasurementsResponse>(`/api/measurements?${params.toString()}`)
     historyData.value = response.points
     historyTempLabels.value = response.temp_labels || []
+    if (response.temp_addresses?.length && deviceConfig.value && deviceConfig.value.temp_addresses.length === 0) {
+      deviceConfig.value = { ...deviceConfig.value, temp_addresses: response.temp_addresses }
+      if (!configDirty.value) {
+        seedConfigForm()
+      }
+    }
     historyBucketLabel.value = response.bucket_label
     historyRawCount.value = response.raw_count
     if (response.aggregated) {
@@ -1109,27 +1124,16 @@ const seedConfigForm = () => {
   if (!config) return
   configForm.displayName = config.display_name || ''
   const tempLabels = config.temp_labels || []
-  const addressLabels = config.temp_address_labels || {}
+  const tempAddresses = config.temp_addresses || []
   const rows: TempConfigRow[] = []
   const live = tempEntries.value
-  if (live.length) {
-    live.forEach((entry, idx) => {
-      const address = entry.address || null
-      const fallback = tempLabels[idx] || entry.label || `t${idx + 1}`
-      const label = address && addressLabels[address] ? addressLabels[address] : fallback
-      rows.push({ index: idx, address, label })
-    })
-  } else if (tempLabels.length) {
-    tempLabels.forEach((label, idx) => {
-      rows.push({ index: idx, address: null, label: label || `t${idx + 1}` })
-    })
+  const length = Math.max(live.length, tempLabels.length, tempAddresses.length)
+  for (let idx = 0; idx < length; idx += 1) {
+    const liveEntry = live[idx]
+    const address = tempAddresses[idx] || liveEntry?.address || ''
+    const label = tempLabels[idx] || liveEntry?.label || `t${idx + 1}`
+    rows.push({ index: idx, address: address || null, label })
   }
-  const knownAddresses = new Set(rows.map((row) => row.address).filter(Boolean) as string[])
-  Object.entries(addressLabels).forEach(([address, label]) => {
-    if (!knownAddresses.has(address)) {
-      rows.push({ index: null, address, label })
-    }
-  })
   configForm.tempRows = rows
   Object.assign(configForm.adcLabels, adcLabelDefaults, config.adc_labels || {})
 }
@@ -1160,14 +1164,10 @@ const saveConfig = async () => {
   configStatus.value = 'Сохраняю настройки...'
   try {
     const tempLabels: string[] = []
-    const tempAddressLabels: Record<string, string> = {}
     configForm.tempRows.forEach((row) => {
       const label = row.label.trim()
       if (row.index !== null) {
         tempLabels[row.index] = label || `t${row.index + 1}`
-      }
-      if (row.address) {
-        tempAddressLabels[row.address] = label || (row.index !== null ? `t${row.index + 1}` : row.address)
       }
     })
     for (let i = 0; i < tempLabels.length; i += 1) {
@@ -1186,7 +1186,6 @@ const saveConfig = async () => {
       body: {
         display_name: displayName ? displayName : null,
         temp_labels: tempLabels,
-        temp_address_labels: tempAddressLabels,
         adc_labels: adcLabels,
       },
     })

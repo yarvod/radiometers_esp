@@ -44,13 +44,17 @@ async def list_measurements(
     )
     device = await devices.get_device(device_id)
     config_temp_labels = list(device.temp_labels) if device else []
-    max_temp = max((len(point.temps) for point in points), default=len(config_temp_labels))
+    config_temp_addresses = list(device.temp_addresses) if device else []
+    default_len = max(len(config_temp_labels), len(config_temp_addresses))
+    max_temp = max((len(point.temps) for point in points), default=default_len)
     if config_temp_labels:
         temp_labels = list(config_temp_labels)
         if len(temp_labels) < max_temp:
             temp_labels.extend([f"t{idx + 1}" for idx in range(len(temp_labels), max_temp)])
     else:
         temp_labels = [f"t{idx + 1}" for idx in range(max_temp)]
+    if len(config_temp_addresses) < max_temp:
+        config_temp_addresses.extend([""] * (max_temp - len(config_temp_addresses)))
     adc_labels = dict(device.adc_labels) if device else {}
     return MeasurementsResponse(
         points=[MeasurementPointOut.model_validate(item, from_attributes=True) for item in points],
@@ -61,6 +65,7 @@ async def list_measurements(
         aggregated=aggregated,
         temp_labels=temp_labels,
         adc_labels=adc_labels,
+        temp_addresses=config_temp_addresses,
     )
 
 

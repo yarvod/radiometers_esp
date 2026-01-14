@@ -66,10 +66,19 @@ static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const 
   cJSON_AddNumberToObject(root, "adc2", base.voltage2);
   cJSON_AddNumberToObject(root, "adc3", base.voltage3);
   cJSON* temps = cJSON_CreateArray();
+  cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < base.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     cJSON_AddItemToArray(temps, cJSON_CreateNumber(base.temps_c[i]));
+    const std::string key = "t" + std::to_string(i + 1);
+    const std::string& addr = base.temp_addresses[i];
+    cJSON* entry = cJSON_CreateObject();
+    cJSON_AddNumberToObject(entry, "value", base.temps_c[i]);
+    cJSON_AddStringToObject(entry, "address", addr.c_str());
+    cJSON_AddStringToObject(entry, "label", key.c_str());
+    cJSON_AddItemToObject(temp_obj, key.c_str(), entry);
   }
   cJSON_AddItemToObject(root, "temps", temps);
+  cJSON_AddItemToObject(root, "tempSensors", temp_obj);
   cJSON_AddNumberToObject(root, "busV", base.ina_bus_voltage);
   cJSON_AddNumberToObject(root, "busI", base.ina_current);
   cJSON_AddNumberToObject(root, "busP", base.ina_power);
@@ -119,15 +128,13 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "tempSensorCount", snapshot.temp_sensor_count);
   cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    std::string label = snapshot.temp_labels[i];
-    if (label.empty()) {
-      label = "t" + std::to_string(i + 1);
-    }
+    const std::string key = "t" + std::to_string(i + 1);
     const std::string& addr = snapshot.temp_addresses[i];
     cJSON* entry = cJSON_CreateObject();
     cJSON_AddNumberToObject(entry, "value", snapshot.temps_c[i]);
     cJSON_AddStringToObject(entry, "address", addr.c_str());
-    cJSON_AddItemToObject(temp_obj, label.c_str(), entry);
+    cJSON_AddStringToObject(entry, "label", key.c_str());
+    cJSON_AddItemToObject(temp_obj, key.c_str(), entry);
   }
   cJSON_AddItemToObject(root, "tempSensors", temp_obj);
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);

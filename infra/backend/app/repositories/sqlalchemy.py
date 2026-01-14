@@ -18,7 +18,7 @@ def to_device(model: DeviceModel) -> Device:
         created_at=model.created_at,
         last_seen_at=model.last_seen_at,
         temp_labels=list(model.temp_labels or []),
-        temp_address_labels=dict(model.temp_address_labels or {}),
+        temp_addresses=list(model.temp_addresses or []),
         adc_labels=dict(model.adc_labels or {}),
     )
 
@@ -94,7 +94,7 @@ class SqlDeviceRepository(DeviceRepository):
         return to_device(model) if model else None
 
     async def create(self, device_id: str, display_name: str | None = None) -> Device:
-        model = DeviceModel(id=device_id, display_name=display_name, temp_labels=[], temp_address_labels={}, adc_labels={})
+        model = DeviceModel(id=device_id, display_name=display_name, temp_labels=[], temp_addresses=[], adc_labels={})
         self._session.add(model)
         await self._session.flush()
         return to_device(model)
@@ -103,7 +103,7 @@ class SqlDeviceRepository(DeviceRepository):
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
         model = result.scalar_one_or_none()
         if model is None:
-            model = DeviceModel(id=device_id, last_seen_at=seen_at, temp_labels=[], temp_address_labels={}, adc_labels={})
+            model = DeviceModel(id=device_id, last_seen_at=seen_at, temp_labels=[], temp_addresses=[], adc_labels={})
             self._session.add(model)
         else:
             model.last_seen_at = seen_at
@@ -115,7 +115,7 @@ class SqlDeviceRepository(DeviceRepository):
         device_id: str,
         display_name: str | None,
         temp_labels: list[str] | None,
-        temp_address_labels: dict[str, str] | None,
+        temp_addresses: list[str] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
@@ -125,7 +125,7 @@ class SqlDeviceRepository(DeviceRepository):
                 id=device_id,
                 display_name=display_name,
                 temp_labels=temp_labels or [],
-                temp_address_labels=temp_address_labels or {},
+                temp_addresses=temp_addresses or [],
                 adc_labels=adc_labels or {},
             )
             self._session.add(model)
@@ -134,8 +134,8 @@ class SqlDeviceRepository(DeviceRepository):
                 model.display_name = display_name
             if temp_labels is not None:
                 model.temp_labels = temp_labels
-            if temp_address_labels is not None:
-                model.temp_address_labels = temp_address_labels
+            if temp_addresses is not None:
+                model.temp_addresses = temp_addresses
             if adc_labels is not None:
                 model.adc_labels = adc_labels
         await self._session.flush()

@@ -55,9 +55,37 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
 
     timestamp = parse_iso(data.get("timestampIso"))
     timestamp_ms = data.get("timestampMs")
-    temps = data.get("temps") or []
-    if not isinstance(temps, list):
-        temps = []
+    temps = []
+    temp_addresses: list[str] = []
+    temp_sensors = data.get("tempSensors")
+    if isinstance(temp_sensors, dict):
+        parsed: list[tuple[int, float, str]] = []
+        for key, entry in temp_sensors.items():
+            if not isinstance(key, str) or not key.startswith("t"):
+                continue
+            idx_raw = key[1:]
+            if not idx_raw.isdigit():
+                continue
+            idx = int(idx_raw) - 1
+            if idx < 0:
+                continue
+            value = None
+            address = ""
+            if isinstance(entry, dict):
+                value = entry.get("value")
+                address = entry.get("address") or ""
+            elif isinstance(entry, (int, float)):
+                value = entry
+            if isinstance(value, (int, float)):
+                parsed.append((idx, float(value), str(address)))
+        parsed.sort(key=lambda item: item[0])
+        for _, value, address in parsed:
+            temps.append(value)
+            temp_addresses.append(address)
+    if not temps:
+        raw_temps = data.get("temps") or []
+        if isinstance(raw_temps, list):
+            temps = [float(v) for v in raw_temps if isinstance(v, (int, float))]
 
     measurement = Measurement(
         id=str(uuid.uuid4()),
@@ -67,7 +95,7 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
         adc1=float(data.get("adc1", 0.0)),
         adc2=float(data.get("adc2", 0.0)),
         adc3=float(data.get("adc3", 0.0)),
-        temps=[float(v) for v in temps if isinstance(v, (int, float))],
+        temps=temps,
         bus_v=float(data.get("busV", 0.0)),
         bus_i=float(data.get("busI", 0.0)),
         bus_p=float(data.get("busP", 0.0)),
@@ -82,6 +110,14 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
     async with container() as request_container:
         devices = await request_container.get(DeviceService)
         measurements = await request_container.get(MeasurementService)
+        if temp_addresses:
+            await devices.update_device(
+                device_id=device_id,
+                display_name=None,
+                temp_labels=None,
+                temp_addresses=temp_addresses,
+                adc_labels=None,
+            )
         await devices.touch_device(device_id, timestamp)
         await measurements.add(measurement)
 

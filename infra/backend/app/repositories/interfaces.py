@@ -30,7 +30,7 @@ class DeviceRepository(ABC):
         device_id: str,
         display_name: str | None,
         temp_labels: list[str] | None,
-        temp_address_labels: dict[str, str] | None,
+        temp_addresses: list[str] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
         raise NotImplementedError

@@ -22,14 +22,14 @@ class DeviceService:
         device_id: str,
         display_name: str | None,
         temp_labels: list[str] | None = None,
-        temp_address_labels: dict[str, str] | None = None,
+        temp_addresses: list[str] | None = None,
         adc_labels: dict[str, str] | None = None,
     ) -> Device:
         return await self._devices.update(
             device_id=device_id,
             display_name=display_name,
             temp_labels=temp_labels,
-            temp_address_labels=temp_address_labels,
+            temp_addresses=temp_addresses,
             adc_labels=adc_labels,
         )
 
