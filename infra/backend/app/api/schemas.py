@@ -131,3 +131,10 @@ class ErrorEventOut(BaseModel):
     message: str
     active: bool
     created_at: datetime
+
+
+class ErrorEventsResponse(BaseModel):
+    items: list[ErrorEventOut]
+    total: int
+    limit: int
+    offset: int

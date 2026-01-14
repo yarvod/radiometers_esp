@@ -120,6 +120,20 @@ class ErrorRepository(ABC):
         device_id: str,
         start: datetime | None,
         end: datetime | None,
+        active: bool | None,
+        code: str | None,
         limit: int,
+        offset: int,
     ) -> Sequence[ErrorEvent]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        active: bool | None,
+        code: str | None,
+    ) -> int:
         raise NotImplementedError

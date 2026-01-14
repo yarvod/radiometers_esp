@@ -15,6 +15,31 @@ class ErrorService:
         await self._errors.add(event)
 
     async def list(
-        self, device_id: str, start: datetime | None, end: datetime | None, limit: int
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        active: bool | None,
+        code: str | None,
+        limit: int,
+        offset: int,
     ) -> Sequence[ErrorEvent]:
-        return await self._errors.list(device_id=device_id, start=start, end=end, limit=limit)
+        return await self._errors.list(
+            device_id=device_id,
+            start=start,
+            end=end,
+            active=active,
+            code=code,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def count(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        active: bool | None,
+        code: str | None,
+    ) -> int:
+        return await self._errors.count(device_id=device_id, start=start, end=end, active=active, code=code)

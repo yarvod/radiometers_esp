@@ -296,16 +296,43 @@ class SqlErrorRepository(ErrorRepository):
         device_id: str,
         start: datetime | None,
         end: datetime | None,
+        active: bool | None,
+        code: str | None,
         limit: int,
+        offset: int,
     ) -> Sequence[ErrorEvent]:
         query = select(ErrorEventModel).where(ErrorEventModel.device_id == device_id)
         if start:
             query = query.where(ErrorEventModel.timestamp >= start)
         if end:
             query = query.where(ErrorEventModel.timestamp <= end)
-        query = query.order_by(ErrorEventModel.timestamp.desc()).limit(limit)
+        if active is not None:
+            query = query.where(ErrorEventModel.active.is_(active))
+        if code:
+            query = query.where(ErrorEventModel.code.ilike(f"%{code}%"))
+        query = query.order_by(ErrorEventModel.timestamp.desc()).offset(offset).limit(limit)
         result = await self._session.execute(query)
         return [to_error_event(row) for row in result.scalars().all()]
+
+    async def count(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        active: bool | None,
+        code: str | None,
+    ) -> int:
+        query = select(func.count()).select_from(ErrorEventModel).where(ErrorEventModel.device_id == device_id)
+        if start:
+            query = query.where(ErrorEventModel.timestamp >= start)
+        if end:
+            query = query.where(ErrorEventModel.timestamp <= end)
+        if active is not None:
+            query = query.where(ErrorEventModel.active.is_(active))
+        if code:
+            query = query.where(ErrorEventModel.code.ilike(f"%{code}%"))
+        result = await self._session.execute(query)
+        return int(result.scalar_one())
 
 
 class SqlUserRepository(UserRepository):

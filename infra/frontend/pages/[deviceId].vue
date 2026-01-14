@@ -388,10 +388,40 @@
     <div class="card" v-show="activeTab === 'errors'">
       <div class="card-head">
         <h3>Ошибки устройства</h3>
-        <span class="badge">{{ errorEvents.length }}</span>
+        <span class="badge">{{ errorTotal }}</span>
+      </div>
+      <div class="inline fields">
+        <label class="compact">С
+          <input type="datetime-local" class="date-input" v-model="errorFilters.from" />
+        </label>
+        <label class="compact">По
+          <input type="datetime-local" class="date-input" v-model="errorFilters.to" />
+        </label>
+        <label class="compact">Статус
+          <select v-model="errorFilters.status">
+            <option value="all">Все</option>
+            <option value="active">Active</option>
+            <option value="cleared">Cleared</option>
+          </select>
+        </label>
+      </div>
+      <div class="inline fields">
+        <label class="compact">Название
+          <input type="text" v-model="errorFilters.name" placeholder="code" />
+        </label>
+        <label class="compact">Лимит
+          <input type="number" min="20" max="1000" step="20" v-model.number="errorFilters.limit" />
+        </label>
+        <label class="compact">Страница
+          <input type="number" min="1" :max="errorPageCount" step="1" v-model.number="errorFilters.page" />
+        </label>
       </div>
       <div class="actions">
-        <button class="btn primary sm" @click="loadErrors" :disabled="errorLoading">Обновить</button>
+        <button class="btn primary sm" @click="loadErrors" :disabled="errorLoading">Применить</button>
+        <button class="btn ghost sm" @click="resetErrorFilters" :disabled="errorLoading">Сбросить</button>
+        <button class="btn ghost sm" @click="goToErrorPage(errorFilters.page - 1)" :disabled="errorLoading || errorFilters.page <= 1">←</button>
+        <button class="btn ghost sm" @click="goToErrorPage(errorFilters.page + 1)" :disabled="errorLoading || errorFilters.page >= errorPageCount">→</button>
+        <span class="muted" v-if="errorRangeLabel">{{ errorRangeLabel }}</span>
         <span class="muted" v-if="errorStatus">{{ errorStatus }}</span>
       </div>
       <p class="muted" v-if="errorLoading">Загрузка...</p>
@@ -457,6 +487,13 @@ type ErrorEvent = {
   message: string
   active: boolean
   created_at: string
+}
+
+type ErrorEventsResponse = {
+  items: ErrorEvent[]
+  total: number
+  limit: number
+  offset: number
 }
 
 type DeviceConfig = {
@@ -590,6 +627,23 @@ let historyTimer: ReturnType<typeof setInterval> | null = null
 const errorEvents = ref<ErrorEvent[]>([])
 const errorLoading = ref(false)
 const errorStatus = ref('')
+const errorTotal = ref(0)
+const errorFilters = reactive({
+  from: '',
+  to: '',
+  status: 'all',
+  name: '',
+  limit: 200,
+  page: 1,
+})
+const errorPageCount = computed(() => Math.max(1, Math.ceil(errorTotal.value / errorFilters.limit)))
+const errorOffset = computed(() => Math.max(0, (errorFilters.page - 1) * errorFilters.limit))
+const errorRangeLabel = computed(() => {
+  if (errorTotal.value === 0) return ''
+  const start = errorOffset.value + 1
+  const end = errorOffset.value + errorEvents.value.length
+  return `${start}–${end} из ${errorTotal.value}`
+})
 const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
 let tempChart: any = null
@@ -1076,15 +1130,50 @@ async function loadErrors() {
   errorStatus.value = ''
   try {
     const params = new URLSearchParams({
-      limit: '300',
+      limit: String(errorFilters.limit),
+      offset: String(errorOffset.value),
     })
-    const response = await apiFetch<ErrorEvent[]>(`/api/devices/${deviceId.value}/errors?${params.toString()}`)
-    errorEvents.value = response
+    if (errorFilters.from) {
+      params.set('from', new Date(errorFilters.from).toISOString())
+    }
+    if (errorFilters.to) {
+      params.set('to', new Date(errorFilters.to).toISOString())
+    }
+    if (errorFilters.status && errorFilters.status !== 'all') {
+      params.set('status', errorFilters.status)
+    }
+    if (errorFilters.name.trim()) {
+      params.set('name', errorFilters.name.trim())
+    }
+    const response = await apiFetch<ErrorEventsResponse>(`/api/devices/${deviceId.value}/errors?${params.toString()}`)
+    errorEvents.value = response.items
+    errorTotal.value = response.total
+    const maxPage = Math.max(1, Math.ceil(response.total / errorFilters.limit))
+    if (errorFilters.page > maxPage) {
+      errorFilters.page = maxPage
+    }
   } catch (e: any) {
     errorStatus.value = e?.message || 'Не удалось загрузить ошибки'
   } finally {
     errorLoading.value = false
   }
+}
+
+const resetErrorFilters = () => {
+  errorFilters.from = ''
+  errorFilters.to = ''
+  errorFilters.status = 'all'
+  errorFilters.name = ''
+  errorFilters.limit = 200
+  errorFilters.page = 1
+  loadErrors()
+}
+
+const goToErrorPage = (nextPage: number) => {
+  const page = Math.min(Math.max(nextPage, 1), errorPageCount.value)
+  if (page === errorFilters.page) return
+  errorFilters.page = page
+  loadErrors()
 }
 
 function toggleHistoryTemp(idx: number) {
