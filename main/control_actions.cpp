@@ -45,6 +45,11 @@ std::string BuildStateJsonInternal() {
   cJSON_AddStringToObject(root, "wifiIp", snapshot.wifi_ip.c_str());
   cJSON_AddStringToObject(root, "wifiStaIp", snapshot.wifi_ip_sta.c_str());
   cJSON_AddStringToObject(root, "wifiApIp", snapshot.wifi_ip_ap.c_str());
+  cJSON_AddNumberToObject(root, "sdTotalBytes", static_cast<double>(snapshot.sd_total_bytes));
+  cJSON_AddNumberToObject(root, "sdUsedBytes", static_cast<double>(snapshot.sd_used_bytes));
+  cJSON_AddNumberToObject(root, "sdRootDataFiles", snapshot.sd_data_root_files);
+  cJSON_AddNumberToObject(root, "sdToUploadFiles", snapshot.sd_to_upload_files);
+  cJSON_AddNumberToObject(root, "sdUploadedFiles", snapshot.sd_uploaded_files);
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
   cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());

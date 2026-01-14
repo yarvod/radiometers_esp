@@ -181,6 +181,70 @@ bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::strin
   return true;
 }
 
+static bool IsDataLogFilename(const char* name) {
+  if (!name) return false;
+  return std::strncmp(name, "data_", 5) == 0;
+}
+
+static int CountDataFilesInDir(const char* dir_path) {
+  if (!dir_path) return 0;
+  DIR* dir = opendir(dir_path);
+  if (!dir) return 0;
+  int count = 0;
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr) {
+    if (ent->d_name[0] == '.') continue;
+    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+    if (!IsDataLogFilename(ent->d_name)) continue;
+    count++;
+  }
+  closedir(dir);
+  return count;
+}
+
+static int MoveRootDataFilesToUploadLocked(const std::string& active_path) {
+  if (!EnsureUploadDirs()) return 0;
+  DIR* dir = opendir(CONFIG_MOUNT_POINT);
+  if (!dir) return 0;
+  const std::string active_name = Basename(active_path);
+  int moved = 0;
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr) {
+    if (ent->d_name[0] == '.') continue;
+    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+    if (!IsDataLogFilename(ent->d_name)) continue;
+    if (!active_name.empty() && active_name == ent->d_name) continue;
+    const std::string src = std::string(CONFIG_MOUNT_POINT) + "/" + ent->d_name;
+    if (MoveFileToDir(src, TO_UPLOAD_DIR, nullptr)) {
+      moved++;
+    }
+  }
+  closedir(dir);
+  return moved;
+}
+
+static void UpdateSdStatsLocked() {
+  uint64_t total = 0;
+  uint64_t used = 0;
+  FsOps ops = DefaultFsOps();
+  struct statvfs stats {};
+  if (ops.statvfs_fn(CONFIG_MOUNT_POINT, &stats) == 0 && stats.f_blocks > 0) {
+    total = static_cast<uint64_t>(stats.f_blocks) * stats.f_frsize;
+    const uint64_t avail = static_cast<uint64_t>(stats.f_bavail) * stats.f_frsize;
+    used = total > avail ? (total - avail) : 0;
+  }
+  const int root_files = CountDataFilesInDir(CONFIG_MOUNT_POINT);
+  const int to_upload_files = CountDataFilesInDir(TO_UPLOAD_DIR);
+  const int uploaded_files = CountDataFilesInDir(UPLOADED_DIR);
+  UpdateState([&](SharedState& s) {
+    s.sd_total_bytes = total;
+    s.sd_used_bytes = used;
+    s.sd_data_root_files = root_files;
+    s.sd_to_upload_files = to_upload_files;
+    s.sd_uploaded_files = uploaded_files;
+  });
+}
+
 bool QueueCurrentLogForUpload() {
   SdLockGuard guard;
   if (!guard.locked()) {
@@ -203,6 +267,8 @@ bool QueueCurrentLogForUpload() {
     return false;
   }
   current_log_path.clear();
+  (void)MoveRootDataFilesToUploadLocked("");
+  UpdateSdStatsLocked();
   ESP_LOGI(TAG, "Queued log for upload: %s", new_path.c_str());
   return true;
 }
@@ -552,6 +618,7 @@ static bool UploadPendingOnce() {
     if (!EnsureUploadDirs()) {
       return false;
     }
+    (void)MoveRootDataFilesToUploadLocked(current_log_path);
     DIR* dir = opendir(TO_UPLOAD_DIR);
     if (!dir) {
       ESP_LOGI(TAG, "No upload dir, nothing to sync");
@@ -584,6 +651,12 @@ static bool UploadPendingOnce() {
     ESP_LOGI(TAG, "Uploaded %d file(s) to MinIO", uploaded);
   }
   CleanupUploadedDirIfNeeded(kMaxSdUsagePercent);
+  {
+    SdLockGuard guard(pdMS_TO_TICKS(50));
+    if (guard.locked() && MountLogSd()) {
+      UpdateSdStatsLocked();
+    }
+  }
   if (uploaded > 0) {
     return true;
   }
@@ -602,6 +675,47 @@ static void CleanupUploadedDirIfNeeded(int max_percent) {
   int deleted = PurgeUploadedFiles(CONFIG_MOUNT_POINT, UPLOADED_DIR, max_percent);
   if (deleted > 0) {
     ESP_LOGI(TAG, "Deleted %d uploaded file(s) to free space", deleted);
+  }
+}
+
+static void UpdateSdStats() {
+  if (usb_mode == UsbMode::kMsc) {
+    UpdateState([](SharedState& s) {
+      s.sd_total_bytes = 0;
+      s.sd_used_bytes = 0;
+      s.sd_data_root_files = 0;
+      s.sd_to_upload_files = 0;
+      s.sd_uploaded_files = 0;
+    });
+    return;
+  }
+  SdLockGuard guard(pdMS_TO_TICKS(200));
+  if (!guard.locked()) {
+    return;
+  }
+  const bool already_mounted = log_sd_mounted;
+  if (!already_mounted && !MountLogSd()) {
+    UpdateState([](SharedState& s) {
+      s.sd_total_bytes = 0;
+      s.sd_used_bytes = 0;
+      s.sd_data_root_files = 0;
+      s.sd_to_upload_files = 0;
+      s.sd_uploaded_files = 0;
+    });
+    return;
+  }
+  (void)MoveRootDataFilesToUploadLocked(current_log_path);
+  UpdateSdStatsLocked();
+  if (!already_mounted && !log_file) {
+    UnmountLogSd();
+  }
+}
+
+static void SdStatsTask(void*) {
+  const TickType_t interval = pdMS_TO_TICKS(10000);
+  while (true) {
+    UpdateSdStats();
+    vTaskDelay(interval);
   }
 }
 
@@ -671,6 +785,8 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
     s.log_filename = filename;
   });
   current_log_path = full_path;
+  (void)MoveRootDataFilesToUploadLocked(current_log_path);
+  UpdateSdStatsLocked();
   return true;
 }
 
@@ -1993,6 +2109,7 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
   }
   xTaskCreatePinnedToCore(&WifiMonitorTask, "wifi_mon", 2048, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(&SdStatsTask, "sd_stats", 3072, nullptr, 1, nullptr, 0);
 
   init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
   ESP_LOGI(TAG, "System ready");

@@ -111,6 +111,11 @@ struct SharedState {
   std::string wifi_ip;
   std::string wifi_ip_sta;
   std::string wifi_ip_ap;
+  uint64_t sd_total_bytes;
+  uint64_t sd_used_bytes;
+  int sd_data_root_files;
+  int sd_to_upload_files;
+  int sd_uploaded_files;
 };
 
 enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };

@@ -122,6 +122,11 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "wifiIp", snapshot.wifi_ip.c_str());
   cJSON_AddStringToObject(root, "wifiStaIp", snapshot.wifi_ip_sta.c_str());
   cJSON_AddStringToObject(root, "wifiApIp", snapshot.wifi_ip_ap.c_str());
+  cJSON_AddNumberToObject(root, "sdTotalBytes", static_cast<double>(snapshot.sd_total_bytes));
+  cJSON_AddNumberToObject(root, "sdUsedBytes", static_cast<double>(snapshot.sd_used_bytes));
+  cJSON_AddNumberToObject(root, "sdRootDataFiles", snapshot.sd_data_root_files);
+  cJSON_AddNumberToObject(root, "sdToUploadFiles", snapshot.sd_to_upload_files);
+  cJSON_AddNumberToObject(root, "sdUploadedFiles", snapshot.sd_uploaded_files);
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
