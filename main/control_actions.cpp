@@ -48,15 +48,13 @@ std::string BuildStateJsonInternal() {
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
   cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-    std::string label = snapshot.temp_labels[i];
-    if (label.empty()) {
-      label = "t" + std::to_string(i + 1);
-    }
+    const std::string key = "t" + std::to_string(i + 1);
     const std::string& addr = snapshot.temp_addresses[i];
     cJSON* entry = cJSON_CreateObject();
     cJSON_AddNumberToObject(entry, "value", snapshot.temps_c[i]);
     cJSON_AddStringToObject(entry, "address", addr.c_str());
-    cJSON_AddItemToObject(temp_obj, label.c_str(), entry);
+    cJSON_AddStringToObject(entry, "label", key.c_str());
+    cJSON_AddItemToObject(temp_obj, key.c_str(), entry);
   }
   cJSON_AddItemToObject(root, "tempSensors", temp_obj);
   const std::string iso = IsoUtcNow();
