@@ -291,6 +291,7 @@
         </label>
       </div>
       <p class="muted" v-if="historyDateError">{{ historyDateError }}</p>
+      <p class="muted" v-if="browserTzLabel">Таймзона браузера: {{ browserTzLabel }}</p>
       <div class="inline fields">
         <label class="compact">Усреднение
           <select v-model="historyFilters.bucketMode">
@@ -673,6 +674,7 @@ const errorFilters = reactive({
   limit: 200,
   page: 1,
 })
+const browserTzLabel = ref('')
 const errorPageCount = computed(() => Math.max(1, Math.ceil(errorTotal.value / errorFilters.limit)))
 const errorOffset = computed(() => Math.max(0, (errorFilters.page - 1) * errorFilters.limit))
 const errorRangeLabel = computed(() => {
@@ -1534,6 +1536,15 @@ onMounted(() => {
   refreshState()
   loadDeviceConfig()
   loadLatestWindow().then(loadHistory)
+  if (process.client) {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local'
+    const offsetMin = new Date().getTimezoneOffset()
+    const sign = offsetMin <= 0 ? '+' : '-'
+    const abs = Math.abs(offsetMin)
+    const hh = String(Math.floor(abs / 60)).padStart(2, '0')
+    const mm = String(abs % 60).padStart(2, '0')
+    browserTzLabel.value = `${tz} (UTC${sign}${hh}:${mm})`
+  }
   if (!ChartCtor) {
     import('chart.js/auto').then((mod: any) => {
       ChartCtor = mod?.Chart || mod?.default || mod

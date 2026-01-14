@@ -1536,6 +1536,10 @@ esp_err_t InitIna219() {
 }
 
 esp_err_t ReadIna219() {
+  if (!ina219_dev) {
+    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning, "INA219 not initialized");
+    return ESP_ERR_INVALID_STATE;
+  }
   auto read_reg = [](uint8_t reg, uint16_t* value) -> esp_err_t {
     if (!value) {
       return ESP_ERR_INVALID_ARG;
@@ -1554,9 +1558,24 @@ esp_err_t ReadIna219() {
   uint16_t current_raw = 0;
   uint16_t power_raw = 0;
 
-  ESP_RETURN_ON_ERROR(read_reg(0x02, &bus_raw), TAG, "INA219 read bus failed");
-  ESP_RETURN_ON_ERROR(read_reg(0x04, &current_raw), TAG, "INA219 read current failed");
-  ESP_RETURN_ON_ERROR(read_reg(0x03, &power_raw), TAG, "INA219 read power failed");
+  esp_err_t err = read_reg(0x02, &bus_raw);
+  if (err != ESP_OK) {
+    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
+                    std::string("INA219 read bus failed: ") + esp_err_to_name(err));
+    return err;
+  }
+  err = read_reg(0x04, &current_raw);
+  if (err != ESP_OK) {
+    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
+                    std::string("INA219 read current failed: ") + esp_err_to_name(err));
+    return err;
+  }
+  err = read_reg(0x03, &power_raw);
+  if (err != ESP_OK) {
+    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
+                    std::string("INA219 read power failed: ") + esp_err_to_name(err));
+    return err;
+  }
 
   // Bus voltage: bits 3..15, LSB = 4 mV
   const float bus_v = static_cast<float>((bus_raw >> 3) & 0x1FFF) * INA219_BUS_LSB;
@@ -1568,6 +1587,7 @@ esp_err_t ReadIna219() {
     s.ina_current = current_a;
     s.ina_power = power_w;
   });
+  ErrorManagerClear(ErrorCode::kInaRead);
   return ESP_OK;
 }
 
