@@ -7,11 +7,22 @@ export const useApi = () => {
     if (token.value) {
       headers.Authorization = `Bearer ${token.value}`
     }
-    return await $fetch<T>(`${config.public.apiBase}${path}`, {
-      ...options,
-      headers,
-      credentials: 'include',
-    })
+    try {
+      return await $fetch<T>(`${config.public.apiBase}${path}`, {
+        ...options,
+        headers,
+        credentials: 'include',
+      })
+    } catch (err: any) {
+      const status = err?.response?.status
+      if (status === 401) {
+        token.value = null
+        if (process.client) {
+          await navigateTo('/login')
+        }
+      }
+      throw err
+    }
   }
 
   return { apiFetch, token }
