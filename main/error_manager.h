@@ -13,6 +13,7 @@ enum class ErrorCode : uint8_t {
   kMqttDisconnected = 6,
   kTimeSync = 7,
   kSdMount = 8,
+  kLogTaskStack = 9,
   kMax
 };
 

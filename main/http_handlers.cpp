@@ -508,6 +508,7 @@ void StopLogging() {
   log_config.homed_once = false;
   log_config.postfix.clear();
   log_config.file_start_us = 0;
+  ErrorManagerClear(ErrorCode::kLogTaskStack);
   if (log_task) {
     vTaskDelete(log_task);
     log_task = nullptr;
@@ -518,6 +519,7 @@ void StopLogging() {
 void LoggingTask(void*) {
   const int steps_180 = 200;  // adjust to your mechanics (microsteps for 180 degrees)
   const TickType_t settle_delay = pdMS_TO_TICKS(1000);  // pause after motor moves
+  constexpr UBaseType_t kLogStackLowWords = 512;
 
   auto home_blocking = [&]() {
     UpdateState([](SharedState& s) { s.stepper_abort = false; });
@@ -624,6 +626,14 @@ void LoggingTask(void*) {
   }
 
   while (true) {
+    const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(nullptr);
+    if (watermark_words > 0 && watermark_words < kLogStackLowWords) {
+      ErrorManagerSet(ErrorCode::kLogTaskStack, ErrorSeverity::kWarning, "log_task stack low");
+      ESP_LOGW(TAG, "log_task stack low: %u words", static_cast<unsigned>(watermark_words));
+    } else {
+      ErrorManagerClear(ErrorCode::kLogTaskStack);
+    }
+
     SharedState current = CopyState();
     if (!current.logging || !log_file) {
       StopLogging();
@@ -768,7 +778,7 @@ bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode
   }
 
   if (log_task == nullptr) {
-    xTaskCreatePinnedToCore(&LoggingTask, "log_task", 6144, nullptr, 2, &log_task, 0);
+    xTaskCreatePinnedToCore(&LoggingTask, "log_task", 12288, nullptr, 2, &log_task, 0);
   }
   ESP_LOGI(TAG, "Logging started");
   UpdateState([&](SharedState& s) {
