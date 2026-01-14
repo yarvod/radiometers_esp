@@ -10,6 +10,7 @@ idf_component_register(
         "mqtt_bridge.cpp"
         "error_manager.cpp"
         "app_utils.cpp"
+        "sd_maintenance.cpp"
        
     PRIV_REQUIRES
         esp_wifi
