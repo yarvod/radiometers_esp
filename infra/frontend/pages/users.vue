@@ -1,5 +1,5 @@
 <template>
-  <div class="page">
+  <div class="page users-page">
     <div class="header">
       <button class="btn ghost back" @click="navigateTo('/')">← Назад</button>
       <div>
@@ -191,29 +191,3 @@ async function confirmDelete() {
 
 onMounted(loadUsers)
 </script>
-
-<style scoped>
-.page { max-width: 1100px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
-.header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.back { align-self: flex-start; }
-.table-card { padding: 20px; }
-.table-wrap { overflow-x: auto; }
-.table { width: 100%; border-collapse: collapse; min-width: 520px; }
-.table th, .table td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
-.table th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
-.table-row { cursor: pointer; transition: background 0.15s ease; }
-.table-row:hover { background: rgba(52, 152, 219, 0.08); }
-.table-row:focus { outline: 2px solid rgba(52, 152, 219, 0.35); outline-offset: -2px; }
-.empty { padding: 16px 0; }
-.small { font-size: 12px; }
-.chip { padding: 4px 10px; border-radius: 999px; background: #f1f3f4; border: 1px solid var(--border); color: var(--muted); font-weight: 600; font-size: 12px; }
-.chip.subtle { background: #fafafa; }
-.modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.35); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 30; }
-.modal { width: min(420px, 100%); display: flex; flex-direction: column; gap: 12px; }
-.form-group { display: flex; flex-direction: column; gap: 6px; }
-.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
-.muted { color: var(--muted); font-size: 13px; }
-.badge { padding: 4px 10px; border-radius: 999px; background: #ecf0f1; font-weight: 700; font-size: 12px; color: #4a5568; }
-.badge.success { background: #e6f8ed; color: #2e8b57; }
-.badge.accent { background: #e8f4fd; color: #1f2d3d; }
-</style>

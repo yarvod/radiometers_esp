@@ -1,5 +1,5 @@
 <template>
-  <div class="page">
+  <div class="auth-page">
     <div class="card auth-card">
       <div class="card-head">
         <h2>{{ heading }}</h2>
@@ -78,15 +78,3 @@ async function submit() {
 
 onMounted(loadStatus)
 </script>
-
-<style scoped>
-.page { min-height: 70vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
-.auth-card { width: min(420px, 100%); gap: 12px; }
-.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.badge { padding: 4px 10px; border-radius: 999px; background: #ecf0f1; font-weight: 700; font-size: 12px; color: #4a5568; }
-.badge.success { background: #e6f8ed; color: #2e8b57; }
-.badge.accent { background: #e8f4fd; color: #1f2d3d; }
-.form-group { display: flex; flex-direction: column; gap: 6px; }
-.actions { display: flex; gap: 10px; }
-.muted { color: var(--muted); font-size: 13px; }
-</style>

@@ -1,5 +1,5 @@
 <template>
-  <div class="page">
+  <div class="page devices-page">
     <div class="header">
       <div>
         <h1>Устройства</h1>
@@ -72,17 +72,3 @@ function go(id: string) {
 
 onMounted(loadDevices)
 </script>
-
-<style scoped>
-.page { max-width: 1100px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
-.header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.muted { color: var(--muted); }
-.device-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
-.device-card { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; border-radius: 14px; }
-.device-card:hover { transform: translateY(-3px); box-shadow: 0 10px 22px rgba(0,0,0,0.08); }
-.device-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.title { font-weight: 700; font-size: 18px; color: #1f2933; }
-.meta { font-size: 13px; color: var(--muted); margin-top: 8px; }
-.chip { padding: 6px 10px; border-radius: 999px; background: #f1f3f4; border: 1px solid var(--border); color: var(--muted); font-weight: 600; }
-.chip.online { background: #e6f8ed; color: #2e8b57; border-color: rgba(46, 139, 87, 0.35); }
-</style>
