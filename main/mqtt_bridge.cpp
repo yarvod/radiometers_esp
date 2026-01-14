@@ -8,6 +8,7 @@
 #include "app_services.h"
 #include "app_state.h"
 #include "cJSON.h"
+#include "error_manager.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
 
@@ -30,6 +31,13 @@ void PublishMeasurementPayloadInternal(const std::string& payload) {
   if (!mqtt_connected || !mqtt_client) return;
   const std::string device = SanitizeId(app_config.device_id);
   const std::string topic = device + "/measure";
+  MqttPublish(topic, payload);
+}
+
+void PublishErrorPayloadInternal(const std::string& payload) {
+  if (!mqtt_connected || !mqtt_client) return;
+  const std::string device = SanitizeId(app_config.device_id);
+  const std::string topic = device + "/error";
   MqttPublish(topic, payload);
 }
 
@@ -223,6 +231,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED: {
       mqtt_connected = true;
+      ErrorManagerClear(ErrorCode::kMqttDisconnected);
       const std::string device = SanitizeId(app_config.device_id);
       std::string topic = device + "/cmd";
       esp_mqtt_client_subscribe(event->client, topic.c_str(), 0);
@@ -236,6 +245,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
     }
     case MQTT_EVENT_DISCONNECTED: {
       mqtt_connected = false;
+      ErrorManagerSet(ErrorCode::kMqttDisconnected, ErrorSeverity::kWarning, "MQTT disconnected");
       ESP_LOGW(TAG_MQTT, "MQTT disconnected");
       break;
     }
@@ -295,12 +305,14 @@ void StartMqttBridge() {
   mqtt_client = esp_mqtt_client_init(&cfg);
   if (!mqtt_client) {
     ESP_LOGE(TAG_MQTT, "MQTT init failed");
+    ErrorManagerSet(ErrorCode::kMqttDisconnected, ErrorSeverity::kError, "MQTT init failed");
     return;
   }
   esp_mqtt_client_register_event(mqtt_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID), mqtt_event_dispatch, nullptr);
   esp_err_t start_err = esp_mqtt_client_start(mqtt_client);
   if (start_err != ESP_OK) {
     ESP_LOGE(TAG_MQTT, "MQTT start failed: %s", esp_err_to_name(start_err));
+    ErrorManagerSet(ErrorCode::kMqttDisconnected, ErrorSeverity::kError, "MQTT start failed");
     esp_mqtt_client_destroy(mqtt_client);
     mqtt_client = nullptr;
     mqtt_connected = false;
@@ -313,4 +325,8 @@ void StartMqttBridge() {
 
 void PublishMeasurementPayload(const std::string& payload) {
   PublishMeasurementPayloadInternal(payload);
+}
+
+void PublishErrorPayload(const std::string& payload) {
+  PublishErrorPayloadInternal(payload);
 }

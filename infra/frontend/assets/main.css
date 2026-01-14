@@ -366,6 +366,7 @@ input { width: 100%; box-sizing: border-box; }
 .device-page .chip.cool { background: #e7f5ff; color: #22649e; border-color: rgba(52, 152, 219, 0.35); }
 .device-page .chip.online { background: #e6f8ed; color: #2e8b57; border-color: rgba(46, 139, 87, 0.35); }
 .device-page .chip.warn { background: #fff4e5; color: #a55a00; border-color: rgba(247, 178, 56, 0.35); }
+.device-page .chip.danger { background: #ffe8e6; color: #b42318; border-color: rgba(180, 35, 24, 0.35); }
 .device-page .grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 16px; }
 @media (max-width: 900px) {
   .device-page .grid { grid-template-columns: 1fr; }
@@ -392,6 +393,12 @@ input { width: 100%; box-sizing: border-box; }
 @media (max-width: 640px) {
   .device-page .chart-box { height: 260px; }
 }
+.device-page .error-list { display: flex; flex-direction: column; gap: 12px; }
+.device-page .error-item { background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+.device-page .error-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.device-page .error-title { font-size: 16px; font-weight: 700; color: #1f2d3d; }
+.device-page .error-tags { display: flex; gap: 8px; flex-wrap: wrap; }
+.device-page .error-message { font-size: 14px; color: #1f2933; }
 .device-page .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .device-page .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
 .device-page .temp-card.subtle { background: #f7f7f7; box-shadow: none; }

@@ -67,3 +67,16 @@ class AccessToken:
     user_id: str
     created_at: datetime
     expires_at: datetime
+
+
+@dataclass
+class ErrorEvent:
+    id: str
+    device_id: str
+    timestamp: datetime
+    timestamp_ms: Optional[int]
+    code: str
+    severity: str
+    message: str
+    active: bool
+    created_at: datetime

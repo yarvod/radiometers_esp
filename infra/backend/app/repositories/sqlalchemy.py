@@ -6,9 +6,9 @@ from typing import Sequence
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities import AccessToken, Device, Measurement, MeasurementPoint, User
-from app.db.models import AccessTokenModel, DeviceModel, MeasurementModel, UserModel
-from app.repositories.interfaces import DeviceRepository, MeasurementRepository, TokenRepository, UserRepository
+from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, User
+from app.db.models import AccessTokenModel, DeviceModel, ErrorEventModel, MeasurementModel, UserModel
+from app.repositories.interfaces import DeviceRepository, ErrorRepository, MeasurementRepository, TokenRepository, UserRepository
 
 
 def to_device(model: DeviceModel) -> Device:
@@ -77,6 +77,20 @@ def to_token(model: AccessTokenModel) -> AccessToken:
         user_id=model.user_id,
         created_at=model.created_at,
         expires_at=model.expires_at,
+    )
+
+
+def to_error_event(model: ErrorEventModel) -> ErrorEvent:
+    return ErrorEvent(
+        id=model.id,
+        device_id=model.device_id,
+        timestamp=model.timestamp,
+        timestamp_ms=model.timestamp_ms,
+        code=model.code,
+        severity=model.severity,
+        message=model.message,
+        active=model.active,
+        created_at=model.created_at,
     )
 
 
@@ -257,6 +271,41 @@ class SqlMeasurementRepository(MeasurementRepository):
                 )
             )
         return points
+
+
+class SqlErrorRepository(ErrorRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, event: ErrorEvent) -> None:
+        model = ErrorEventModel(
+            id=event.id,
+            device_id=event.device_id,
+            timestamp=event.timestamp,
+            timestamp_ms=event.timestamp_ms,
+            code=event.code,
+            severity=event.severity,
+            message=event.message,
+            active=event.active,
+        )
+        self._session.add(model)
+        await self._session.flush()
+
+    async def list(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        limit: int,
+    ) -> Sequence[ErrorEvent]:
+        query = select(ErrorEventModel).where(ErrorEventModel.device_id == device_id)
+        if start:
+            query = query.where(ErrorEventModel.timestamp >= start)
+        if end:
+            query = query.where(ErrorEventModel.timestamp <= end)
+        query = query.order_by(ErrorEventModel.timestamp.desc()).limit(limit)
+        result = await self._session.execute(query)
+        return [to_error_event(row) for row in result.scalars().all()]
 
 
 class SqlUserRepository(UserRepository):

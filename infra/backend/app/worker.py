@@ -11,8 +11,9 @@ from dishka import make_async_container
 
 from app.container import AppProvider
 from app.core.config import Settings
-from app.domain.entities import Measurement
+from app.domain.entities import ErrorEvent, Measurement
 from app.services.devices import DeviceService
+from app.services.errors import ErrorService
 from app.services.measurements import MeasurementService
 
 
@@ -150,6 +151,41 @@ async def handle_state(topic: str, payload: bytes, container) -> None:
         await devices.touch_device(device_id, datetime.now(timezone.utc))
 
 
+async def handle_error(topic: str, payload: bytes, container) -> None:
+    device_id = device_from_topic(topic)
+    if not device_id:
+        return
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError:
+        return
+
+    timestamp = parse_iso(data.get("timestampIso"))
+    timestamp_ms = data.get("timestampMs")
+    code = str(data.get("code") or "unknown")
+    severity = str(data.get("severity") or "error")
+    message = str(data.get("message") or "")
+    active = bool(data.get("active", True))
+
+    event = ErrorEvent(
+        id=str(uuid.uuid4()),
+        device_id=device_id,
+        timestamp=timestamp,
+        timestamp_ms=int(timestamp_ms) if isinstance(timestamp_ms, (int, float)) else None,
+        code=code,
+        severity=severity,
+        message=message,
+        active=active,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    async with container() as request_container:
+        devices = await request_container.get(DeviceService)
+        errors = await request_container.get(ErrorService)
+        await devices.touch_device(device_id, timestamp)
+        await errors.add(event)
+
+
 async def run_worker() -> None:
     settings = Settings()
     host, port = parse_mqtt(settings)
@@ -160,6 +196,7 @@ async def run_worker() -> None:
             async with Client(hostname=host, port=port, username=settings.mqtt_user, password=settings.mqtt_password) as client:
                 await client.subscribe(settings.mqtt_measure_topic)
                 await client.subscribe(settings.mqtt_state_topic)
+                await client.subscribe(settings.mqtt_error_topic)
                 messages = client.messages
                 async for message in messages:
                     topic = str(message.topic)
@@ -167,6 +204,8 @@ async def run_worker() -> None:
                         await handle_measurement(topic, message.payload, container)
                     elif topic.endswith("/state"):
                         await handle_state(topic, message.payload, container)
+                    elif topic.endswith("/error"):
+                        await handle_error(topic, message.payload, container)
         except MqttError:
             await asyncio.sleep(2)
 

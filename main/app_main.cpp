@@ -47,6 +47,7 @@
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "mqtt_bridge.h"
+#include "error_manager.h"
 #include "nvs.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
@@ -97,36 +98,6 @@ volatile uint32_t fan2_pulse_count = 0;
 
 i2c_master_bus_handle_t i2c_bus = nullptr;
 i2c_master_dev_handle_t ina219_dev = nullptr;
-TimerHandle_t error_blink_timer = nullptr;
-
-void ErrorBlinkTimerCb(TimerHandle_t) {
-  static bool on = false;
-  on = !on;
-  gpio_set_level(STATUS_LED_RED, on ? 1 : 0);
-}
-
-void StartErrorBlink() {
-  gpio_set_level(STATUS_LED_GREEN, 0);
-  if (!error_blink_timer) {
-    error_blink_timer =
-        xTimerCreate("err_led", pdMS_TO_TICKS(250), pdTRUE, nullptr, reinterpret_cast<TimerCallbackFunction_t>(ErrorBlinkTimerCb));
-  }
-  if (error_blink_timer) {
-    xTimerStart(error_blink_timer, 0);
-  }
-}
-
-void SetStatusLeds(bool ok) {
-  if (ok) {
-    if (error_blink_timer) {
-      xTimerStop(error_blink_timer, 0);
-    }
-    gpio_set_level(STATUS_LED_RED, 0);
-    gpio_set_level(STATUS_LED_GREEN, 1);
-  } else {
-    StartErrorBlink();
-  }
-}
 
 static void IRAM_ATTR FanTachIsr(void* arg) {
   uint32_t gpio = (uint32_t)arg;
@@ -1169,6 +1140,12 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    std::string reason_msg = "Wi-Fi disconnected";
+    if (event_data) {
+      auto* info = static_cast<wifi_event_sta_disconnected_t*>(event_data);
+      reason_msg += " reason=" + std::to_string(info->reason);
+    }
+    ErrorManagerSet(ErrorCode::kWifiDisconnected, ErrorSeverity::kWarning, reason_msg);
     if (retry_count < 5) {
       esp_wifi_connect();
       retry_count++;
@@ -1178,6 +1155,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       if (!fallback_ap_active) {
         ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
         fallback_ap_active = true;
+        ErrorManagerSet(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
         wifi_config_t ap_config = {};
         const char* ap_ssid = "esp";
         const char* ap_pass = "12345678";
@@ -1205,12 +1183,14 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     retry_count = 0;
+    ErrorManagerClear(ErrorCode::kWifiDisconnected);
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     if (fallback_ap_active && !app_config.wifi_ap_mode) {
       ESP_LOGI(TAG, "Disabling fallback AP after reconnect");
       fallback_ap_active = false;
+      ErrorManagerClear(ErrorCode::kWifiFallback);
       if (wifi_recover_task) {
         TaskHandle_t t = wifi_recover_task;
         wifi_recover_task = nullptr;
@@ -1735,25 +1715,26 @@ esp_err_t ReadAllAdc(float* v1, float* v2, float* v3) {
   esp_err_t err = adc1.Read(&raw1);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "ADC1 read failed");
-    StartErrorBlink();
+    ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC1 read failed");
     return err;
   }
   err = adc2.Read(&raw2);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "ADC2 read failed");
-    StartErrorBlink();
+    ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC2 read failed");
     return err;
   }
   err = adc3.Read(&raw3);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "ADC3 read failed");
-    StartErrorBlink();
+    ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC3 read failed");
     return err;
   }
 
   *v1 = static_cast<float>(raw1) * ADC_SCALE;
   *v2 = static_cast<float>(raw2) * ADC_SCALE;
   *v3 = static_cast<float>(raw3) * ADC_SCALE;
+  ErrorManagerClear(ErrorCode::kAdcRead);
   return ESP_OK;
 }
 
@@ -1814,6 +1795,7 @@ void TempTask(void*) {
   while (true) {
     int count = 0;
     if (M1820ReadTemperatures(temps.data(), MAX_TEMP_SENSORS, &count)) {
+      ErrorManagerClear(ErrorCode::kTempSensor);
       const auto meta = BuildTempMeta(count);
       UpdateState([&](SharedState& s) {
         s.temp_sensor_count = count;
@@ -1842,7 +1824,7 @@ void TempTask(void*) {
       }
     } else {
       ESP_LOGW(TAG, "M1820ReadTemperatures failed");
-      StartErrorBlink();
+      ErrorManagerSet(ErrorCode::kTempSensor, ErrorSeverity::kWarning, "M1820 read failed");
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
   }
@@ -1990,33 +1972,41 @@ extern "C" void app_main(void) {
   }
   UpdateState([&](SharedState& s) { s.usb_msc_mode = (usb_mode == UsbMode::kMsc); });
 
+  InitGpios();
+  ErrorManagerInit();
+  ErrorManagerSetPublisher(&PublishErrorPayload);
+
   if (usb_mode == UsbMode::kMsc) {
     esp_err_t msc_err = InitSdCardForMsc(&sd_card);
     if (msc_err == ESP_OK) {
       msc_err = StartUsbMsc(sd_card);
-  }
-  if (msc_err != ESP_OK) {
-    StartErrorBlink();
-    msc_ok = false;
-    ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
-    usb_mode = UsbMode::kCdc;
-    UpdateState([&](SharedState& s) {
-      s.usb_msc_mode = false;
+    }
+    if (msc_err != ESP_OK) {
+      msc_ok = false;
+      ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
+      usb_mode = UsbMode::kCdc;
+      ErrorManagerSet(ErrorCode::kUsbMscInit, ErrorSeverity::kError,
+                      std::string("MSC init failed: ") + esp_err_to_name(msc_err));
+      UpdateState([&](SharedState& s) {
+        s.usb_msc_mode = false;
         s.usb_error = "MSC init failed: " + std::string(esp_err_to_name(msc_err));
       });
       SaveUsbModeToNvs(usb_mode);
+    } else {
+      UpdateState([](SharedState& s) { s.usb_error.clear(); });
+      ErrorManagerClear(ErrorCode::kUsbMscInit);
     }
   } else {
     UpdateState([](SharedState& s) { s.usb_error.clear(); });
+    ErrorManagerClear(ErrorCode::kUsbMscInit);
   }
 
-  InitGpios();
   InitHeaterPwm();
   InitFanPwm();
   bool temp_ok = M1820Init(TEMP_1WIRE);
   if (!temp_ok) {
     ESP_LOGW(TAG, "M1820 init failed or no sensors found");
-    StartErrorBlink();
+    ErrorManagerSet(ErrorCode::kTempSensor, ErrorSeverity::kError, "M1820 init failed");
     init_ok = false;
   }
   ESP_ERROR_CHECK(InitSpiBus());
@@ -2026,8 +2016,10 @@ extern "C" void app_main(void) {
   esp_err_t ina_err = InitIna219();
   if (ina_err != ESP_OK) {
     ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));
-    StartErrorBlink();
+    ErrorManagerSet(ErrorCode::kInaInit, ErrorSeverity::kError, "INA219 init failed");
     init_ok = false;
+  } else {
+    ErrorManagerClear(ErrorCode::kInaInit);
   }
 
   if (!app_config.wifi_from_file) {
@@ -2046,8 +2038,10 @@ extern "C" void app_main(void) {
   StartSntp();
   if (WaitForTimeSyncMs(8000)) {
     ESP_LOGI(TAG, "Time synced via NTP");
+    ErrorManagerClear(ErrorCode::kTimeSync);
   } else {
     ESP_LOGW(TAG, "NTP sync timed out, using monotonic timestamp fallback");
+    ErrorManagerSet(ErrorCode::kTimeSync, ErrorSeverity::kWarning, "NTP sync timed out");
   }
   StartHttpServer();
 
@@ -2091,7 +2085,6 @@ extern "C" void app_main(void) {
   xTaskCreatePinnedToCore(&WifiMonitorTask, "wifi_mon", 2048, nullptr, 1, nullptr, 0);
 
   init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
-  SetStatusLeds(init_ok);
   ESP_LOGI(TAG, "System ready");
 
   // Start MQTT after init (non-blocking)

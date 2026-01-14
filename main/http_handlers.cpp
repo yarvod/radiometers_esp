@@ -15,6 +15,7 @@
 #include "control_actions.h"
 #include "web_ui.h"
 #include "mqtt_bridge.h"
+#include "error_manager.h"
 #include "hw_pins.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
@@ -350,9 +351,12 @@ bool MountLogSd() {
   esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &log_sd_card);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "SD mount for logging failed: %s", esp_err_to_name(ret));
+    ErrorManagerSet(ErrorCode::kSdMount, ErrorSeverity::kError,
+                    std::string("SD mount failed: ") + esp_err_to_name(ret));
     return false;
   }
   log_sd_mounted = true;
+  ErrorManagerClear(ErrorCode::kSdMount);
   return true;
 }
 

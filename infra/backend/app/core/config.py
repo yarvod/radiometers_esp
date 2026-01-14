@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     mqtt_password: str | None = None
     mqtt_measure_topic: str = "+/measure"
     mqtt_state_topic: str = "+/state"
+    mqtt_error_topic: str = "+/error"
     access_token_cookie: str = "access_token"
     access_token_header: str = "Authorization"
     access_token_ttl_minutes: int = 720

@@ -8,6 +8,7 @@ idf_component_register(
         "onewire_m1820.cpp"
         "control_actions.cpp"
         "mqtt_bridge.cpp"
+        "error_manager.cpp"
        
     PRIV_REQUIRES
         esp_wifi

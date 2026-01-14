@@ -119,3 +119,15 @@ class MeasurementsResponse(BaseModel):
 class MeasurementLatestResponse(BaseModel):
     timestamp: Optional[datetime]
     timestamp_ms: Optional[int]
+
+
+class ErrorEventOut(BaseModel):
+    id: str
+    device_id: str
+    timestamp: datetime
+    timestamp_ms: Optional[int]
+    code: str
+    severity: str
+    message: str
+    active: bool
+    created_at: datetime

@@ -16,6 +16,7 @@
       <button class="tab-btn" :class="{ active: activeTab === 'data' }" @click="activeTab = 'data'">Данные</button>
       <button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="activeTab = 'control'">Мониторинг и управление</button>
       <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">Настройки</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'errors' }" @click="activeTab = 'errors'">Ошибки</button>
     </div>
 
     <div class="card metrics" v-show="activeTab === 'control'">
@@ -383,6 +384,34 @@
         <button class="btn ghost" @click="resetConfig" :disabled="configSaving">Сбросить</button>
       </div>
     </div>
+
+    <div class="card" v-show="activeTab === 'errors'">
+      <div class="card-head">
+        <h3>Ошибки устройства</h3>
+        <span class="badge">{{ errorEvents.length }}</span>
+      </div>
+      <div class="actions">
+        <button class="btn primary sm" @click="loadErrors" :disabled="errorLoading">Обновить</button>
+        <span class="muted" v-if="errorStatus">{{ errorStatus }}</span>
+      </div>
+      <p class="muted" v-if="errorLoading">Загрузка...</p>
+      <div v-else-if="errorEvents.length === 0" class="muted">Ошибок не найдено</div>
+      <div v-else class="error-list">
+        <div v-for="event in errorEvents" :key="event.id" class="error-item">
+          <div class="error-head">
+            <div class="error-title">{{ event.code }}</div>
+            <div class="error-tags">
+              <span class="chip" :class="severityClass(event.severity)">{{ event.severity }}</span>
+              <span class="chip" :class="{ online: event.active, subtle: !event.active }">
+                {{ event.active ? 'Active' : 'Cleared' }}
+              </span>
+            </div>
+          </div>
+          <div class="muted small">{{ formatErrorTime(event.timestamp, event.created_at) }}</div>
+          <div class="error-message">{{ event.message || '—' }}</div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -418,6 +447,18 @@ type MeasurementsResponse = {
   temp_addresses: string[]
 }
 
+type ErrorEvent = {
+  id: string
+  device_id: string
+  timestamp: string
+  timestamp_ms: number | null
+  code: string
+  severity: string
+  message: string
+  active: boolean
+  created_at: string
+}
+
 type DeviceConfig = {
   id: string
   display_name: string | null
@@ -443,7 +484,7 @@ store.init(nuxtApp.$mqtt)
 
 const device = computed(() => (deviceId.value ? store.devices.get(deviceId.value) : undefined))
 const deviceConfig = ref<DeviceConfig | null>(null)
-const activeTab = ref<'data' | 'control' | 'settings'>('control')
+const activeTab = ref<'data' | 'control' | 'settings' | 'errors'>('control')
 const configDirty = ref(false)
 const configStatus = ref('')
 const configSaving = ref(false)
@@ -546,6 +587,9 @@ const historyRawCount = ref(0)
 const historyAutoRefresh = ref(false)
 const historyRefreshSec = ref(15)
 let historyTimer: ReturnType<typeof setInterval> | null = null
+const errorEvents = ref<ErrorEvent[]>([])
+const errorLoading = ref(false)
+const errorStatus = ref('')
 const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
 let tempChart: any = null
@@ -1012,6 +1056,37 @@ async function applyWifi() {
   }
 }
 
+const severityClass = (severity: string) => {
+  const level = severity.toLowerCase()
+  if (level === 'critical' || level === 'error') return 'danger'
+  if (level === 'warning') return 'warn'
+  return 'cool'
+}
+
+const formatErrorTime = (timestamp: string, createdAt: string) => {
+  const raw = timestamp || createdAt
+  const parsed = new Date(raw)
+  if (Number.isNaN(parsed.getTime())) return raw
+  return parsed.toLocaleString('ru-RU')
+}
+
+async function loadErrors() {
+  if (!deviceId.value) return
+  errorLoading.value = true
+  errorStatus.value = ''
+  try {
+    const params = new URLSearchParams({
+      limit: '300',
+    })
+    const response = await apiFetch<ErrorEvent[]>(`/api/devices/${deviceId.value}/errors?${params.toString()}`)
+    errorEvents.value = response
+  } catch (e: any) {
+    errorStatus.value = e?.message || 'Не удалось загрузить ошибки'
+  } finally {
+    errorLoading.value = false
+  }
+}
+
 function toggleHistoryTemp(idx: number) {
   if (historySelection.tempIndices.includes(idx)) {
     if (historySelection.tempIndices.length <= 1) {
@@ -1235,6 +1310,26 @@ onBeforeUnmount(() => {
     adcChart = null
   }
 })
+
+watch(
+  () => activeTab.value,
+  (value) => {
+    if (value === 'errors') {
+      loadErrors()
+    }
+  }
+)
+
+watch(
+  () => deviceId.value,
+  () => {
+    errorEvents.value = []
+    errorStatus.value = ''
+    if (activeTab.value === 'errors') {
+      loadErrors()
+    }
+  }
+)
 
 watch(
   () => tempEntries.value.map((entry) => `${entry.address || ''}:${entry.label}`),

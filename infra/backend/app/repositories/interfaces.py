@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Iterable, Sequence
 
-from app.domain.entities import AccessToken, Device, Measurement, MeasurementPoint, User
+from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, User
 
 
 class DeviceRepository(ABC):
@@ -106,4 +106,20 @@ class TokenRepository(ABC):
 
     @abstractmethod
     async def delete(self, token: str) -> None:
+        raise NotImplementedError
+
+
+class ErrorRepository(ABC):
+    @abstractmethod
+    async def add(self, event: ErrorEvent) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        limit: int,
+    ) -> Sequence[ErrorEvent]:
         raise NotImplementedError

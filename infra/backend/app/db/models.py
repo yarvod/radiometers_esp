@@ -52,6 +52,20 @@ class MeasurementModel(Base):
     device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="measurements")
 
 
+class ErrorEventModel(Base):
+    __tablename__ = "error_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    timestamp_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    code: Mapped[str] = mapped_column(String(64))
+    severity: Mapped[str] = mapped_column(String(16))
+    message: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class UserModel(Base):
     __tablename__ = "users"
 
