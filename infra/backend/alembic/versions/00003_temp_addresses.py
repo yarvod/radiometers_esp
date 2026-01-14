@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "00003_temp_addresses"
-down_revision = "00002_device_config"
+revision = "00003"
+down_revision = "00002"
 branch_labels = None
 depends_on = None
 

@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "00002_device_config"
-down_revision = "00001_init"
+revision = "00002"
+down_revision = "00001"
 branch_labels = None
 depends_on = None
 
