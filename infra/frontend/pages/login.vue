@@ -34,6 +34,8 @@
 </template>
 
 <script setup lang="ts">
+definePageMeta({ layout: 'auth' })
+
 const { apiFetch, token } = useApi()
 
 const form = reactive({ username: '', password: '' })

@@ -25,7 +25,14 @@ class DeviceRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def update(self, device_id: str, display_name: str | None) -> Device:
+    async def update(
+        self,
+        device_id: str,
+        display_name: str | None,
+        temp_labels: list[str] | None,
+        temp_address_labels: dict[str, str] | None,
+        adc_labels: dict[str, str] | None,
+    ) -> Device:
         raise NotImplementedError
 
 

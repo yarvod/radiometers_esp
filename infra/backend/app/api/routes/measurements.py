@@ -6,6 +6,7 @@ from dishka.integrations.fastapi import FromDishka, inject
 from app.api.deps import get_current_user
 from app.api.schemas import MeasurementLatestResponse, MeasurementPointOut, MeasurementsResponse
 from app.domain.entities import User
+from app.services.devices import DeviceService
 from app.services.measurements import MeasurementService
 
 router = APIRouter(prefix="/measurements", tags=["measurements"])
@@ -24,6 +25,7 @@ def parse_datetime(value: str | None) -> datetime | None:
 @inject
 async def list_measurements(
     measurements: FromDishka[MeasurementService],
+    devices: FromDishka[DeviceService],
     device_id: str = Query(..., min_length=1),
     start: str | None = Query(None, alias="from"),
     end: str | None = Query(None, alias="to"),
@@ -40,8 +42,16 @@ async def list_measurements(
         limit=limit,
         bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
     )
-    max_temp = max((len(point.temps) for point in points), default=0)
-    temp_labels = [f"t{idx + 1}" for idx in range(max_temp)]
+    device = await devices.get_device(device_id)
+    config_temp_labels = list(device.temp_labels) if device else []
+    max_temp = max((len(point.temps) for point in points), default=len(config_temp_labels))
+    if config_temp_labels:
+        temp_labels = list(config_temp_labels)
+        if len(temp_labels) < max_temp:
+            temp_labels.extend([f"t{idx + 1}" for idx in range(len(temp_labels), max_temp)])
+    else:
+        temp_labels = [f"t{idx + 1}" for idx in range(max_temp)]
+    adc_labels = dict(device.adc_labels) if device else {}
     return MeasurementsResponse(
         points=[MeasurementPointOut.model_validate(item, from_attributes=True) for item in points],
         raw_count=raw_count,
@@ -50,6 +60,7 @@ async def list_measurements(
         bucket_label=bucket_label,
         aggregated=aggregated,
         temp_labels=temp_labels,
+        adc_labels=adc_labels,
     )
 
 

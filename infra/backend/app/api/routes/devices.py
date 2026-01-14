@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from dishka.integrations.fastapi import FromDishka, inject
 
 from app.api.deps import get_current_user
-from app.api.schemas import DeviceCreateRequest, DeviceOut, DeviceUpdateRequest
+from app.api.schemas import DeviceConfigOut, DeviceCreateRequest, DeviceOut, DeviceUpdateRequest
 from app.domain.entities import User
 from app.services.devices import DeviceService
 
@@ -30,7 +30,7 @@ async def create_device(
     return DeviceOut.model_validate(device, from_attributes=True)
 
 
-@router.patch("/{device_id}", response_model=DeviceOut)
+@router.patch("/{device_id}", response_model=DeviceConfigOut)
 @inject
 async def update_device(
     device_id: str,
@@ -38,5 +38,24 @@ async def update_device(
     devices: FromDishka[DeviceService],
     current_user: User = Depends(get_current_user),
 ):
-    device = await devices.update_device(device_id, payload.display_name)
-    return DeviceOut.model_validate(device, from_attributes=True)
+    device = await devices.update_device(
+        device_id,
+        payload.display_name,
+        payload.temp_labels,
+        payload.temp_address_labels,
+        payload.adc_labels,
+    )
+    return DeviceConfigOut.model_validate(device, from_attributes=True)
+
+
+@router.get("/{device_id}", response_model=DeviceConfigOut)
+@inject
+async def get_device(
+    device_id: str,
+    devices: FromDishka[DeviceService],
+    current_user: User = Depends(get_current_user),
+):
+    device = await devices.get_device(device_id)
+    if not device:
+        device = await devices.create_device(device_id)
+    return DeviceConfigOut.model_validate(device, from_attributes=True)

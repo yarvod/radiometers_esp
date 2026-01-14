@@ -3,7 +3,7 @@
     <div class="header">
       <button class="btn ghost back" @click="navigateTo('/')">← Назад</button>
       <div>
-        <div class="title">Устройство {{ deviceId }}</div>
+        <div class="title">Устройство {{ deviceTitle }}</div>
         <div class="status-row">
           <span class="chip" :class="{ online: device?.online }">{{ device?.online ? 'Online' : 'Offline' }}</span>
           <span class="chip subtle" v-if="device?.lastSeen">Обновлено: {{ new Date(device.lastSeen).toLocaleTimeString() }}</span>
@@ -12,22 +12,28 @@
       </div>
     </div>
 
-    <div class="card metrics">
+    <div class="tabs">
+      <button class="tab-btn" :class="{ active: activeTab === 'data' }" @click="activeTab = 'data'">Данные</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="activeTab = 'control'">Мониторинг и управление</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">Настройки</button>
+    </div>
+
+    <div class="card metrics" v-show="activeTab === 'control'">
       <div class="metrics-top">
         <h3>Показания</h3>
         <div class="readings-grid large">
           <div class="reading-card primary">
-            <div class="reading-label">U1</div>
+            <div class="reading-label">{{ adcLabel('adc1', 'U1') }}</div>
             <div class="reading-value big">{{ device?.state?.voltage1?.toFixed?.(6) ?? '—' }}</div>
             <div class="reading-sub">В</div>
           </div>
           <div class="reading-card primary">
-            <div class="reading-label">U2</div>
+            <div class="reading-label">{{ adcLabel('adc2', 'U2') }}</div>
             <div class="reading-value big">{{ device?.state?.voltage2?.toFixed?.(6) ?? '—' }}</div>
             <div class="reading-sub">В</div>
           </div>
           <div class="reading-card primary">
-            <div class="reading-label">U3</div>
+            <div class="reading-label">{{ adcLabel('adc3', 'U3') }}</div>
             <div class="reading-value big">{{ device?.state?.voltage3?.toFixed?.(6) ?? '—' }}</div>
             <div class="reading-sub">В</div>
           </div>
@@ -73,7 +79,7 @@
       </div>
     </div>
 
-    <div class="grid">
+    <div class="grid" v-show="activeTab === 'control'">
       <div class="card">
         <div class="card-head">
           <h3>Логи</h3>
@@ -220,7 +226,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" v-show="activeTab === 'data'">
       <div class="card-head">
         <h3>История измерений</h3>
         <span class="badge">Графики</span>
@@ -332,11 +338,58 @@
         </div>
       </div>
     </div>
+
+    <div class="card" v-show="activeTab === 'settings'">
+      <div class="card-head">
+        <h3>Настройки устройства</h3>
+        <span class="badge">Конфиг</span>
+      </div>
+      <p class="muted" v-if="configStatus">{{ configStatus }}</p>
+      <div class="form-group">
+        <label>Название устройства</label>
+        <input type="text" v-model="configForm.displayName" @input="configDirty = true" />
+      </div>
+      <div class="form-group">
+        <label>Температурные датчики</label>
+        <div class="config-table">
+          <div class="config-row header">
+            <span>Индекс</span>
+            <span>Адрес</span>
+            <span>Имя</span>
+          </div>
+          <div v-if="configForm.tempRows.length === 0" class="muted">Нет данных о датчиках</div>
+          <div
+            v-for="row in configForm.tempRows"
+            :key="`${row.index ?? 'x'}-${row.address ?? 'na'}`"
+            class="config-row"
+          >
+            <span class="chip subtle">{{ row.index !== null ? `t${row.index + 1}` : '—' }}</span>
+            <span class="muted small">{{ row.address || '—' }}</span>
+            <input type="text" v-model="row.label" @input="configDirty = true" />
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>ADC / Cal</label>
+        <div class="config-grid">
+          <label class="compact" v-for="key in adcLabelKeys" :key="key">
+            {{ adcLabelDefaults[key] }}
+            <input type="text" v-model="configForm.adcLabels[key]" @input="configDirty = true" />
+          </label>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn primary" @click="saveConfig" :disabled="configSaving">Сохранить</button>
+        <button class="btn ghost" @click="resetConfig" :disabled="configSaving">Сбросить</button>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { useDevicesStore } from '~/stores/devices'
+
+definePageMeta({ layout: 'admin' })
 
 type MeasurementPoint = {
   timestamp: string
@@ -361,6 +414,23 @@ type MeasurementsResponse = {
   bucket_label: string
   aggregated: boolean
   temp_labels: string[]
+  adc_labels: Record<string, string>
+}
+
+type DeviceConfig = {
+  id: string
+  display_name: string | null
+  created_at: string
+  last_seen_at: string | null
+  temp_labels: string[]
+  temp_address_labels: Record<string, string>
+  adc_labels: Record<string, string>
+}
+
+type TempConfigRow = {
+  index: number | null
+  address: string | null
+  label: string
 }
 
 const { apiFetch } = useApi()
@@ -371,25 +441,67 @@ const nuxtApp = useNuxtApp()
 store.init(nuxtApp.$mqtt)
 
 const device = computed(() => (deviceId.value ? store.devices.get(deviceId.value) : undefined))
+const deviceConfig = ref<DeviceConfig | null>(null)
+const activeTab = ref<'data' | 'control' | 'settings'>('control')
+const configDirty = ref(false)
+const configStatus = ref('')
+const configSaving = ref(false)
+const configForm = reactive({
+  displayName: '',
+  tempRows: [] as TempConfigRow[],
+  adcLabels: {
+    adc1: '',
+    adc2: '',
+    adc3: '',
+    adc1_cal: '',
+    adc2_cal: '',
+    adc3_cal: '',
+  },
+})
 const tempEntries = computed(() => {
   const sensors = device.value?.state?.tempSensors
   if (Array.isArray(sensors)) {
-    return sensors.map((value, idx) => ({ key: `t${idx + 1}`, label: `t${idx + 1}`, value, address: '' }))
+    const byIndex = deviceConfig.value?.temp_labels || []
+    return sensors.map((value, idx) => ({
+      key: `t${idx + 1}`,
+      label: byIndex[idx] || `t${idx + 1}`,
+      value,
+      address: '',
+    }))
   }
   if (!sensors || typeof sensors !== 'object') return []
-  return Object.entries(sensors as Record<string, any>).map(([label, entry]) => {
+  const byAddress = deviceConfig.value?.temp_address_labels || {}
+  const byIndex = deviceConfig.value?.temp_labels || []
+  return Object.entries(sensors as Record<string, any>).map(([label, entry], idx) => {
     if (entry && typeof entry === 'object') {
-      return { key: label, label, value: entry.value, address: entry.address || '' }
+      const address = entry.address || ''
+      const renamed = (address && byAddress[address]) || byIndex[idx] || label
+      return { key: label, label: renamed, value: entry.value, address }
     }
-    return { key: label, label, value: entry, address: '' }
+    const renamed = byIndex[idx] || label
+    return { key: label, label: renamed, value: entry, address: '' }
   })
 })
 const historyTempOptions = computed(() => {
   const labels = historyTempLabels.value.length
     ? historyTempLabels.value
+    : deviceConfig.value?.temp_labels?.length
+    ? deviceConfig.value.temp_labels
     : tempEntries.value.map((entry, idx) => entry.label || `t${idx + 1}`)
   return labels.map((label, idx) => ({ label, idx }))
 })
+const deviceTitle = computed(() => deviceConfig.value?.display_name || deviceId.value || '—')
+const adcLabelMap = computed(() => deviceConfig.value?.adc_labels || {})
+const adcLabelDefaults: Record<string, string> = {
+  adc1: 'ADC1',
+  adc2: 'ADC2',
+  adc3: 'ADC3',
+  adc1_cal: 'ADC1 Cal',
+  adc2_cal: 'ADC2 Cal',
+  adc3_cal: 'ADC3 Cal',
+}
+const adcLabelKeys = Object.keys(adcLabelDefaults)
+const adcLabel = (key: string, fallback: string) => adcLabelMap.value[key] || fallback
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1000, reverse: false })
@@ -593,14 +705,14 @@ type AdcSeriesOption = {
   extract: (row: MeasurementPoint) => number | null
 }
 
-const adcSeriesOptions: AdcSeriesOption[] = [
-  { key: 'adc1', label: 'ADC1', color: '#1f77b4', extract: (row) => row.adc1 ?? null },
-  { key: 'adc2', label: 'ADC2', color: '#2ca02c', extract: (row) => row.adc2 ?? null },
-  { key: 'adc3', label: 'ADC3', color: '#d62728', extract: (row) => row.adc3 ?? null },
-  { key: 'adc1_cal', label: 'ADC1 Cal', color: '#9ecae1', extract: (row) => row.adc1_cal ?? null },
-  { key: 'adc2_cal', label: 'ADC2 Cal', color: '#98df8a', extract: (row) => row.adc2_cal ?? null },
-  { key: 'adc3_cal', label: 'ADC3 Cal', color: '#ff9896', extract: (row) => row.adc3_cal ?? null },
-]
+const adcSeriesOptions = computed<AdcSeriesOption[]>(() => [
+  { key: 'adc1', label: adcLabelMap.value.adc1 || 'ADC1', color: '#1f77b4', extract: (row) => row.adc1 ?? null },
+  { key: 'adc2', label: adcLabelMap.value.adc2 || 'ADC2', color: '#2ca02c', extract: (row) => row.adc2 ?? null },
+  { key: 'adc3', label: adcLabelMap.value.adc3 || 'ADC3', color: '#d62728', extract: (row) => row.adc3 ?? null },
+  { key: 'adc1_cal', label: adcLabelMap.value.adc1_cal || 'ADC1 Cal', color: '#9ecae1', extract: (row) => row.adc1_cal ?? null },
+  { key: 'adc2_cal', label: adcLabelMap.value.adc2_cal || 'ADC2 Cal', color: '#98df8a', extract: (row) => row.adc2_cal ?? null },
+  { key: 'adc3_cal', label: adcLabelMap.value.adc3_cal || 'ADC3 Cal', color: '#ff9896', extract: (row) => row.adc3_cal ?? null },
+])
 
 const normalizeHistorySelection = (indices: number[], count: number) => {
   const normalized = normalizeIndices(indices, count)
@@ -634,7 +746,7 @@ const buildTempDatasets = () => {
 }
 
 const buildAdcDatasets = () => {
-  return adcSeriesOptions
+  return adcSeriesOptions.value
     .filter((series) => historySelection.adcSeries.includes(series.key))
     .map((series) => buildDataset(series.label, historyData.value.map((row) => series.extract(row)), series.color))
 }
@@ -769,7 +881,13 @@ watch(
 )
 
 watch(
-  () => [historyData.value, historySelection.tempIndices, historySelection.adcSeries],
+  () => [
+    historyData.value,
+    historySelection.tempIndices,
+    historySelection.adcSeries,
+    historyTempOptions.value.map((item) => item.label),
+    adcSeriesOptions.value.map((item) => item.label),
+  ],
   () => {
     renderCharts()
   },
@@ -900,7 +1018,7 @@ function toggleAdcSeries(key: string) {
   } else {
     selected.add(key)
   }
-  historySelection.adcSeries = adcSeriesOptions.filter((option) => selected.has(option.key)).map((option) => option.key)
+  historySelection.adcSeries = adcSeriesOptions.value.filter((option) => selected.has(option.key)).map((option) => option.key)
 }
 
 async function loadHistory() {
@@ -986,8 +1104,115 @@ const stopHistoryTimer = () => {
   }
 }
 
+const seedConfigForm = () => {
+  const config = deviceConfig.value
+  if (!config) return
+  configForm.displayName = config.display_name || ''
+  const tempLabels = config.temp_labels || []
+  const addressLabels = config.temp_address_labels || {}
+  const rows: TempConfigRow[] = []
+  const live = tempEntries.value
+  if (live.length) {
+    live.forEach((entry, idx) => {
+      const address = entry.address || null
+      const fallback = tempLabels[idx] || entry.label || `t${idx + 1}`
+      const label = address && addressLabels[address] ? addressLabels[address] : fallback
+      rows.push({ index: idx, address, label })
+    })
+  } else if (tempLabels.length) {
+    tempLabels.forEach((label, idx) => {
+      rows.push({ index: idx, address: null, label: label || `t${idx + 1}` })
+    })
+  }
+  const knownAddresses = new Set(rows.map((row) => row.address).filter(Boolean) as string[])
+  Object.entries(addressLabels).forEach(([address, label]) => {
+    if (!knownAddresses.has(address)) {
+      rows.push({ index: null, address, label })
+    }
+  })
+  configForm.tempRows = rows
+  Object.assign(configForm.adcLabels, adcLabelDefaults, config.adc_labels || {})
+}
+
+const resetConfig = () => {
+  configDirty.value = false
+  configStatus.value = ''
+  seedConfigForm()
+}
+
+const loadDeviceConfig = async () => {
+  if (!deviceId.value) return
+  try {
+    const res = await apiFetch<DeviceConfig>(`/api/devices/${deviceId.value}`)
+    deviceConfig.value = res
+    configStatus.value = ''
+    if (!configDirty.value) {
+      seedConfigForm()
+    }
+  } catch (e: any) {
+    configStatus.value = e?.message || 'Не удалось загрузить конфигурацию'
+  }
+}
+
+const saveConfig = async () => {
+  if (!deviceId.value) return
+  configSaving.value = true
+  configStatus.value = 'Сохраняю настройки...'
+  try {
+    const tempLabels: string[] = []
+    const tempAddressLabels: Record<string, string> = {}
+    configForm.tempRows.forEach((row) => {
+      const label = row.label.trim()
+      if (row.index !== null) {
+        tempLabels[row.index] = label || `t${row.index + 1}`
+      }
+      if (row.address) {
+        tempAddressLabels[row.address] = label || (row.index !== null ? `t${row.index + 1}` : row.address)
+      }
+    })
+    for (let i = 0; i < tempLabels.length; i += 1) {
+      if (!tempLabels[i]) {
+        tempLabels[i] = `t${i + 1}`
+      }
+    }
+    const adcLabels: Record<string, string> = {}
+    adcLabelKeys.forEach((key) => {
+      const raw = (configForm.adcLabels as Record<string, string>)[key] || ''
+      adcLabels[key] = raw.trim() || adcLabelDefaults[key]
+    })
+    const displayName = configForm.displayName.trim()
+    const res = await apiFetch<DeviceConfig>(`/api/devices/${deviceId.value}`, {
+      method: 'PATCH',
+      body: {
+        display_name: displayName ? displayName : null,
+        temp_labels: tempLabels,
+        temp_address_labels: tempAddressLabels,
+        adc_labels: adcLabels,
+      },
+    })
+    deviceConfig.value = res
+    configDirty.value = false
+    configStatus.value = 'Настройки сохранены'
+    if (historyTempLabels.value.length) {
+      const nextLabels = [...tempLabels]
+      if (nextLabels.length < historyTempLabels.value.length) {
+        for (let i = nextLabels.length; i < historyTempLabels.value.length; i += 1) {
+          nextLabels.push(`t${i + 1}`)
+        }
+      }
+      historyTempLabels.value = nextLabels
+    }
+    seedConfigForm()
+  } catch (e: any) {
+    configStatus.value = e?.message || 'Не удалось сохранить настройки'
+  } finally {
+    configSaving.value = false
+  }
+}
+
 onMounted(() => {
   refreshState()
+  loadDeviceConfig()
   loadLatestWindow().then(loadHistory)
   if (!ChartCtor) {
     import('chart.js/auto').then((mod: any) => {
@@ -1008,6 +1233,15 @@ onBeforeUnmount(() => {
     adcChart = null
   }
 })
+
+watch(
+  () => tempEntries.value.map((entry) => `${entry.address || ''}:${entry.label}`),
+  () => {
+    if (!configDirty.value && deviceConfig.value) {
+      seedConfigForm()
+    }
+  }
+)
 </script>
 
 <style scoped>
@@ -1015,6 +1249,9 @@ onBeforeUnmount(() => {
 .header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .title { font-size: 24px; font-weight: 800; color: #1f2933; }
 .status-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.tabs { display: flex; gap: 10px; flex-wrap: wrap; }
+.tab-btn { border-radius: 999px; border: 1px solid var(--border); background: #f1f3f4; color: #1f2933; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+.tab-btn.active { background: #e8f4fd; border-color: rgba(41, 128, 185, 0.3); color: #1f2d3d; }
 .card { display: flex; flex-direction: column; gap: 10px; overflow: visible; max-width: 100%; box-sizing: border-box; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .metrics { border: 1px solid var(--border); }
@@ -1062,6 +1299,11 @@ label { font-size: 14px; font-weight: 600; color: #1f1f1f; }
 input { width: 100%; box-sizing: border-box; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .muted { color: var(--muted); font-size: 13px; }
+.muted.small { font-size: 12px; }
+.config-table { display: flex; flex-direction: column; gap: 8px; }
+.config-row { display: grid; grid-template-columns: 80px 1fr 1fr; gap: 10px; align-items: center; }
+.config-row.header { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .chart-stack { display: flex; flex-direction: column; gap: 20px; }
 .chart-box { background: transparent; border: none; padding: 0; height: 320px; display: flex; flex-direction: column; gap: 8px; }
 .chart-box h4 { margin: 0; font-size: 16px; color: #1f2933; }

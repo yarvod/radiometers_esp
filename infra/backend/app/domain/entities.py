@@ -11,6 +11,9 @@ class Device:
     display_name: Optional[str]
     created_at: datetime
     last_seen_at: Optional[datetime]
+    temp_labels: list[str]
+    temp_address_labels: dict[str, str]
+    adc_labels: dict[str, str]
 
 
 @dataclass

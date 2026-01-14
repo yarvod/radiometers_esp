@@ -5,7 +5,6 @@
         <h1>Устройства</h1>
         <p class="muted">Кликайте на устройство, чтобы открыть управление.</p>
       </div>
-      <button class="btn ghost" @click="navigateTo('/users')">Пользователи</button>
     </div>
     <p class="muted" v-if="createStatus">{{ createStatus }}</p>
     <div class="device-list">
@@ -34,6 +33,8 @@
 
 <script setup lang="ts">
 import { useDevicesStore } from '~/stores/devices'
+
+definePageMeta({ layout: 'admin' })
 
 const { apiFetch } = useApi()
 const nuxtApp = useNuxtApp()

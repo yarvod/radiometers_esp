@@ -48,6 +48,9 @@ class DeviceCreateRequest(BaseModel):
 
 class DeviceUpdateRequest(BaseModel):
     display_name: Optional[str] = None
+    temp_labels: Optional[list[str]] = None
+    temp_address_labels: Optional[dict[str, str]] = None
+    adc_labels: Optional[dict[str, str]] = None
 
 
 class DeviceOut(BaseModel):
@@ -55,6 +58,16 @@ class DeviceOut(BaseModel):
     display_name: Optional[str] = None
     created_at: datetime
     last_seen_at: Optional[datetime] = None
+
+
+class DeviceConfigOut(BaseModel):
+    id: str
+    display_name: Optional[str] = None
+    created_at: datetime
+    last_seen_at: Optional[datetime] = None
+    temp_labels: list[str] = Field(default_factory=list)
+    temp_address_labels: dict[str, str] = Field(default_factory=dict)
+    adc_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class MeasurementOut(BaseModel):
@@ -100,6 +113,7 @@ class MeasurementsResponse(BaseModel):
     bucket_label: str
     aggregated: bool
     temp_labels: list[str] = Field(default_factory=list)
+    adc_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class MeasurementLatestResponse(BaseModel):

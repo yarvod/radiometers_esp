@@ -94,6 +94,8 @@
 </template>
 
 <script setup lang="ts">
+definePageMeta({ layout: 'admin' })
+
 const { apiFetch } = useApi()
 
 const users = ref<any[]>([])

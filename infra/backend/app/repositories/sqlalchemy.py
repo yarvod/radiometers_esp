@@ -17,6 +17,9 @@ def to_device(model: DeviceModel) -> Device:
         display_name=model.display_name,
         created_at=model.created_at,
         last_seen_at=model.last_seen_at,
+        temp_labels=list(model.temp_labels or []),
+        temp_address_labels=dict(model.temp_address_labels or {}),
+        adc_labels=dict(model.adc_labels or {}),
     )
 
 
@@ -91,7 +94,7 @@ class SqlDeviceRepository(DeviceRepository):
         return to_device(model) if model else None
 
     async def create(self, device_id: str, display_name: str | None = None) -> Device:
-        model = DeviceModel(id=device_id, display_name=display_name)
+        model = DeviceModel(id=device_id, display_name=display_name, temp_labels=[], temp_address_labels={}, adc_labels={})
         self._session.add(model)
         await self._session.flush()
         return to_device(model)
@@ -100,21 +103,41 @@ class SqlDeviceRepository(DeviceRepository):
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
         model = result.scalar_one_or_none()
         if model is None:
-            model = DeviceModel(id=device_id, last_seen_at=seen_at)
+            model = DeviceModel(id=device_id, last_seen_at=seen_at, temp_labels=[], temp_address_labels={}, adc_labels={})
             self._session.add(model)
         else:
             model.last_seen_at = seen_at
         await self._session.flush()
         return to_device(model)
 
-    async def update(self, device_id: str, display_name: str | None) -> Device:
+    async def update(
+        self,
+        device_id: str,
+        display_name: str | None,
+        temp_labels: list[str] | None,
+        temp_address_labels: dict[str, str] | None,
+        adc_labels: dict[str, str] | None,
+    ) -> Device:
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
         model = result.scalar_one_or_none()
         if not model:
-            model = DeviceModel(id=device_id, display_name=display_name)
+            model = DeviceModel(
+                id=device_id,
+                display_name=display_name,
+                temp_labels=temp_labels or [],
+                temp_address_labels=temp_address_labels or {},
+                adc_labels=adc_labels or {},
+            )
             self._session.add(model)
         else:
-            model.display_name = display_name
+            if display_name is not None:
+                model.display_name = display_name
+            if temp_labels is not None:
+                model.temp_labels = temp_labels
+            if temp_address_labels is not None:
+                model.temp_address_labels = temp_address_labels
+            if adc_labels is not None:
+                model.adc_labels = adc_labels
         await self._session.flush()
         return to_device(model)
 

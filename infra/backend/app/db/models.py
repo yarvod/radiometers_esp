@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -21,6 +21,9 @@ class DeviceModel(Base):
     display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    temp_labels: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    temp_address_labels: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
+    adc_labels: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")
 
