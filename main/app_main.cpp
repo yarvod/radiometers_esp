@@ -1837,9 +1837,9 @@ void TempTask(void*) {
         }
       });
       if (count > 0) {
-        ESP_LOGI(TAG, "Temps (%d):", count);
+        ESP_LOGD(TAG, "Temps (%d):", count);
         for (int i = 0; i < count; ++i) {
-          ESP_LOGI(TAG, "  Sensor %d: %.2f C", i + 1, temps[i]);
+          ESP_LOGD(TAG, "  Sensor %d: %.2f C", i + 1, temps[i]);
         }
       }
     } else {

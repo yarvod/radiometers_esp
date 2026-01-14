@@ -700,7 +700,7 @@ void LoggingTask(void*) {
         fprintf(log_file, ",%.6f,%.6f,%.6f", avg.voltage1, avg.voltage2, avg.voltage3);
         fprintf(log_file, "\n");
         FlushLogFile();
-        ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+        ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
         PublishLogMeasurement(iso, ts_ms, pending_base, &avg);
         UpdateState([&](SharedState& s) {
           s.voltage1_cal = avg.voltage1;
@@ -750,7 +750,7 @@ void LoggingTask(void*) {
     }
     fprintf(log_file, "\n");
     FlushLogFile();
-    ESP_LOGI(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+    ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
     PublishLogMeasurement(iso, ts_ms, avg1, nullptr);
     UpdateState([&](SharedState& s) {
       s.voltage1_cal = avg1.voltage1;

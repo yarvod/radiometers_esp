@@ -276,7 +276,7 @@ static void MqttStateTask(void*) {
     if (mqtt_connected && mqtt_client) {
       std::string payload = BuildStateJsonString();
       esp_mqtt_client_publish(mqtt_client, topic.c_str(), payload.c_str(), payload.size(), 0, 0);
-      ESP_LOGI(TAG_MQTT, "MQTT state published to %s (%d bytes)", topic.c_str(), (int)payload.size());
+      ESP_LOGD(TAG_MQTT, "MQTT state published to %s (%d bytes)", topic.c_str(), (int)payload.size());
     }
     vTaskDelay(interval);
   }
