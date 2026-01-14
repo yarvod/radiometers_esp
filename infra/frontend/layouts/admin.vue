@@ -3,12 +3,17 @@
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="logo">Radiometer</div>
       <nav>
-        <NuxtLink to="/" class="nav-link" :class="{ active: devicesActive }">
-          <span class="dot"></span>
+        <NuxtLink to="/" class="nav-link" :class="{ active: devicesActive }" @click="closeSidebarIfMobile">
+          <span class="nav-icon" aria-hidden="true">📟</span>
           <span>Девайсы</span>
         </NuxtLink>
-        <NuxtLink to="/users" class="nav-link" :class="{ active: route.path.startsWith('/users') }">
-          <span class="dot"></span>
+        <NuxtLink
+          to="/users"
+          class="nav-link"
+          :class="{ active: route.path.startsWith('/users') }"
+          @click="closeSidebarIfMobile"
+        >
+          <span class="nav-icon" aria-hidden="true">👥</span>
           <span>Пользователи</span>
         </NuxtLink>
       </nav>
@@ -17,7 +22,7 @@
     <div class="main">
       <header class="app-header">
         <button class="menu-toggle" @click="toggleSidebar">
-          <span class="menu-icon">☰</span>
+          <span class="menu-icon">🧭</span>
           <span class="menu-label">Меню</span>
         </button>
         <div class="topbar">
@@ -35,17 +40,23 @@
 const route = useRoute()
 const sidebarOpen = ref(false)
 const devicesActive = computed(() => !route.path.startsWith('/users'))
+const isMobileViewport = () => (process.client ? window.innerWidth <= 960 : false)
+const closeSidebarIfMobile = () => {
+  if (isMobileViewport()) {
+    sidebarOpen.value = false
+  }
+}
 const toggleSidebar = () => {
   sidebarOpen.value = !sidebarOpen.value
 }
 watch(
   () => route.fullPath,
   () => {
-    sidebarOpen.value = false
+    closeSidebarIfMobile()
   }
 )
 onMounted(() => {
-  if (window.innerWidth > 960) {
+  if (!isMobileViewport()) {
     sidebarOpen.value = true
   }
 })

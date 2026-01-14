@@ -164,11 +164,9 @@ input { width: 100%; box-sizing: border-box; }
   background: transparent;
 }
 
-.sidebar .nav-link .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #cbd5f5;
+.sidebar .nav-link .nav-icon {
+  font-size: 18px;
+  line-height: 1;
 }
 
 .sidebar .nav-link:hover,
