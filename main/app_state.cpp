@@ -80,7 +80,8 @@ SdLockGuard::~SdLockGuard() {
 
 SharedState CopyState() {
   SharedState snapshot;
-  if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(1)) == pdTRUE) {
+  if (state_mutex) {
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     snapshot = state;
     xSemaphoreGive(state_mutex);
   } else {
