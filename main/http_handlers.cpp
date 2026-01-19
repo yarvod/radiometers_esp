@@ -540,8 +540,6 @@ void LoggingTask(void*) {
       esp_rom_delay_us(step_delay_us);
       steps++;
     }
-    DisableStepper();
-    vTaskDelay(settle_delay);
     UpdateState([](SharedState& s) {
       s.stepper_position = 0;
       s.stepper_target = 0;
@@ -565,8 +563,6 @@ void LoggingTask(void*) {
       gpio_set_level(STEPPER_STEP, 0);
       esp_rom_delay_us(step_delay_us);
     }
-    DisableStepper();
-    vTaskDelay(settle_delay);
     UpdateState([&](SharedState& s) {
       s.homing = false;
       s.stepper_position += forward ? steps : -steps;
@@ -653,19 +649,15 @@ void LoggingTask(void*) {
     }
 
     if (log_config.use_motor) {
-      // Между движениями держим мотор отключенным, включая только в move_blocking
-      DisableStepper();
-    }
-
-    if (log_config.use_motor) {
-      SharedState avg{};
-      if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg)) {
-        ESP_LOGW(TAG, "Logging: no samples collected, retrying");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        continue;
-      }
-
       if (at_zero) {
+        vTaskDelay(settle_delay);
+        SharedState avg{};
+        if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg)) {
+          ESP_LOGW(TAG, "Logging: no samples collected, retrying");
+          vTaskDelay(pdMS_TO_TICKS(500));
+          continue;
+        }
+
         // Сохраняем базу, уходим назад на 200
         pending_base = avg;
         has_pending_base = true;
@@ -680,6 +672,13 @@ void LoggingTask(void*) {
       }
 
       // Мы в -200 (или смещённом), это калибровочный замер
+      vTaskDelay(settle_delay);
+      SharedState avg{};
+      if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg)) {
+        ESP_LOGW(TAG, "Logging: no samples collected, retrying");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        continue;
+      }
       if (!has_pending_base) {
         ESP_LOGW(TAG, "Logging: got cal without base, skipping");
       } else {
