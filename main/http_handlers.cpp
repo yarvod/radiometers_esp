@@ -413,8 +413,10 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   SdLockGuard guard;
   if (!guard.locked()) {
     ESP_LOGW(TAG, "SD mutex unavailable, skip config save");
+    ErrorManagerSet(ErrorCode::kSdMutex, ErrorSeverity::kWarning, "SD mutex unavailable during config save");
     return false;
   }
+  ErrorManagerClear(ErrorCode::kSdMutex);
   const bool already_mounted = log_sd_mounted;
   if (!already_mounted) {
     if (!MountLogSd()) {

@@ -15,6 +15,7 @@ enum class ErrorCode : uint8_t {
   kSdMount = 8,
   kLogTaskStack = 9,
   kInaRead = 10,
+  kSdMutex = 11,
   kMax
 };
 
