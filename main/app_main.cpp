@@ -397,11 +397,13 @@ static std::string ExtractHost(const std::string& endpoint) {
 
 static bool UploadFileToMinio(const std::string& path) {
   if (!app_config.minio_enabled) {
+    ErrorManagerClear(ErrorCode::kMinioUpload);
     ESP_LOGI(TAG, "MinIO disabled, skip upload");
     return false;
   }
   if (app_config.minio_endpoint.empty() || app_config.minio_access_key.empty() || app_config.minio_secret_key.empty() ||
       app_config.minio_bucket.empty()) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "MinIO config incomplete");
     ESP_LOGW(TAG, "MinIO config incomplete, skip upload");
     return false;
   }
@@ -412,6 +414,7 @@ static bool UploadFileToMinio(const std::string& path) {
   const std::string host = ExtractHost(endpoint);
   const bool use_https = endpoint.rfind("https://", 0) == 0;
   if (host.empty()) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Invalid MinIO endpoint");
     ESP_LOGE(TAG, "Invalid MinIO endpoint: %s", endpoint.c_str());
     return false;
   }
@@ -420,6 +423,7 @@ static bool UploadFileToMinio(const std::string& path) {
   std::string payload_hash;
   size_t file_size = 0;
   if (!Sha256File(path, &payload_hash, &file_size)) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to hash upload file");
     ESP_LOGE(TAG, "Failed to hash %s", path.c_str());
     return false;
   }
@@ -514,6 +518,7 @@ static bool UploadFileToMinio(const std::string& path) {
 
   std::string canonical_hash_hex;
   if (!Sha256String(canonical_request, &canonical_hash_hex)) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to hash canonical request");
     ESP_LOGE(TAG, "Failed to hash canonical request");
     return false;
   }
@@ -523,12 +528,14 @@ static bool UploadFileToMinio(const std::string& path) {
 
   uint8_t signing_key[32];
   if (!DeriveS3SigningKey(app_config.minio_secret_key, date_buf, region, signing_key)) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to derive signing key");
     ESP_LOGE(TAG, "Failed to derive signing key");
     return false;
   }
   uint8_t signature_bin[32];
   if (!HmacSha256(signing_key, sizeof(signing_key),
                   reinterpret_cast<const uint8_t*>(string_to_sign.data()), string_to_sign.size(), signature_bin)) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to sign request");
     ESP_LOGE(TAG, "Failed to sign string");
     return false;
   }
@@ -548,6 +555,7 @@ static bool UploadFileToMinio(const std::string& path) {
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg_http);
   if (!client) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "esp_http_client_init failed");
     ESP_LOGE(TAG, "esp_http_client_init failed");
     return false;
   }
@@ -560,6 +568,7 @@ static bool UploadFileToMinio(const std::string& path) {
   esp_http_client_set_header(client, "Authorization", authorization.c_str());
 
   if (esp_http_client_open(client, file_size) != ESP_OK) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP open failed");
     ESP_LOGE(TAG, "Failed to open HTTP connection to %s", url.c_str());
     esp_http_client_cleanup(client);
     return false;
@@ -567,6 +576,7 @@ static bool UploadFileToMinio(const std::string& path) {
 
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to open upload file");
     ESP_LOGE(TAG, "Cannot reopen file %s for upload", path.c_str());
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
@@ -578,6 +588,7 @@ static bool UploadFileToMinio(const std::string& path) {
   while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
     int written = esp_http_client_write(client, buf, n);
     if (written < 0) {
+      ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP write failed");
       ESP_LOGE(TAG, "HTTP write failed");
       ok = false;
       break;
@@ -585,6 +596,7 @@ static bool UploadFileToMinio(const std::string& path) {
   }
   fclose(f);
   if (!ok) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP write failed");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return false;
@@ -594,9 +606,11 @@ static bool UploadFileToMinio(const std::string& path) {
   esp_http_client_close(client);
   esp_http_client_cleanup(client);
   if (status >= 200 && status < 300) {
+    ErrorManagerClear(ErrorCode::kMinioUpload);
     ESP_LOGI(TAG, "Uploaded %s to MinIO (%d)", path.c_str(), status);
     return true;
   }
+  ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "MinIO upload failed");
   ESP_LOGE(TAG, "MinIO upload failed, status %d", status);
   return false;
 }
@@ -1561,19 +1575,19 @@ esp_err_t ReadIna219() {
   esp_err_t err = read_reg(0x02, &bus_raw);
   if (err != ESP_OK) {
     ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                    std::string("INA219 read bus failed: ") + esp_err_to_name(err));
+                    std::string("INA219 read bus failed (i2c): ") + esp_err_to_name(err));
     return err;
   }
   err = read_reg(0x04, &current_raw);
   if (err != ESP_OK) {
     ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                    std::string("INA219 read current failed: ") + esp_err_to_name(err));
+                    std::string("INA219 read current failed (i2c): ") + esp_err_to_name(err));
     return err;
   }
   err = read_reg(0x03, &power_raw);
   if (err != ESP_OK) {
     ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                    std::string("INA219 read power failed: ") + esp_err_to_name(err));
+                    std::string("INA219 read power failed (i2c): ") + esp_err_to_name(err));
     return err;
   }
 

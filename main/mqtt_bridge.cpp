@@ -238,10 +238,29 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
     case MQTT_EVENT_CONNECTED: {
       mqtt_connected = true;
       ErrorManagerClear(ErrorCode::kMqttDisconnected);
+      ErrorManagerClear(ErrorCode::kMqttTransport);
       const std::string device = SanitizeId(app_config.device_id);
       std::string topic = device + "/cmd";
       esp_mqtt_client_subscribe(event->client, topic.c_str(), 0);
       ESP_LOGI(TAG_MQTT, "MQTT connected to %s, subscribed to %s", app_config.mqtt_uri.c_str(), topic.c_str());
+      break;
+    }
+    case MQTT_EVENT_ERROR: {
+      std::string msg = "MQTT transport error";
+      if (event->error_handle) {
+        const auto* err = event->error_handle;
+        msg += " type=" + std::to_string(err->error_type);
+        if (err->esp_tls_last_esp_err != 0) {
+          msg += " tls=" + std::string(esp_err_to_name(err->esp_tls_last_esp_err));
+        }
+        if (err->esp_tls_stack_err != 0) {
+          msg += " tls_stack=" + std::to_string(err->esp_tls_stack_err);
+        }
+        if (err->esp_transport_sock_errno != 0) {
+          msg += " sock=" + std::to_string(err->esp_transport_sock_errno);
+        }
+      }
+      ErrorManagerSet(ErrorCode::kMqttTransport, ErrorSeverity::kWarning, msg);
       break;
     }
     case MQTT_EVENT_DATA: {

@@ -16,6 +16,8 @@ enum class ErrorCode : uint8_t {
   kLogTaskStack = 9,
   kInaRead = 10,
   kSdMutex = 11,
+  kMqttTransport = 12,
+  kMinioUpload = 13,
   kMax
 };
 
