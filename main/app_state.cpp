@@ -67,6 +67,7 @@ sdmmc_card_t* log_sd_card = nullptr;
 FILE* log_file = nullptr;
 bool log_sd_mounted = false;
 std::string current_log_path;
+static uint32_t boot_id = 0;
 
 SdLockGuard::SdLockGuard(TickType_t timeout_ticks) {
   locked_ = (sd_mutex && xSemaphoreTake(sd_mutex, timeout_ticks) == pdTRUE);
@@ -129,4 +130,28 @@ void SaveUsbModeToNvs(UsbMode mode) {
     nvs_commit(handle);
     nvs_close(handle);
   }
+}
+
+uint32_t LoadAndIncrementBootId() {
+  nvs_handle_t handle;
+  uint32_t value = 0;
+  if (nvs_open("boot", NVS_READWRITE, &handle) == ESP_OK) {
+    esp_err_t err = nvs_get_u32(handle, "id", &value);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+      value = 0;
+    }
+    if (value == UINT32_MAX) {
+      value = 0;
+    }
+    value += 1;
+    nvs_set_u32(handle, "id", value);
+    nvs_commit(handle);
+    nvs_close(handle);
+  }
+  boot_id = value;
+  return boot_id;
+}
+
+uint32_t GetBootId() {
+  return boot_id;
 }

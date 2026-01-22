@@ -156,6 +156,8 @@ void UpdateState(const std::function<void(SharedState&)>& updater);
 void ScheduleRestart();
 UsbMode LoadUsbModeFromNvs(bool* found);
 void SaveUsbModeToNvs(UsbMode mode);
+uint32_t LoadAndIncrementBootId();
+uint32_t GetBootId();
 
 class SdLockGuard {
  public:

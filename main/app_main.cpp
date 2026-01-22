@@ -118,6 +118,7 @@ bool EnsureTimeSynced(int timeout_ms);
 
 std::string BuildLogFilename(const std::string& postfix_raw) {
   const std::string postfix = SanitizePostfix(postfix_raw);
+  const uint32_t boot = GetBootId();
 
   EnsureTimeSynced(1000);
   time_t now = time(nullptr);
@@ -130,13 +131,40 @@ std::string BuildLogFilename(const std::string& postfix_raw) {
   strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_info);
 
   std::string name = "data_";
+  name += std::to_string(boot);
+  name += "_";
   name += ts;
   if (!postfix.empty()) {
-    name += "_";
-    name += postfix;
+    const size_t base_len = name.size() + 1 + 4;  // "_" + ".txt"
+    size_t max_postfix = 0;
+    if (base_len < 255) {
+      max_postfix = 255 - base_len;
+    }
+    if (max_postfix > 0) {
+      name += "_";
+      name += postfix.substr(0, max_postfix);
+    }
   }
   name += ".txt";
   return name;
+}
+
+static std::string FormatIp4(const esp_ip4_addr_t& ip) {
+  if (ip.addr == 0) {
+    return "";
+  }
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), IPSTR, IP2STR(&ip));
+  return std::string(buf);
+}
+
+static std::string GetNetifIp(esp_netif_t* netif) {
+  if (!netif) return "";
+  esp_netif_ip_info_t info{};
+  if (esp_netif_get_ip_info(netif, &info) != ESP_OK) {
+    return "";
+  }
+  return FormatIp4(info.ip);
 }
 
 // Devices
@@ -1188,6 +1216,10 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       reason_msg += " reason=" + std::to_string(info->reason);
     }
     ErrorManagerSet(ErrorCode::kWifiDisconnected, ErrorSeverity::kWarning, reason_msg);
+    UpdateState([&](SharedState& s) {
+      s.wifi_ip.clear();
+      s.wifi_ip_sta.clear();
+    });
     if (retry_count < 5) {
       esp_wifi_connect();
       retry_count++;
@@ -1228,6 +1260,15 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     ErrorManagerClear(ErrorCode::kWifiDisconnected);
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    const std::string sta_ip = FormatIp4(event->ip_info.ip);
+    const std::string ap_ip = GetNetifIp(wifi_netif_ap);
+    UpdateState([&](SharedState& s) {
+      s.wifi_ip = sta_ip;
+      s.wifi_ip_sta = sta_ip;
+      if (!ap_ip.empty()) {
+        s.wifi_ip_ap = ap_ip;
+      }
+    });
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     if (fallback_ap_active && !app_config.wifi_ap_mode) {
       ESP_LOGI(TAG, "Disabling fallback AP after reconnect");
@@ -1315,6 +1356,15 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
   }
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+  const std::string ap_ip = GetNetifIp(wifi_netif_ap);
+  UpdateState([&](SharedState& s) {
+    if (!ap_ip.empty()) {
+      s.wifi_ip_ap = ap_ip;
+      if (ap_mode) {
+        s.wifi_ip = ap_ip;
+      }
+    }
+  });
 
   EventBits_t bits = xEventGroupWaitBits(
       wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15'000));
@@ -2008,6 +2058,8 @@ extern "C" void app_main(void) {
   } else {
     ESP_ERROR_CHECK(ret);
   }
+  const uint32_t boot_id = LoadAndIncrementBootId();
+  ESP_LOGI(TAG, "Boot ID: %u", static_cast<unsigned>(boot_id));
 
   // Optionally disable task watchdog to avoid false positives from tight stepper loop
   esp_task_wdt_deinit();

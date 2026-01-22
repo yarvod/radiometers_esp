@@ -39,7 +39,7 @@ bool ParseBool(const std::string& value, bool* out) {
 }
 
 bool SanitizeFilename(const std::string& name, std::string* out_full) {
-  if (name.empty() || name.size() > 64) return false;
+  if (name.empty() || name.size() > 255) return false;
   for (char c : name) {
     if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.')) {
       return false;
@@ -69,9 +69,9 @@ bool SanitizePath(const std::string& rel_path_raw, std::string* out_full) {
 }
 
 std::string SanitizePostfix(const std::string& raw) {
-  // Keep postfix within overall filename limit (SanitizeFilename caps at 64 chars).
-  // Base pattern: data_YYYYMMDD_HHMMSS_ + postfix + .txt -> base length 25, so allow up to 39.
-  constexpr size_t kMaxPostfixLen = 39;
+  // Keep postfix within overall filename limit (SanitizeFilename caps at 255 chars).
+  // BuildLogFilename may further trim based on prefix length.
+  constexpr size_t kMaxPostfixLen = 255;
   std::string out;
   out.reserve(raw.size());
   for (char c : raw) {
