@@ -41,7 +41,7 @@ services:
       exec mosquitto -c /mosquitto/config/mosquitto.conf'
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2024-02-24T17-11-14Z
+    image: quay.io/minio/minio:RELEASE.2024-10-29T16-01-48Z
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
