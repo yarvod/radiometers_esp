@@ -1331,13 +1331,14 @@ const goToErrorPage = (nextPage: number) => {
 }
 
 function toggleHistoryTemp(idx: number) {
+  const count = historyTempOptions.value.length
   if (historySelection.tempIndices.includes(idx)) {
     if (historySelection.tempIndices.length <= 1) {
       return
     }
     historySelection.tempIndices = historySelection.tempIndices.filter((value) => value !== idx)
   } else {
-    historySelection.tempIndices = normalizeIndices([...historySelection.tempIndices, idx], tempEntries.value.length)
+    historySelection.tempIndices = normalizeIndices([...historySelection.tempIndices, idx], count)
   }
 }
 
