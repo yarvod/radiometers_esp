@@ -48,6 +48,7 @@ LoggingConfig log_config{
     1.0f,   // duration_s
     false,  // homed_once
     "",     // postfix
+    0,      // temp_sensor_count
     0,      // file_start_us
 };
 

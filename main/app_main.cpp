@@ -93,6 +93,7 @@ esp_netif_t* wifi_netif_sta = nullptr;
 esp_netif_t* wifi_netif_ap = nullptr;
 static TaskHandle_t wifi_recover_task = nullptr;
 static bool fallback_ap_active = false;
+static bool wifi_recover_active = false;
 static wifi_config_t sta_cfg_cached = {};
 
 volatile uint32_t fan1_pulse_count = 0;
@@ -165,6 +166,44 @@ static std::string GetNetifIp(esp_netif_t* netif) {
     return "";
   }
   return FormatIp4(info.ip);
+}
+
+static void WifiRecoverTask(void* arg) {
+  const int interval_ms = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+  while (wifi_recover_active) {
+    esp_wifi_connect();
+    vTaskDelay(pdMS_TO_TICKS(interval_ms));
+  }
+  vTaskDelete(nullptr);
+}
+
+static void StartWifiRecoverTask(int interval_ms) {
+  if (wifi_recover_task) return;
+  wifi_recover_active = true;
+  xTaskCreatePinnedToCore(&WifiRecoverTask, "wifi_recover", 2048,
+                          reinterpret_cast<void*>(static_cast<intptr_t>(interval_ms)), 1, &wifi_recover_task, 0);
+}
+
+static void StopWifiRecoverTask() {
+  if (!wifi_recover_task) return;
+  wifi_recover_active = false;
+  TaskHandle_t t = wifi_recover_task;
+  wifi_recover_task = nullptr;
+  vTaskDelete(t);
+}
+
+static bool WaitForTempSensors(int timeout_ms) {
+  if (timeout_ms <= 0) {
+    return CopyState().temp_sensor_count > 0;
+  }
+  const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
+  while (esp_timer_get_time() < deadline) {
+    if (CopyState().temp_sensor_count > 0) {
+      return true;
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  return CopyState().temp_sensor_count > 0;
 }
 
 // Devices
@@ -777,6 +816,7 @@ bool FlushLogFile() {
 }
 
 bool OpenLogFileWithPostfix(const std::string& postfix) {
+  WaitForTempSensors(3000);
   SdLockGuard guard;
   if (!guard.locked()) {
     ESP_LOGW(TAG, "SD mutex unavailable, cannot open log file");
@@ -803,9 +843,11 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
   }
 
   SharedState snapshot = CopyState();
+  const int temp_count = std::min(snapshot.temp_sensor_count, MAX_TEMP_SENSORS);
+  log_config.temp_sensor_count = temp_count;
   log_config.file_start_us = esp_timer_get_time();
   fprintf(log_file, "timestamp_iso,timestamp_ms,adc1,adc2,adc3");
-  for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
+  for (int i = 0; i < temp_count; ++i) {
     const std::string& label = snapshot.temp_labels[i];
     if (!label.empty()) {
       fprintf(log_file, ",%s", label.c_str());
@@ -1224,9 +1266,9 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       esp_wifi_connect();
       retry_count++;
       ESP_LOGW(TAG, "Retry Wi-Fi connection (%d)", retry_count);
-    } else if (!app_config.wifi_ap_mode) {
+    } else {
       xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
-      if (!fallback_ap_active) {
+      if (!app_config.wifi_ap_mode && !fallback_ap_active) {
         ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
         fallback_ap_active = true;
         ErrorManagerSet(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
@@ -1242,18 +1284,8 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
         esp_wifi_set_mode(WIFI_MODE_APSTA);
         esp_wifi_set_config(WIFI_IF_AP, &ap_config);
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached);
-        if (!wifi_recover_task) {
-          xTaskCreatePinnedToCore(
-              [](void*) {
-                while (fallback_ap_active) {
-                  esp_wifi_connect();
-                  vTaskDelay(pdMS_TO_TICKS(5000));
-                }
-                vTaskDelete(nullptr);
-              },
-              "wifi_recover", 2048, nullptr, 1, &wifi_recover_task, 0);
-        }
       }
+      StartWifiRecoverTask(5000);
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     retry_count = 0;
@@ -1270,15 +1302,11 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       }
     });
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    StopWifiRecoverTask();
     if (fallback_ap_active && !app_config.wifi_ap_mode) {
       ESP_LOGI(TAG, "Disabling fallback AP after reconnect");
       fallback_ap_active = false;
       ErrorManagerClear(ErrorCode::kWifiFallback);
-      if (wifi_recover_task) {
-        TaskHandle_t t = wifi_recover_task;
-        wifi_recover_task = nullptr;
-        vTaskDelete(t);
-      }
       esp_wifi_set_mode(WIFI_MODE_STA);
       esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached);
     }
@@ -1372,17 +1400,24 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
   if (bits & WIFI_CONNECTED_BIT) {
     ESP_LOGI(TAG, "Connected to SSID:%s", ssid.c_str());
   } else {
-    ESP_LOGW(TAG, "Failed to connect to SSID:%s, starting AP fallback", ssid.c_str());
-    // Fallback to AP-only with default creds
-    wifi_config_t fallback_ap = {};
-    std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.ssid), "esp", sizeof(fallback_ap.ap.ssid) - 1);
-    std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.password), "12345678", sizeof(fallback_ap.ap.password) - 1);
-    fallback_ap.ap.ssid_len = strlen(reinterpret_cast<char*>(fallback_ap.ap.ssid));
-    fallback_ap.ap.channel = 1;
-    fallback_ap.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-    fallback_ap.ap.max_connection = 4;
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &fallback_ap));
+    ESP_LOGW(TAG, "Failed to connect to SSID:%s, starting STA retries", ssid.c_str());
+    xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
+    if (!app_config.wifi_ap_mode && !fallback_ap_active) {
+      ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
+      fallback_ap_active = true;
+      ErrorManagerSet(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
+      wifi_config_t fallback_ap = {};
+      std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.ssid), "esp", sizeof(fallback_ap.ap.ssid) - 1);
+      std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.password), "12345678", sizeof(fallback_ap.ap.password) - 1);
+      fallback_ap.ap.ssid_len = strlen(reinterpret_cast<char*>(fallback_ap.ap.ssid));
+      fallback_ap.ap.channel = 1;
+      fallback_ap.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+      fallback_ap.ap.max_connection = 4;
+      ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+      ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &fallback_ap));
+      ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached));
+    }
+    StartWifiRecoverTask(5000);
   }
 }
 
@@ -2154,6 +2189,24 @@ extern "C" void app_main(void) {
   }
   StartHttpServer();
 
+  // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
+  xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
+  xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
+  if (ina_err == ESP_OK) {
+    xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 3072, nullptr, 2, nullptr, 0);
+  }
+  xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
+  if (temp_ok) {
+    xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
+  }
+  xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
+  if (upload_task == nullptr) {
+    // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
+    xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
+  }
+  xTaskCreatePinnedToCore(&WifiMonitorTask, "wifi_mon", 2048, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(&SdStatsTask, "sd_stats", 3072, nullptr, 1, nullptr, 0);
+
   if (app_config.logging_active && usb_mode == UsbMode::kCdc) {
     const std::string postfix = SanitizePostfix(app_config.logging_postfix);
     log_config.postfix = postfix;
@@ -2174,24 +2227,6 @@ extern "C" void app_main(void) {
       });
     }
   }
-
-  // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
-  xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
-  xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
-  if (ina_err == ESP_OK) {
-    xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 3072, nullptr, 2, nullptr, 0);
-  }
-  xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
-  if (temp_ok) {
-    xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
-  }
-  xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
-  if (upload_task == nullptr) {
-    // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
-    xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
-  }
-  xTaskCreatePinnedToCore(&WifiMonitorTask, "wifi_mon", 2048, nullptr, 1, nullptr, 0);
-  xTaskCreatePinnedToCore(&SdStatsTask, "sd_stats", 3072, nullptr, 1, nullptr, 0);
 
   init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
   ESP_LOGI(TAG, "System ready");

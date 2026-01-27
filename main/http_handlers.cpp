@@ -654,7 +654,7 @@ void LoggingTask(void*) {
       if (at_zero) {
         vTaskDelay(settle_delay);
         SharedState avg{};
-        if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg)) {
+        if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg)) {
           ESP_LOGW(TAG, "Logging: no samples collected, retrying");
           vTaskDelay(pdMS_TO_TICKS(500));
           continue;
@@ -676,7 +676,7 @@ void LoggingTask(void*) {
       // Мы в -200 (или смещённом), это калибровочный замер
       vTaskDelay(settle_delay);
       SharedState avg{};
-      if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg)) {
+      if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg)) {
         ESP_LOGW(TAG, "Logging: no samples collected, retrying");
         vTaskDelay(pdMS_TO_TICKS(500));
         continue;
@@ -724,7 +724,7 @@ void LoggingTask(void*) {
 
     // Без мотора — обычный замер
     SharedState avg1{};
-    if (!collect_avg(log_config.duration_s, current.temp_sensor_count, &avg1)) {
+    if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg1)) {
       ESP_LOGW(TAG, "Logging: no samples collected, retrying");
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;

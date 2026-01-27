@@ -126,6 +126,7 @@ struct LoggingConfig {
   float duration_s;
   bool homed_once;
   std::string postfix;
+  int temp_sensor_count;
   uint64_t file_start_us;
 };
 
