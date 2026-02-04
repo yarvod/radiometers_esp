@@ -8,6 +8,15 @@
           <span>Девайсы</span>
         </NuxtLink>
         <NuxtLink
+          to="/stations"
+          class="nav-link"
+          :class="{ active: route.path.startsWith('/stations') }"
+          @click="closeSidebarIfMobile"
+        >
+          <span class="nav-icon" aria-hidden="true">🛰️</span>
+          <span>Станции</span>
+        </NuxtLink>
+        <NuxtLink
           to="/users"
           class="nav-link"
           :class="{ active: route.path.startsWith('/users') }"
@@ -39,7 +48,7 @@
 <script setup lang="ts">
 const route = useRoute()
 const sidebarOpen = ref(false)
-const devicesActive = computed(() => !route.path.startsWith('/users'))
+const devicesActive = computed(() => !route.path.startsWith('/users') && !route.path.startsWith('/stations'))
 const isMobileViewport = () => (process.client ? window.innerWidth <= 960 : false)
 const closeSidebarIfMobile = () => {
   if (isMobileViewport()) {

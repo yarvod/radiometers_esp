@@ -1,4 +1,10 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+
   db:
     image: postgres:15-alpine
     restart: unless-stopped
@@ -84,6 +90,19 @@ services:
       - mosquitto
       - migrate
     command: ["python", "-m", "app.worker"]
+
+  arq-worker:
+    image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}
+    restart: unless-stopped
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+      APP_REDIS_URL: redis://redis:6379/0
+      TZ: UTC
+    depends_on:
+      - db
+      - redis
+      - migrate
+    command: ["arq", "app.arq_worker.WorkerSettings"]
 
   migrate:
     image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}

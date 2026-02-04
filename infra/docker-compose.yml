@@ -1,6 +1,12 @@
 version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   db:
     image: postgres:15-alpine
     restart: unless-stopped
@@ -9,7 +15,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "5432:5432"
+      - "5441:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
 
@@ -88,6 +94,20 @@ services:
     volumes:
       - ./backend:/app
     command: ["python", "-m", "app.worker"]
+
+  arq-worker:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-radiometer}
+      APP_REDIS_URL: redis://redis:6379/0
+      TZ: UTC
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./backend:/app
+    command: ["arq", "app.arq_worker.WorkerSettings"]
 
   frontend:
     build:

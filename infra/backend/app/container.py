@@ -7,11 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.db.session import create_engine, create_session_factory
-from app.repositories.interfaces import DeviceRepository, ErrorRepository, MeasurementRepository, TokenRepository, UserRepository
+from app.repositories.interfaces import DeviceRepository, ErrorRepository, MeasurementRepository, StationRepository, TokenRepository, UserRepository
 from app.repositories.sqlalchemy import (
     SqlDeviceRepository,
     SqlErrorRepository,
     SqlMeasurementRepository,
+    SqlStationRepository,
     SqlTokenRepository,
     SqlUserRepository,
 )
@@ -19,6 +20,7 @@ from app.services.auth import AuthService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
 from app.services.measurements import MeasurementService
+from app.services.stations import StationService
 from app.services.users import UserService
 
 
@@ -56,6 +58,10 @@ class AppProvider(Provider):
         return SqlMeasurementRepository(session)
 
     @provide(scope=Scope.REQUEST)
+    def provide_station_repo(self, session: AsyncSession) -> StationRepository:
+        return SqlStationRepository(session)
+
+    @provide(scope=Scope.REQUEST)
     def provide_error_repo(self, session: AsyncSession) -> ErrorRepository:
         return SqlErrorRepository(session)
 
@@ -78,6 +84,10 @@ class AppProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def provide_measurement_service(self, measurements: MeasurementRepository) -> MeasurementService:
         return MeasurementService(measurements)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_station_service(self, stations: StationRepository, settings: Settings) -> StationService:
+        return StationService(stations, settings)
 
     @provide(scope=Scope.REQUEST)
     def provide_error_service(self, errors: ErrorRepository) -> ErrorService:

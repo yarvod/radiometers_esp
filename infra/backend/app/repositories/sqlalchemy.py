@@ -3,12 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Sequence
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, User
-from app.db.models import AccessTokenModel, DeviceModel, ErrorEventModel, MeasurementModel, UserModel
-from app.repositories.interfaces import DeviceRepository, ErrorRepository, MeasurementRepository, TokenRepository, UserRepository
+from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, Station, User
+from app.db.models import AccessTokenModel, DeviceModel, ErrorEventModel, MeasurementModel, StationModel, UserModel
+from app.repositories.interfaces import (
+    DeviceRepository,
+    ErrorRepository,
+    MeasurementRepository,
+    StationRepository,
+    TokenRepository,
+    UserRepository,
+)
 
 
 def to_device(model: DeviceModel) -> Device:
@@ -67,6 +74,18 @@ def to_user(model: UserModel) -> User:
         id=model.id,
         username=model.username,
         password_hash=model.password_hash,
+        created_at=model.created_at,
+    )
+
+
+def to_station(model: StationModel) -> Station:
+    return Station(
+        id=model.id,
+        name=model.name,
+        lat=model.lat,
+        lon=model.lon,
+        src=model.src,
+        updated_at=model.updated_at,
         created_at=model.created_at,
     )
 
@@ -271,6 +290,66 @@ class SqlMeasurementRepository(MeasurementRepository):
                 )
             )
         return points
+
+
+class SqlStationRepository(StationRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list(self, limit: int, offset: int, query: str | None) -> Sequence[Station]:
+        stmt = select(StationModel).order_by(StationModel.id.asc()).offset(offset).limit(limit)
+        if query:
+            pattern = f"%{query}%"
+            stmt = stmt.where(or_(StationModel.id.ilike(pattern), StationModel.name.ilike(pattern)))
+        result = await self._session.execute(stmt)
+        return [to_station(row) for row in result.scalars().all()]
+
+    async def count(self, query: str | None) -> int:
+        stmt = select(func.count()).select_from(StationModel)
+        if query:
+            pattern = f"%{query}%"
+            stmt = stmt.where(or_(StationModel.id.ilike(pattern), StationModel.name.ilike(pattern)))
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
+
+    async def get(self, station_id: str) -> Station | None:
+        result = await self._session.execute(select(StationModel).where(StationModel.id == station_id))
+        model = result.scalar_one_or_none()
+        return to_station(model) if model else None
+
+    async def upsert(
+        self,
+        station_id: str,
+        name: str | None,
+        lat: float | None,
+        lon: float | None,
+        src: str | None,
+        updated_at: datetime,
+    ) -> Station:
+        result = await self._session.execute(select(StationModel).where(StationModel.id == station_id))
+        model = result.scalar_one_or_none()
+        if not model:
+            model = StationModel(
+                id=station_id,
+                name=name,
+                lat=lat,
+                lon=lon,
+                src=src,
+                updated_at=updated_at,
+            )
+            self._session.add(model)
+        else:
+            if name is not None:
+                model.name = name
+            if lat is not None:
+                model.lat = lat
+            if lon is not None:
+                model.lon = lon
+            if src is not None:
+                model.src = src
+            model.updated_at = updated_at
+        await self._session.flush()
+        return to_station(model)
 
 
 class SqlErrorRepository(ErrorRepository):

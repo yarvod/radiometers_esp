@@ -12,3 +12,5 @@ bcrypt==3.2.2
 aiomqtt==2.4.0
 paho-mqtt==2.1.0
 python-dotenv==1.0.1
+httpx==0.27.0
+arq==0.26.0

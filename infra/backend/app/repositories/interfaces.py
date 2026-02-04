@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Iterable, Sequence
 
-from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, User
+from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, Station, User
 
 
 class DeviceRepository(ABC):
@@ -33,6 +33,32 @@ class DeviceRepository(ABC):
         temp_addresses: list[str] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
+        raise NotImplementedError
+
+
+class StationRepository(ABC):
+    @abstractmethod
+    async def list(self, limit: int, offset: int, query: str | None) -> Sequence[Station]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count(self, query: str | None) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, station_id: str) -> Station | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert(
+        self,
+        station_id: str,
+        name: str | None,
+        lat: float | None,
+        lon: float | None,
+        src: str | None,
+        updated_at: datetime,
+    ) -> Station:
         raise NotImplementedError
 
 

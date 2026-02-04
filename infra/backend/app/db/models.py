@@ -28,6 +28,18 @@ class DeviceModel(Base):
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")
 
 
+class StationModel(Base):
+    __tablename__ = "stations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    src: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class MeasurementModel(Base):
     __tablename__ = "measurements"
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserOut(BaseModel):
@@ -67,6 +67,42 @@ class DeviceConfigOut(BaseModel):
     temp_labels: list[str] = Field(default_factory=list)
     temp_addresses: list[str] = Field(default_factory=list)
     adc_labels: dict[str, str] = Field(default_factory=dict)
+
+
+class StationOut(BaseModel):
+    id: str
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    src: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class StationUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    src: Optional[str] = None
+
+
+class StationRefreshRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    requested_at: Optional[datetime] = Field(default=None, alias="datetime")
+
+
+class StationsResponse(BaseModel):
+    items: list[StationOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class StationsRefreshResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    requested_at: datetime = Field(alias="datetime")
+    fetched: int
+    updated: int
 
 
 class MeasurementOut(BaseModel):

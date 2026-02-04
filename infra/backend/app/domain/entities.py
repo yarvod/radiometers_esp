@@ -80,3 +80,14 @@ class ErrorEvent:
     message: str
     active: bool
     created_at: datetime
+
+
+@dataclass
+class Station:
+    id: str
+    name: Optional[str]
+    lat: Optional[float]
+    lon: Optional[float]
+    src: Optional[str]
+    updated_at: Optional[datetime]
+    created_at: datetime
