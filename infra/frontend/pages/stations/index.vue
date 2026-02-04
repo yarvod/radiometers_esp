@@ -55,14 +55,14 @@
           <tbody>
             <tr
               v-for="station in stations"
-              :key="station.id"
+              :key="station.station_id"
               class="table-row"
               tabindex="0"
-              @click="openStation(station.id)"
-              @keydown.enter="openStation(station.id)"
+              @click="openStation(station.station_id)"
+              @keydown.enter="openStation(station.station_id)"
             >
               <td>
-                <strong>{{ station.id }}</strong>
+                <strong>{{ station.station_id }}</strong>
                 <div class="muted small">Создано: {{ formatDate(station.created_at) }}</div>
               </td>
               <td>{{ station.name || '—' }}</td>

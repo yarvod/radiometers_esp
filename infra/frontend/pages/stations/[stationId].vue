@@ -3,7 +3,7 @@
     <div class="header">
       <button class="btn ghost back" @click="navigateTo('/stations')">← Назад</button>
       <div>
-        <h2>Станция {{ station?.id || stationId }}</h2>
+        <h2>Станция {{ station?.station_id || stationId }}</h2>
         <p class="muted">Детальная карточка станции зондирования.</p>
       </div>
     </div>

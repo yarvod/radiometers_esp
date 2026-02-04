@@ -31,7 +31,8 @@ class DeviceModel(Base):
 class StationModel(Base):
     __tablename__ = "stations"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    station_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lon: Mapped[float | None] = mapped_column(Float, nullable=True)

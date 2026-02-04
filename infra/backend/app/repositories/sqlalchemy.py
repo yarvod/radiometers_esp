@@ -81,6 +81,7 @@ def to_user(model: UserModel) -> User:
 def to_station(model: StationModel) -> Station:
     return Station(
         id=model.id,
+        station_id=model.station_id,
         name=model.name,
         lat=model.lat,
         lon=model.lon,
@@ -297,10 +298,10 @@ class SqlStationRepository(StationRepository):
         self._session = session
 
     async def list(self, limit: int, offset: int, query: str | None) -> Sequence[Station]:
-        stmt = select(StationModel).order_by(StationModel.id.asc()).offset(offset).limit(limit)
+        stmt = select(StationModel).order_by(StationModel.station_id.asc()).offset(offset).limit(limit)
         if query:
             pattern = f"%{query}%"
-            stmt = stmt.where(or_(StationModel.id.ilike(pattern), StationModel.name.ilike(pattern)))
+            stmt = stmt.where(or_(StationModel.station_id.ilike(pattern), StationModel.name.ilike(pattern)))
         result = await self._session.execute(stmt)
         return [to_station(row) for row in result.scalars().all()]
 
@@ -308,12 +309,12 @@ class SqlStationRepository(StationRepository):
         stmt = select(func.count()).select_from(StationModel)
         if query:
             pattern = f"%{query}%"
-            stmt = stmt.where(or_(StationModel.id.ilike(pattern), StationModel.name.ilike(pattern)))
+            stmt = stmt.where(or_(StationModel.station_id.ilike(pattern), StationModel.name.ilike(pattern)))
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
 
     async def get(self, station_id: str) -> Station | None:
-        result = await self._session.execute(select(StationModel).where(StationModel.id == station_id))
+        result = await self._session.execute(select(StationModel).where(StationModel.station_id == station_id))
         model = result.scalar_one_or_none()
         return to_station(model) if model else None
 
@@ -326,11 +327,11 @@ class SqlStationRepository(StationRepository):
         src: str | None,
         updated_at: datetime,
     ) -> Station:
-        result = await self._session.execute(select(StationModel).where(StationModel.id == station_id))
+        result = await self._session.execute(select(StationModel).where(StationModel.station_id == station_id))
         model = result.scalar_one_or_none()
         if not model:
             model = StationModel(
-                id=station_id,
+                station_id=station_id,
                 name=name,
                 lat=lat,
                 lon=lon,

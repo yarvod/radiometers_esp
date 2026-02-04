@@ -71,6 +71,7 @@ class DeviceConfigOut(BaseModel):
 
 class StationOut(BaseModel):
     id: str
+    station_id: str
     name: Optional[str] = None
     lat: Optional[float] = None
     lon: Optional[float] = None

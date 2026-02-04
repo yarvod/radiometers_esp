@@ -85,6 +85,7 @@ class ErrorEvent:
 @dataclass
 class Station:
     id: str
+    station_id: str
     name: Optional[str]
     lat: Optional[float]
     lon: Optional[float]
