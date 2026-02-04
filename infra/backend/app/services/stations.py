@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -8,6 +9,8 @@ import httpx
 from app.core.config import Settings
 from app.domain.entities import Station
 from app.repositories.interfaces import StationRepository
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -52,28 +55,6 @@ def _parse_station(raw: dict) -> StationPayload | None:
         lon=_parse_float(raw.get("lon")),
         src=src,
     )
-
-
-def _flatten_station_items(raw: object) -> list[dict]:
-    items: list[dict] = []
-
-    def walk(node: object) -> None:
-        if isinstance(node, dict):
-            if "stationid" in node:
-                items.append(node)
-                return
-            if "stations" in node:
-                walk(node.get("stations"))
-                return
-            for value in node.values():
-                walk(value)
-            return
-        if isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(raw)
-    return items
 
 
 class StationService:
@@ -155,10 +136,17 @@ class StationService:
             resp = await client.get(self._settings.stations_url, params=params, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}")
+        logger.info("stations raw response: %s", resp.text)
         payload = resp.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Invalid stations payload")
+        raw_list = payload.get("stations", [])
         stations: list[StationPayload] = []
-        for raw in _flatten_station_items(payload):
-            parsed = _parse_station(raw)
-            if parsed:
-                stations.append(parsed)
+        if isinstance(raw_list, list):
+            for raw in raw_list:
+                if not isinstance(raw, dict):
+                    continue
+                parsed = _parse_station(raw)
+                if parsed:
+                    stations.append(parsed)
         return stations
