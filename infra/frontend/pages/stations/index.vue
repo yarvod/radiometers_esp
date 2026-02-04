@@ -7,8 +7,8 @@
       </div>
       <div class="actions">
         <div class="form-group">
-          <label class="muted small">Дата/время</label>
-          <input type="datetime-local" v-model="refreshForm.datetimeLocal" />
+          <label class="muted small">Дата/время (UTC)</label>
+          <input type="datetime-local" v-model="refreshForm.datetimeLocal" step="10800" />
         </div>
         <button class="btn primary" @click="refreshStations" :disabled="refreshing">Обновить список</button>
       </div>
@@ -110,26 +110,35 @@ const pageCount = computed(() => Math.max(1, Math.ceil(total.value / limit.value
 const rangeStart = computed(() => (total.value === 0 ? 0 : offset.value + 1))
 const rangeEnd = computed(() => Math.min(total.value, offset.value + stations.value.length))
 
-function floorTo12Hours(date: Date) {
+function floorTo12HoursUtc(date: Date) {
   const copy = new Date(date)
-  copy.setMinutes(0, 0, 0)
-  const hours = copy.getHours()
-  copy.setHours(Math.floor(hours / 12) * 12)
+  copy.setUTCMinutes(0, 0, 0)
+  const hours = copy.getUTCHours()
+  copy.setUTCHours(Math.floor(hours / 12) * 12)
   return copy
 }
 
-function toLocalInputValue(date = new Date()) {
+function toUtcInputValue(date = new Date()) {
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(
-    date.getMinutes()
-  )}`
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(
+    date.getUTCHours()
+  )}:${pad(date.getUTCMinutes())}`
 }
 
-function normalizeLocalInput(value: string) {
-  if (!value) return value
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
-  return toLocalInputValue(floorTo12Hours(parsed))
+function parseUtcInput(value: string) {
+  if (!value) return null
+  const [datePart, timePart] = value.split('T')
+  if (!datePart || !timePart) return null
+  const [year, month, day] = datePart.split('-').map(Number)
+  const [hour, minute] = timePart.split(':').map(Number)
+  if ([year, month, day, hour, minute].some((v) => Number.isNaN(v))) return null
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, 0))
+}
+
+function normalizeUtcInput(value: string) {
+  const parsed = parseUtcInput(value)
+  if (!parsed) return value
+  return toUtcInputValue(floorTo12HoursUtc(parsed))
 }
 
 function formatDate(value: string) {
@@ -163,8 +172,11 @@ async function refreshStations() {
   try {
     const payload: any = {}
     if (refreshForm.datetimeLocal) {
-      const normalized = normalizeLocalInput(refreshForm.datetimeLocal)
-      payload.datetime = new Date(normalized).toISOString()
+      const normalized = normalizeUtcInput(refreshForm.datetimeLocal)
+      const parsed = parseUtcInput(normalized)
+      if (parsed) {
+        payload.datetime = parsed.toISOString()
+      }
     }
     await apiFetch('/api/stations/refresh', { method: 'POST', body: payload })
     await loadStations()
@@ -192,7 +204,7 @@ function openStation(id: string) {
 }
 
 onMounted(() => {
-  refreshForm.datetimeLocal = toLocalInputValue(floorTo12Hours(new Date()))
+  refreshForm.datetimeLocal = toUtcInputValue(floorTo12HoursUtc(new Date()))
   loadStations()
 })
 
@@ -200,7 +212,7 @@ watch(
   () => refreshForm.datetimeLocal,
   (value) => {
     if (!value) return
-    const normalized = normalizeLocalInput(value)
+    const normalized = normalizeUtcInput(value)
     if (normalized !== value) {
       refreshForm.datetimeLocal = normalized
     }
