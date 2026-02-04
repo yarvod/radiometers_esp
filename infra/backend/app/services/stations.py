@@ -149,4 +149,5 @@ class StationService:
                 parsed = _parse_station(raw)
                 if parsed:
                     stations.append(parsed)
+        logger.info("stations parsed count=%s", len(stations))
         return stations
