@@ -32,7 +32,7 @@ class StationModel(Base):
     __tablename__ = "stations"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lon: Mapped[float | None] = mapped_column(Float, nullable=True)
     src: Mapped[str | None] = mapped_column(String(64), nullable=True)
