@@ -54,6 +54,28 @@ def _parse_station(raw: dict) -> StationPayload | None:
     )
 
 
+def _flatten_station_items(raw: object) -> list[dict]:
+    items: list[dict] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            if "stationid" in node:
+                items.append(node)
+                return
+            if "stations" in node:
+                walk(node.get("stations"))
+                return
+            for value in node.values():
+                walk(value)
+            return
+        if isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(raw)
+    return items
+
+
 class StationService:
     def __init__(self, stations: StationRepository, settings: Settings) -> None:
         self._stations = stations
@@ -134,13 +156,9 @@ class StationService:
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}")
         payload = resp.json()
-        raw_list = payload.get("stations", []) if isinstance(payload, dict) else []
         stations: list[StationPayload] = []
-        if isinstance(raw_list, list):
-            for raw in raw_list:
-                if not isinstance(raw, dict):
-                    continue
-                parsed = _parse_station(raw)
-                if parsed:
-                    stations.append(parsed)
+        for raw in _flatten_station_items(payload):
+            parsed = _parse_station(raw)
+            if parsed:
+                stations.append(parsed)
         return stations
