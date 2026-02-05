@@ -91,7 +91,7 @@
               <option value="csv">Скачать CSV</option>
               <option value="pwv">Построить PWV</option>
             </select>
-            <button class="btn primary sm" @click="runBulkAction" :disabled="selectedCount === 0 || bulkRunning">
+            <button class="btn primary sm" @click="runBulkAction" :disabled="!hydrated || selectedCount === 0 || bulkRunning">
               Выполнить
             </button>
           </div>
@@ -188,7 +188,7 @@
           </label>
         </div>
         <div class="actions">
-          <button class="btn primary sm" @click="loadPwv" :disabled="pwvLoading">Построить</button>
+          <button class="btn primary sm" @click="loadPwv" :disabled="!hydrated || pwvLoading">Построить</button>
         </div>
         <div v-if="pwvLoading" class="loading-row">
           <span class="muted">Считаем PWV…</span>
@@ -196,18 +196,13 @@
         </div>
         <div v-else-if="pwvItems.length === 0" class="muted empty">Нет данных для графика</div>
         <div v-else class="pwv-chart">
-          <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" role="img">
-            <polyline :points="pwvPolyline" fill="none" stroke="#2ecc71" stroke-width="2" />
-          </svg>
           <div class="pwv-legend">
+            <div class="muted">Станция: {{ station?.name || station?.station_id || stationId }}</div>
             <div class="muted">Мин: {{ pwvMin }} мм</div>
             <div class="muted">Макс: {{ pwvMax }} мм</div>
           </div>
-          <div class="pwv-table">
-            <div class="pwv-row" v-for="item in pwvItems" :key="item.id">
-              <div class="pwv-time">{{ formatOffset(item.sounding_time) }}</div>
-              <div class="pwv-value">{{ formatPwv(item.pwv) }}</div>
-            </div>
+          <div class="pwv-chart-body">
+            <canvas ref="pwvChartCanvas"></canvas>
           </div>
         </div>
         <p class="muted" v-if="pwvStatus">{{ pwvStatus }}</p>
@@ -261,8 +256,10 @@ const pwvOffsetHours = ref(0)
 const pwvItems = ref<any[]>([])
 const pwvLoading = ref(false)
 const pwvStatus = ref('')
-const chartWidth = 600
-const chartHeight = 200
+const pwvChartCanvas = ref<HTMLCanvasElement | null>(null)
+let pwvChart: any = null
+let ChartCtor: any = null
+const hydrated = ref(false)
 const loadForm = reactive({
   startAt: '',
   endAt: '',
@@ -350,19 +347,10 @@ const pwvMax = computed(() => {
   if (!values.length) return '—'
   return Math.max(...values).toFixed(2)
 })
-const pwvPolyline = computed(() => {
-  const values = pwvItems.value.map((item) => item.pwv).filter((v) => typeof v === 'number') as number[]
-  if (!values.length) return ''
-  const minVal = Math.min(...values)
-  const maxVal = Math.max(...values)
-  const range = maxVal - minVal || 1
-  const points = pwvItems.value.map((item, idx) => {
-    const x = (idx / Math.max(1, pwvItems.value.length - 1)) * chartWidth
-    const v = typeof item.pwv === 'number' ? item.pwv : minVal
-    const y = chartHeight - ((v - minVal) / range) * (chartHeight - 20) - 10
-    return `${x.toFixed(2)},${y.toFixed(2)}`
-  })
-  return points.join(' ')
+const xAxisTitle = computed(() => {
+  const offset = pwvOffsetHours.value || 0
+  const sign = offset >= 0 ? '+' : ''
+  return `Время (UTC${offset ? sign + offset : ''})`
 })
 
 function formatCell(value: any) {
@@ -381,6 +369,81 @@ function formatOffset(value: string) {
 function formatPwv(value: any) {
   if (typeof value !== 'number') return '—'
   return `${value.toFixed(3)} мм`
+}
+
+const buildPwvDataset = () => {
+  const data = pwvItems.value.map((item) => (typeof item.pwv === 'number' ? item.pwv : null))
+  const label = station.value?.name || station.value?.station_id || stationId.value || 'PWV'
+  return {
+    label,
+    data,
+    borderColor: '#2ecc71',
+    backgroundColor: 'rgba(46, 204, 113, 0.15)',
+    pointRadius: 3,
+    pointHoverRadius: 4,
+    tension: 0.25,
+    spanGaps: false,
+  }
+}
+
+const renderPwvChart = () => {
+  if (!ChartCtor) return
+  if (!pwvChartCanvas.value) return
+  if (!pwvItems.value.length) return
+  const labels = pwvItems.value.map((item) => formatOffset(item.sounding_time))
+  const dataset = buildPwvDataset()
+  if (!pwvChart) {
+    pwvChart = new ChartCtor(pwvChartCanvas.value, {
+      type: 'line',
+      data: { labels, datasets: [dataset] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            position: 'top',
+            align: 'start',
+            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
+          },
+          tooltip: {
+            callbacks: {
+              label: (context: any) => {
+                const value = context.parsed.y
+                if (typeof value !== 'number') return '—'
+                return `${value.toFixed(3)} мм`
+              },
+            },
+          },
+        },
+        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
+        scales: {
+          x: {
+            title: { display: true, text: xAxisTitle.value },
+            ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 },
+            grid: { display: true, color: 'rgba(148, 163, 184, 0.45)', borderDash: [4, 4] },
+          },
+          y: {
+            title: { display: true, text: 'PWV, мм' },
+            ticks: { maxTicksLimit: 6 },
+            grid: { display: true, color: 'rgba(148, 163, 184, 0.45)', borderDash: [4, 4] },
+          },
+        },
+      },
+    })
+  } else {
+    pwvChart.data.labels = labels
+    pwvChart.data.datasets = [dataset]
+    pwvChart.options.scales.x.title.text = xAxisTitle.value
+    pwvChart.update('none')
+  }
+}
+
+const destroyPwvChart = () => {
+  if (pwvChart) {
+    pwvChart.destroy()
+    pwvChart = null
+  }
 }
 
 async function loadSoundings() {
@@ -508,6 +571,7 @@ function openPwvModal() {
 
 function closePwvModal() {
   pwvModalOpen.value = false
+  destroyPwvChart()
 }
 
 async function loadPwv() {
@@ -523,6 +587,8 @@ async function loadPwv() {
       },
     })
     pwvItems.value = res.items || []
+    await nextTick()
+    renderPwvChart()
   } catch (e: any) {
     pwvStatus.value = e?.data?.detail || e?.message || 'Не удалось рассчитать PWV'
   } finally {
@@ -601,6 +667,7 @@ async function saveStation() {
 }
 
 onMounted(() => {
+  hydrated.value = true
   loadStation()
   const now = new Date()
   const start = new Date(now.getTime() - 24 * 3600 * 1000)
@@ -609,10 +676,40 @@ onMounted(() => {
   filterForm.startAt = ''
   filterForm.endAt = ''
   loadSoundings()
+  if (process.client && !ChartCtor) {
+    import('chart.js/auto').then((mod: any) => {
+      ChartCtor = mod?.Chart || mod?.default || mod
+      renderPwvChart()
+    })
+  }
 })
 
 onBeforeUnmount(() => {
   stopJobPolling()
   stopExportPolling()
+  destroyPwvChart()
+  if (process.client) {
+    document.body.style.overflow = ''
+  }
 })
+
+watch(
+  () => [pwvOffsetHours.value, pwvModalOpen.value, pwvItems.value.length, station.value?.name],
+  () => {
+    if (!pwvModalOpen.value || pwvItems.value.length === 0) {
+      destroyPwvChart()
+      return
+    }
+    nextTick().then(() => renderPwvChart())
+  },
+  { flush: 'post' }
+)
+
+watch(
+  () => pwvModalOpen.value,
+  (value) => {
+    if (!process.client) return
+    document.body.style.overflow = value ? 'hidden' : ''
+  }
+)
 </script>
