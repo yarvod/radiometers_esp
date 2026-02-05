@@ -297,6 +297,27 @@ class SoundingService:
     async def get_export_job(self, job_id: str) -> SoundingExportJob | None:
         return await self._export_jobs.get(job_id)
 
+    async def compute_pwv(
+        self,
+        station_code: str,
+        sounding_ids: list[str],
+        min_height: float,
+    ) -> list[tuple[str, datetime, float | None]]:
+        station = await self._stations.get(station_code.strip())
+        if not station:
+            raise ValueError("Station not found")
+        ids = [sid.strip() for sid in sounding_ids if sid.strip()]
+        if not ids:
+            raise ValueError("No soundings selected")
+        soundings = await self._soundings.get_many(ids)
+        soundings = [s for s in soundings if s.station_id == station.id]
+        items: list[tuple[str, datetime, float | None]] = []
+        for sounding in soundings:
+            pwv = self._compute_pwv_for_sounding(sounding, min_height)
+            items.append((sounding.id, sounding.sounding_time, pwv))
+        items.sort(key=lambda item: item[1])
+        return items
+
     async def process_export_job(self, job_id: str) -> None:
         job = await self._export_jobs.get(job_id)
         if not job:
@@ -519,3 +540,38 @@ class SoundingService:
             raw_text=payload.raw_text,
             row_count=payload.row_count,
         )
+
+    @staticmethod
+    def _compute_pwv_for_sounding(sounding: Sounding, min_height: float) -> float | None:
+        columns = sounding.columns or []
+        rows = sounding.rows or []
+        if not columns or not rows:
+            return None
+        col_map = {str(col).split(",", 1)[0].strip(): idx for idx, col in enumerate(columns)}
+        h_idx = col_map.get("HGHT")
+        absh_idx = col_map.get("ABSH")
+        if h_idx is None or absh_idx is None:
+            return None
+        samples: list[tuple[float, float]] = []
+        for row in rows:
+            try:
+                h_val = float(row[h_idx])
+                a_val = float(row[absh_idx])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if h_val < min_height:
+                continue
+            samples.append((h_val, a_val))
+        if len(samples) < 2:
+            return None
+        samples.sort(key=lambda x: x[0])
+        total = 0.0
+        prev_h, prev_a = samples[0]
+        for h_val, a_val in samples[1:]:
+            dh = h_val - prev_h
+            if dh <= 0:
+                prev_h, prev_a = h_val, a_val
+                continue
+            total += (prev_a + a_val) * 0.5 * dh
+            prev_h, prev_a = h_val, a_val
+        return total / 1000.0

@@ -89,8 +89,9 @@
           <div class="actions">
             <select v-model="bulkAction">
               <option value="csv">Скачать CSV</option>
+              <option value="pwv">Построить PWV</option>
             </select>
-            <button class="btn primary sm" @click="runBulkAction" :disabled="selectedCount === 0 || exportRunning">
+            <button class="btn primary sm" @click="runBulkAction" :disabled="selectedCount === 0 || bulkRunning">
               Выполнить
             </button>
           </div>
@@ -171,6 +172,47 @@
         </p>
       </div>
     </div>
+
+    <div class="modal-backdrop" v-if="pwvModalOpen">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>PWV для выбранных профилей</h3>
+          <button class="btn ghost sm" @click="closePwvModal">Закрыть</button>
+        </div>
+        <div class="inline fields">
+          <label class="compact">Мин. высота, м
+            <input type="number" min="0" step="50" v-model.number="pwvMinHeight" />
+          </label>
+          <label class="compact">Смещение, часы
+            <input type="number" min="-12" max="12" step="1" v-model.number="pwvOffsetHours" />
+          </label>
+        </div>
+        <div class="actions">
+          <button class="btn primary sm" @click="loadPwv" :disabled="pwvLoading">Построить</button>
+        </div>
+        <div v-if="pwvLoading" class="loading-row">
+          <span class="muted">Считаем PWV…</span>
+          <span class="loading-bar"></span>
+        </div>
+        <div v-else-if="pwvItems.length === 0" class="muted empty">Нет данных для графика</div>
+        <div v-else class="pwv-chart">
+          <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" role="img">
+            <polyline :points="pwvPolyline" fill="none" stroke="#2ecc71" stroke-width="2" />
+          </svg>
+          <div class="pwv-legend">
+            <div class="muted">Мин: {{ pwvMin }} мм</div>
+            <div class="muted">Макс: {{ pwvMax }} мм</div>
+          </div>
+          <div class="pwv-table">
+            <div class="pwv-row" v-for="item in pwvItems" :key="item.id">
+              <div class="pwv-time">{{ formatOffset(item.sounding_time) }}</div>
+              <div class="pwv-value">{{ formatPwv(item.pwv) }}</div>
+            </div>
+          </div>
+        </div>
+        <p class="muted" v-if="pwvStatus">{{ pwvStatus }}</p>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -213,6 +255,14 @@ const jobTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const exportJob = ref<any | null>(null)
 const exportStatus = ref('')
 const exportTimer = ref<ReturnType<typeof setInterval> | null>(null)
+const pwvModalOpen = ref(false)
+const pwvMinHeight = ref(0)
+const pwvOffsetHours = ref(0)
+const pwvItems = ref<any[]>([])
+const pwvLoading = ref(false)
+const pwvStatus = ref('')
+const chartWidth = 600
+const chartHeight = 200
 const loadForm = reactive({
   startAt: '',
   endAt: '',
@@ -272,6 +322,7 @@ const rangeStart = computed(() => (soundingsTotal.value === 0 ? 0 : soundingsOff
 const rangeEnd = computed(() => Math.min(soundingsTotal.value, soundingsOffset.value + soundings.value.length))
 const jobRunning = computed(() => job.value && ['pending', 'running'].includes(job.value.status))
 const exportRunning = computed(() => exportJob.value && ['pending', 'running'].includes(exportJob.value.status))
+const bulkRunning = computed(() => exportRunning.value || pwvLoading.value)
 const jobPercent = computed(() => {
   if (!job.value || !job.value.total) return 0
   return Math.min(100, Math.round((job.value.done / job.value.total) * 100))
@@ -289,11 +340,47 @@ const visibleRows = computed(() => {
   if (!selectedSounding.value) return []
   return selectedSounding.value.rows.slice(0, maxRows)
 })
+const pwvMin = computed(() => {
+  const values = pwvItems.value.map((item) => item.pwv).filter((v) => typeof v === 'number') as number[]
+  if (!values.length) return '—'
+  return Math.min(...values).toFixed(2)
+})
+const pwvMax = computed(() => {
+  const values = pwvItems.value.map((item) => item.pwv).filter((v) => typeof v === 'number') as number[]
+  if (!values.length) return '—'
+  return Math.max(...values).toFixed(2)
+})
+const pwvPolyline = computed(() => {
+  const values = pwvItems.value.map((item) => item.pwv).filter((v) => typeof v === 'number') as number[]
+  if (!values.length) return ''
+  const minVal = Math.min(...values)
+  const maxVal = Math.max(...values)
+  const range = maxVal - minVal || 1
+  const points = pwvItems.value.map((item, idx) => {
+    const x = (idx / Math.max(1, pwvItems.value.length - 1)) * chartWidth
+    const v = typeof item.pwv === 'number' ? item.pwv : minVal
+    const y = chartHeight - ((v - minVal) / range) * (chartHeight - 20) - 10
+    return `${x.toFixed(2)},${y.toFixed(2)}`
+  })
+  return points.join(' ')
+})
 
 function formatCell(value: any) {
   if (value == null) return ''
   if (typeof value === 'number') return value.toFixed(2)
   return String(value)
+}
+
+function formatOffset(value: string) {
+  const date = new Date(value)
+  if (!Number.isFinite(pwvOffsetHours.value)) return formatUtc(value)
+  const shifted = new Date(date.getTime() + pwvOffsetHours.value * 3600 * 1000)
+  return shifted.toISOString().replace('T', ' ').slice(0, 16)
+}
+
+function formatPwv(value: any) {
+  if (typeof value !== 'number') return '—'
+  return `${value.toFixed(3)} мм`
 }
 
 async function loadSoundings() {
@@ -354,6 +441,10 @@ function toggleSelectAll() {
 async function runBulkAction() {
   if (bulkAction.value === 'csv') {
     await startExport()
+    return
+  }
+  if (bulkAction.value === 'pwv') {
+    openPwvModal()
   }
 }
 
@@ -407,6 +498,36 @@ function downloadExport() {
   const base = String(config.public.apiBase || '').replace(/\/$/, '')
   window.location.href = `${base}/api/soundings/exports/${exportJob.value.id}/download`
   exportJob.value.file_name = null
+}
+
+function openPwvModal() {
+  pwvModalOpen.value = true
+  pwvStatus.value = ''
+  pwvItems.value = []
+}
+
+function closePwvModal() {
+  pwvModalOpen.value = false
+}
+
+async function loadPwv() {
+  if (!stationId.value) return
+  pwvStatus.value = ''
+  pwvLoading.value = true
+  try {
+    const res = await apiFetch<any>(`/api/stations/${stationId.value}/soundings/pwv`, {
+      method: 'POST',
+      body: {
+        ids: selectedIds.value,
+        min_height: pwvMinHeight.value || 0,
+      },
+    })
+    pwvItems.value = res.items || []
+  } catch (e: any) {
+    pwvStatus.value = e?.data?.detail || e?.message || 'Не удалось рассчитать PWV'
+  } finally {
+    pwvLoading.value = false
+  }
 }
 
 async function startSoundingJob() {

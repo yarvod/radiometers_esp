@@ -403,6 +403,17 @@ input { width: 100%; box-sizing: border-box; }
 .station-page .pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); margin-top: 10px; }
 .station-page .pager { display: flex; align-items: center; gap: 8px; }
 
+.modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 30; }
+.modal { width: min(820px, 96vw); background: #fff; border-radius: 16px; padding: 18px; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2); display: flex; flex-direction: column; gap: 14px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pwv-chart { display: flex; flex-direction: column; gap: 10px; }
+.pwv-chart svg { width: 100%; height: 200px; background: #f7fafc; border: 1px solid var(--border); border-radius: 12px; padding: 6px; }
+.pwv-legend { display: flex; gap: 16px; }
+.pwv-table { display: grid; gap: 6px; max-height: 220px; overflow: auto; border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: #fbfcfe; }
+.pwv-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.pwv-time { color: #1f2d3d; font-weight: 600; }
+.pwv-value { color: #2e8b57; font-weight: 700; }
+
 @keyframes stations-loading {
   0% { transform: translateX(0); }
   100% { transform: translateX(160%); }

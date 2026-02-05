@@ -145,6 +145,11 @@ class SoundingExportRequest(BaseModel):
     ids: list[str] = Field(..., min_length=1)
 
 
+class SoundingPwvRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+    min_height: float = Field(default=0.0, ge=0.0)
+
+
 class SoundingJobOut(BaseModel):
     id: str
     station_id: str
@@ -170,6 +175,16 @@ class SoundingExportJobOut(BaseModel):
     file_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class SoundingPwvItemOut(BaseModel):
+    id: str
+    sounding_time: datetime
+    pwv: Optional[float] = None
+
+
+class SoundingPwvResponse(BaseModel):
+    items: list[SoundingPwvItemOut]
 
 
 class SoundingScheduleItemOut(BaseModel):

@@ -15,6 +15,9 @@ from app.api.schemas import (
     SoundingJobCreateRequest,
     SoundingJobOut,
     SoundingOut,
+    SoundingPwvItemOut,
+    SoundingPwvRequest,
+    SoundingPwvResponse,
     SoundingScheduleConfigOut,
     SoundingScheduleConfigUpdateRequest,
     SoundingScheduleCreateRequest,
@@ -109,6 +112,23 @@ async def create_export_job(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return SoundingExportJobOut.model_validate(job, from_attributes=True)
+
+
+@station_router.post("/pwv", response_model=SoundingPwvResponse)
+@inject
+async def compute_pwv(
+    station_id: str,
+    payload: SoundingPwvRequest,
+    soundings: FromDishka[SoundingService],
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        items = await soundings.compute_pwv(station_id, payload.ids, payload.min_height)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return SoundingPwvResponse(
+        items=[SoundingPwvItemOut(id=item_id, sounding_time=dt, pwv=pwv) for item_id, dt, pwv in items]
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=SoundingJobOut)
