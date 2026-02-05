@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -9,8 +8,6 @@ import httpx
 from app.core.config import Settings
 from app.domain.entities import Station
 from app.repositories.interfaces import StationRepository
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -136,7 +133,6 @@ class StationService:
             resp = await client.get(self._settings.stations_url, params=params, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(f"HTTP {resp.status_code}")
-        logger.info("stations raw response: %s", resp.text)
         payload = resp.json()
         if not isinstance(payload, dict):
             raise RuntimeError("Invalid stations payload")
@@ -149,5 +145,4 @@ class StationService:
                 parsed = _parse_station(raw)
                 if parsed:
                     stations.append(parsed)
-        logger.info("stations parsed count=%s", len(stations))
         return stations

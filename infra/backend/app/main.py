@@ -7,7 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from dishka import make_async_container
 from dishka.integrations.fastapi import setup_dishka
 
-from app.api.routes import auth_router, devices_router, measurements_router, stations_router, users_router
+from app.api.routes import (
+    auth_router,
+    devices_router,
+    measurements_router,
+    soundings_router,
+    station_soundings_router,
+    stations_router,
+    users_router,
+)
 from app.container import AppProvider
 
 
@@ -37,6 +45,8 @@ def create_app() -> FastAPI:
     app.include_router(devices_router, prefix="/api")
     app.include_router(measurements_router, prefix="/api")
     app.include_router(stations_router, prefix="/api")
+    app.include_router(soundings_router, prefix="/api")
+    app.include_router(station_soundings_router, prefix="/api")
 
     container = make_async_container(AppProvider())
     setup_dishka(container, app)

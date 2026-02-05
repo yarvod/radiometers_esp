@@ -106,6 +106,105 @@ class StationsRefreshResponse(BaseModel):
     updated: int
 
 
+class SoundingOut(BaseModel):
+    id: str
+    station_id: str
+    sounding_time: datetime
+    station_name: Optional[str] = None
+    row_count: int
+    fetched_at: datetime
+
+
+class SoundingDetailOut(BaseModel):
+    id: str
+    station_id: str
+    sounding_time: datetime
+    station_name: Optional[str] = None
+    columns: list[str]
+    rows: list[list[object]]
+    units: dict[str, str]
+    raw_text: str
+    row_count: int
+    fetched_at: datetime
+
+
+class SoundingsResponse(BaseModel):
+    items: list[SoundingOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class SoundingJobCreateRequest(BaseModel):
+    start_at: datetime
+    end_at: datetime
+    step_hours: int = Field(default=3, ge=1, le=24)
+
+
+class SoundingExportRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+
+
+class SoundingJobOut(BaseModel):
+    id: str
+    station_id: str
+    status: str
+    start_at: datetime
+    end_at: datetime
+    step_hours: int
+    total: int
+    done: int
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SoundingExportJobOut(BaseModel):
+    id: str
+    station_id: str
+    status: str
+    sounding_ids: list[str]
+    total: int
+    done: int
+    error: Optional[str] = None
+    file_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SoundingScheduleItemOut(BaseModel):
+    id: str
+    station_id: str
+    station_code: str
+    station_name: Optional[str] = None
+    enabled: bool
+    created_at: datetime
+
+
+class SoundingScheduleResponse(BaseModel):
+    items: list[SoundingScheduleItemOut]
+
+
+class SoundingScheduleCreateRequest(BaseModel):
+    station_id: str = Field(..., min_length=1)
+
+
+class SoundingScheduleUpdateRequest(BaseModel):
+    enabled: bool
+
+
+class SoundingScheduleConfigOut(BaseModel):
+    id: int
+    interval_hours: int
+    offset_hours: int
+    updated_at: datetime
+
+
+class SoundingScheduleConfigUpdateRequest(BaseModel):
+    interval_hours: Optional[int] = Field(default=None, ge=1, le=24)
+    offset_hours: Optional[int] = Field(default=None, ge=0, le=23)
+
+
 class MeasurementOut(BaseModel):
     id: str
     device_id: str

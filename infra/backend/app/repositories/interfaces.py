@@ -4,7 +4,20 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Iterable, Sequence
 
-from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, Station, User
+from app.domain.entities import (
+    AccessToken,
+    Device,
+    ErrorEvent,
+    Measurement,
+    MeasurementPoint,
+    Sounding,
+    SoundingExportJob,
+    SoundingJob,
+    SoundingScheduleConfig,
+    SoundingScheduleItem,
+    Station,
+    User,
+)
 
 
 class DeviceRepository(ABC):
@@ -50,6 +63,10 @@ class StationRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_by_internal_id(self, station_id: str) -> Station | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def upsert(
         self,
         station_id: str,
@@ -59,6 +76,123 @@ class StationRepository(ABC):
         src: str | None,
         updated_at: datetime,
     ) -> Station:
+        raise NotImplementedError
+
+
+class SoundingRepository(ABC):
+    @abstractmethod
+    async def list(
+        self,
+        station_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        limit: int,
+        offset: int,
+    ) -> Sequence[Sounding]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count(self, station_id: str, start: datetime | None, end: datetime | None) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, sounding_id: str) -> Sounding | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_many(self, sounding_ids: Iterable[str]) -> Sequence[Sounding]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert(
+        self,
+        station_id: str,
+        sounding_time: datetime,
+        station_name: str | None,
+        columns: list[str],
+        rows: list[list[object]],
+        units: dict[str, str],
+        raw_text: str,
+        row_count: int,
+    ) -> Sounding:
+        raise NotImplementedError
+
+
+class SoundingJobRepository(ABC):
+    @abstractmethod
+    async def create(
+        self,
+        station_id: str,
+        start_at: datetime,
+        end_at: datetime,
+        step_hours: int,
+    ) -> SoundingJob:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, job_id: str) -> SoundingJob | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_progress(
+        self,
+        job_id: str,
+        status: str | None,
+        total: int | None,
+        done: int | None,
+        error: str | None,
+    ) -> SoundingJob:
+        raise NotImplementedError
+
+
+class SoundingExportJobRepository(ABC):
+    @abstractmethod
+    async def create(self, station_id: str, sounding_ids: list[str]) -> SoundingExportJob:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, job_id: str) -> SoundingExportJob | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_progress(
+        self,
+        job_id: str,
+        status: str | None,
+        total: int | None,
+        done: int | None,
+        error: str | None,
+        file_path: str | None,
+        file_name: str | None,
+    ) -> SoundingExportJob:
+        raise NotImplementedError
+
+
+class SoundingScheduleRepository(ABC):
+    @abstractmethod
+    async def list(self) -> Sequence[SoundingScheduleItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add(self, station_id: str) -> SoundingScheduleItem:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def set_enabled(self, schedule_id: str, enabled: bool) -> SoundingScheduleItem:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete(self, schedule_id: str) -> None:
+        raise NotImplementedError
+
+
+class SoundingScheduleConfigRepository(ABC):
+    @abstractmethod
+    async def get(self) -> SoundingScheduleConfig:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update(self, interval_hours: int | None, offset_hours: int | None) -> SoundingScheduleConfig:
         raise NotImplementedError
 
 

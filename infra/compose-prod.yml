@@ -75,6 +75,8 @@ services:
       - db
       - mosquitto
       - migrate
+    volumes:
+      - soundings_exports:/tmp/exports
     command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
 
   worker:
@@ -102,6 +104,8 @@ services:
       - db
       - redis
       - migrate
+    volumes:
+      - soundings_exports:/tmp/exports
     command: ["arq", "app.arq_worker.WorkerSettings"]
 
   migrate:
@@ -133,3 +137,4 @@ volumes:
   mosquitto_passwd:
   db_data:
   minio_data:
+  soundings_exports:

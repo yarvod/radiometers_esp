@@ -92,3 +92,65 @@ class Station:
     src: Optional[str]
     updated_at: Optional[datetime]
     created_at: datetime
+
+
+@dataclass
+class Sounding:
+    id: str
+    station_id: str
+    sounding_time: datetime
+    station_name: Optional[str]
+    columns: list[str]
+    rows: list[list[object]]
+    units: dict[str, str]
+    raw_text: str
+    row_count: int
+    fetched_at: datetime
+
+
+@dataclass
+class SoundingJob:
+    id: str
+    station_id: str
+    status: str
+    start_at: datetime
+    end_at: datetime
+    step_hours: int
+    total: int
+    done: int
+    error: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class SoundingExportJob:
+    id: str
+    station_id: str
+    status: str
+    sounding_ids: list[str]
+    total: int
+    done: int
+    error: Optional[str]
+    file_path: Optional[str]
+    file_name: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class SoundingScheduleItem:
+    id: str
+    station_id: str
+    station_code: str
+    station_name: Optional[str]
+    enabled: bool
+    created_at: datetime
+
+
+@dataclass
+class SoundingScheduleConfig:
+    id: int
+    interval_hours: int
+    offset_hours: int
+    updated_at: datetime

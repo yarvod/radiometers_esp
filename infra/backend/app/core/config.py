@@ -18,5 +18,11 @@ class Settings(BaseSettings):
     stations_read_timeout: float = 30.0
     stations_user_agent: str = "Radiometer/1.0"
     redis_url: str = "redis://redis:6379/0"
+    soundings_url: str = "https://weather.uwyo.edu/wsgi/sounding"
+    soundings_request_timeout: float = 35.0
+    soundings_connect_timeout: float = 4.0
+    soundings_read_timeout: float = 30.0
+    soundings_concurrency: int = 6
+    soundings_export_dir: str = "/tmp/exports"
 
     model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", extra="ignore")

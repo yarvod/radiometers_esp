@@ -6,12 +6,42 @@ from typing import Sequence
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities import AccessToken, Device, ErrorEvent, Measurement, MeasurementPoint, Station, User
-from app.db.models import AccessTokenModel, DeviceModel, ErrorEventModel, MeasurementModel, StationModel, UserModel
+from app.domain.entities import (
+    AccessToken,
+    Device,
+    ErrorEvent,
+    Measurement,
+    MeasurementPoint,
+    Sounding,
+    SoundingExportJob,
+    SoundingJob,
+    SoundingScheduleConfig,
+    SoundingScheduleItem,
+    Station,
+    User,
+)
+from app.db.models import (
+    AccessTokenModel,
+    DeviceModel,
+    ErrorEventModel,
+    MeasurementModel,
+    SoundingExportJobModel,
+    SoundingJobModel,
+    SoundingModel,
+    SoundingScheduleConfigModel,
+    SoundingScheduleModel,
+    StationModel,
+    UserModel,
+)
 from app.repositories.interfaces import (
     DeviceRepository,
     ErrorRepository,
     MeasurementRepository,
+    SoundingJobRepository,
+    SoundingExportJobRepository,
+    SoundingRepository,
+    SoundingScheduleConfigRepository,
+    SoundingScheduleRepository,
     StationRepository,
     TokenRepository,
     UserRepository,
@@ -88,6 +118,76 @@ def to_station(model: StationModel) -> Station:
         src=model.src,
         updated_at=model.updated_at,
         created_at=model.created_at,
+    )
+
+
+def to_sounding(model: SoundingModel) -> Sounding:
+    return Sounding(
+        id=model.id,
+        station_id=model.station_id,
+        sounding_time=model.sounding_time,
+        station_name=model.station_name,
+        columns=list(model.columns or []),
+        rows=list(model.rows or []),
+        units=dict(model.units or {}),
+        raw_text=model.raw_text,
+        row_count=model.row_count,
+        fetched_at=model.fetched_at,
+    )
+
+
+def to_sounding_job(model: SoundingJobModel) -> SoundingJob:
+    return SoundingJob(
+        id=model.id,
+        station_id=model.station_id,
+        status=model.status,
+        start_at=model.start_at,
+        end_at=model.end_at,
+        step_hours=model.step_hours,
+        total=model.total,
+        done=model.done,
+        error=model.error,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def to_sounding_export_job(model: SoundingExportJobModel) -> SoundingExportJob:
+    return SoundingExportJob(
+        id=model.id,
+        station_id=model.station_id,
+        status=model.status,
+        sounding_ids=list(model.sounding_ids or []),
+        total=model.total,
+        done=model.done,
+        error=model.error,
+        file_path=model.file_path,
+        file_name=model.file_name,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def to_sounding_schedule_item(
+    schedule: SoundingScheduleModel,
+    station: StationModel,
+) -> SoundingScheduleItem:
+    return SoundingScheduleItem(
+        id=schedule.id,
+        station_id=schedule.station_id,
+        station_code=station.station_id,
+        station_name=station.name,
+        enabled=schedule.enabled,
+        created_at=schedule.created_at,
+    )
+
+
+def to_sounding_schedule_config(model: SoundingScheduleConfigModel) -> SoundingScheduleConfig:
+    return SoundingScheduleConfig(
+        id=model.id,
+        interval_hours=model.interval_hours,
+        offset_hours=model.offset_hours,
+        updated_at=model.updated_at,
     )
 
 
@@ -318,6 +418,11 @@ class SqlStationRepository(StationRepository):
         model = result.scalar_one_or_none()
         return to_station(model) if model else None
 
+    async def get_by_internal_id(self, station_id: str) -> Station | None:
+        result = await self._session.execute(select(StationModel).where(StationModel.id == station_id))
+        model = result.scalar_one_or_none()
+        return to_station(model) if model else None
+
     async def upsert(
         self,
         station_id: str,
@@ -350,7 +455,271 @@ class SqlStationRepository(StationRepository):
                 model.src = src
             model.updated_at = updated_at
         await self._session.flush()
+        await self._session.refresh(model)
         return to_station(model)
+
+
+class SqlSoundingRepository(SoundingRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list(
+        self,
+        station_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        limit: int,
+        offset: int,
+    ) -> Sequence[Sounding]:
+        query = select(SoundingModel).where(SoundingModel.station_id == station_id)
+        if start:
+            query = query.where(SoundingModel.sounding_time >= start)
+        if end:
+            query = query.where(SoundingModel.sounding_time <= end)
+        query = query.order_by(SoundingModel.sounding_time.desc()).offset(offset).limit(limit)
+        result = await self._session.execute(query)
+        return [to_sounding(row) for row in result.scalars().all()]
+
+    async def count(self, station_id: str, start: datetime | None, end: datetime | None) -> int:
+        query = select(func.count()).select_from(SoundingModel).where(SoundingModel.station_id == station_id)
+        if start:
+            query = query.where(SoundingModel.sounding_time >= start)
+        if end:
+            query = query.where(SoundingModel.sounding_time <= end)
+        result = await self._session.execute(query)
+        return int(result.scalar_one())
+
+    async def get(self, sounding_id: str) -> Sounding | None:
+        result = await self._session.execute(select(SoundingModel).where(SoundingModel.id == sounding_id))
+        model = result.scalar_one_or_none()
+        return to_sounding(model) if model else None
+
+    async def get_many(self, sounding_ids: Sequence[str]) -> Sequence[Sounding]:
+        ids = list(dict.fromkeys([sid for sid in sounding_ids if sid]))
+        if not ids:
+            return []
+        result = await self._session.execute(select(SoundingModel).where(SoundingModel.id.in_(ids)))
+        return [to_sounding(row) for row in result.scalars().all()]
+
+    async def upsert(
+        self,
+        station_id: str,
+        sounding_time: datetime,
+        station_name: str | None,
+        columns: list[str],
+        rows: list[list[object]],
+        units: dict[str, str],
+        raw_text: str,
+        row_count: int,
+    ) -> Sounding:
+        result = await self._session.execute(
+            select(SoundingModel).where(
+                SoundingModel.station_id == station_id,
+                SoundingModel.sounding_time == sounding_time,
+            )
+        )
+        model = result.scalar_one_or_none()
+        if not model:
+            model = SoundingModel(
+                station_id=station_id,
+                sounding_time=sounding_time,
+                station_name=station_name,
+                columns=columns,
+                rows=rows,
+                units=units,
+                raw_text=raw_text,
+                row_count=row_count,
+            )
+            self._session.add(model)
+        else:
+            model.station_name = station_name
+            model.columns = columns
+            model.rows = rows
+            model.units = units
+            model.raw_text = raw_text
+            model.row_count = row_count
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_sounding(model)
+
+
+class SqlSoundingJobRepository(SoundingJobRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        station_id: str,
+        start_at: datetime,
+        end_at: datetime,
+        step_hours: int,
+    ) -> SoundingJob:
+        model = SoundingJobModel(
+            station_id=station_id,
+            status="pending",
+            start_at=start_at,
+            end_at=end_at,
+            step_hours=step_hours,
+            total=0,
+            done=0,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_sounding_job(model)
+
+    async def get(self, job_id: str) -> SoundingJob | None:
+        result = await self._session.execute(select(SoundingJobModel).where(SoundingJobModel.id == job_id))
+        model = result.scalar_one_or_none()
+        return to_sounding_job(model) if model else None
+
+    async def update_progress(
+        self,
+        job_id: str,
+        status: str | None,
+        total: int | None,
+        done: int | None,
+        error: str | None,
+    ) -> SoundingJob:
+        result = await self._session.execute(select(SoundingJobModel).where(SoundingJobModel.id == job_id))
+        model = result.scalar_one_or_none()
+        if not model:
+            raise ValueError("Job not found")
+        if status is not None:
+            model.status = status
+        if total is not None:
+            model.total = total
+        if done is not None:
+            model.done = done
+        if error is not None:
+            model.error = error
+        await self._session.flush()
+        await self._session.refresh(model)
+        await self._session.commit()
+        return to_sounding_job(model)
+
+
+class SqlSoundingExportJobRepository(SoundingExportJobRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, station_id: str, sounding_ids: list[str]) -> SoundingExportJob:
+        model = SoundingExportJobModel(
+            station_id=station_id,
+            status="pending",
+            sounding_ids=list(sounding_ids),
+            total=0,
+            done=0,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_sounding_export_job(model)
+
+    async def get(self, job_id: str) -> SoundingExportJob | None:
+        result = await self._session.execute(select(SoundingExportJobModel).where(SoundingExportJobModel.id == job_id))
+        model = result.scalar_one_or_none()
+        return to_sounding_export_job(model) if model else None
+
+    async def update_progress(
+        self,
+        job_id: str,
+        status: str | None,
+        total: int | None,
+        done: int | None,
+        error: str | None,
+        file_path: str | None,
+        file_name: str | None,
+    ) -> SoundingExportJob:
+        result = await self._session.execute(select(SoundingExportJobModel).where(SoundingExportJobModel.id == job_id))
+        model = result.scalar_one_or_none()
+        if not model:
+            raise ValueError("Export job not found")
+        if status is not None:
+            model.status = status
+        if total is not None:
+            model.total = total
+        if done is not None:
+            model.done = done
+        if error is not None:
+            model.error = error
+        if file_path is not None:
+            model.file_path = file_path
+        if file_name is not None:
+            model.file_name = file_name
+        await self._session.flush()
+        await self._session.refresh(model)
+        await self._session.commit()
+        return to_sounding_export_job(model)
+
+
+class SqlSoundingScheduleRepository(SoundingScheduleRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list(self) -> Sequence[SoundingScheduleItem]:
+        result = await self._session.execute(
+            select(SoundingScheduleModel, StationModel)
+            .join(StationModel, StationModel.id == SoundingScheduleModel.station_id)
+            .order_by(StationModel.station_id.asc())
+        )
+        return [to_sounding_schedule_item(schedule, station) for schedule, station in result.all()]
+
+    async def add(self, station_id: str) -> SoundingScheduleItem:
+        result = await self._session.execute(
+            select(SoundingScheduleModel).where(SoundingScheduleModel.station_id == station_id)
+        )
+        model = result.scalar_one_or_none()
+        if not model:
+            model = SoundingScheduleModel(station_id=station_id, enabled=True)
+            self._session.add(model)
+            await self._session.flush()
+            await self._session.refresh(model)
+        station = await self._session.get(StationModel, station_id)
+        return to_sounding_schedule_item(model, station)
+
+    async def set_enabled(self, schedule_id: str, enabled: bool) -> SoundingScheduleItem:
+        result = await self._session.execute(select(SoundingScheduleModel).where(SoundingScheduleModel.id == schedule_id))
+        model = result.scalar_one_or_none()
+        if not model:
+            raise ValueError("Schedule not found")
+        model.enabled = enabled
+        await self._session.flush()
+        await self._session.refresh(model)
+        station = await self._session.get(StationModel, model.station_id)
+        return to_sounding_schedule_item(model, station)
+
+    async def delete(self, schedule_id: str) -> None:
+        await self._session.execute(delete(SoundingScheduleModel).where(SoundingScheduleModel.id == schedule_id))
+
+
+class SqlSoundingScheduleConfigRepository(SoundingScheduleConfigRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self) -> SoundingScheduleConfig:
+        result = await self._session.execute(select(SoundingScheduleConfigModel).where(SoundingScheduleConfigModel.id == 1))
+        model = result.scalar_one_or_none()
+        if not model:
+            model = SoundingScheduleConfigModel(id=1, interval_hours=3, offset_hours=2)
+            self._session.add(model)
+            await self._session.flush()
+            await self._session.refresh(model)
+        return to_sounding_schedule_config(model)
+
+    async def update(self, interval_hours: int | None, offset_hours: int | None) -> SoundingScheduleConfig:
+        result = await self._session.execute(select(SoundingScheduleConfigModel).where(SoundingScheduleConfigModel.id == 1))
+        model = result.scalar_one_or_none()
+        if not model:
+            model = SoundingScheduleConfigModel(id=1, interval_hours=3, offset_hours=2)
+            self._session.add(model)
+        if interval_hours is not None:
+            model.interval_hours = interval_hours
+        if offset_hours is not None:
+            model.offset_hours = offset_hours
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_sounding_schedule_config(model)
 
 
 class SqlErrorRepository(ErrorRepository):

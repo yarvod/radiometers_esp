@@ -6,11 +6,12 @@ from typing import Any
 
 from arq import cron
 from arq.connections import RedisSettings
-from dishka import make_async_container
-from dishka.integrations.arq import FromDishka, inject, setup_dishka
+from dishka import make_async_container, FromDishka
+from dishka.integrations.arq import inject, setup_dishka
 
 from app.container import AppProvider
 from app.core.config import Settings
+from app.services.soundings import SoundingService
 from app.services.stations import StationService
 
 root_logger = logging.getLogger()
@@ -48,16 +49,50 @@ async def refresh_stations_noon(
     await _refresh_stations(stations, target_hour=12)
 
 
+@inject
+async def load_soundings_job(
+    ctx: dict[str, Any],
+    job_id: str,
+    soundings: FromDishka[SoundingService],
+) -> None:
+    await soundings.process_job(job_id)
+
+
+@inject
+async def export_soundings_job(
+    ctx: dict[str, Any],
+    job_id: str,
+    soundings: FromDishka[SoundingService],
+) -> None:
+    await soundings.process_export_job(job_id)
+
+
+@inject
+async def run_sounding_schedule(
+    ctx: dict[str, Any],
+    soundings: FromDishka[SoundingService],
+) -> None:
+    await soundings.run_schedule_tick()
+
+
 settings = Settings()
 container = make_async_container(AppProvider())
 
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    functions = [refresh_stations_midnight, refresh_stations_noon]
+    print(f"REDIS_URL={settings.redis_url}")
+    functions = [
+        refresh_stations_midnight,
+        refresh_stations_noon,
+        load_soundings_job,
+        export_soundings_job,
+        run_sounding_schedule,
+    ]
     cron_jobs = [
         cron(refresh_stations_midnight, hour=11, minute=0),
         cron(refresh_stations_noon, hour=23, minute=0),
+        cron(run_sounding_schedule, minute=0),
     ]
 
 
