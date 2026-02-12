@@ -222,7 +222,7 @@ void HandleMqttCommand(const std::string& topic, const uint8_t* data, int len) {
       app_config.wifi_ap_mode = (mode == "ap");
       app_config.wifi_from_file = true;
       SaveConfigToSdCard(app_config, pid_config, usb_mode);
-      InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+      ApplyNetworkConfig();
       res = {true, "wifi_applied", {}};
     }
   } else if (type == "restart") {

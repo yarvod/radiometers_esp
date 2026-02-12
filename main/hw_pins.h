@@ -10,6 +10,13 @@ inline constexpr gpio_num_t ADC_CS1 = GPIO_NUM_16;
 inline constexpr gpio_num_t ADC_CS2 = GPIO_NUM_15;
 inline constexpr gpio_num_t ADC_CS3 = GPIO_NUM_7;
 
+// Ethernet (W5500 over SPI)
+inline constexpr gpio_num_t ETH_CS = GPIO_NUM_10;
+inline constexpr gpio_num_t ETH_MOSI = GPIO_NUM_11;
+inline constexpr gpio_num_t ETH_SCK = GPIO_NUM_12;
+inline constexpr gpio_num_t ETH_MISO = GPIO_NUM_13;
+inline constexpr gpio_num_t ETH_RST = GPIO_NUM_46;
+
 // INA219 pins (I2C)
 inline constexpr gpio_num_t INA_SDA = GPIO_NUM_42;
 inline constexpr gpio_num_t INA_SCL = GPIO_NUM_41;
@@ -44,4 +51,4 @@ inline constexpr gpio_num_t STEPPER_DIR = GPIO_NUM_36;
 inline constexpr gpio_num_t STEPPER_STEP = GPIO_NUM_37;
 
 inline constexpr int ADC_SPI_FREQ_HZ = 100'000;
-
+inline constexpr int ETH_SPI_FREQ_HZ = 2'000'000;

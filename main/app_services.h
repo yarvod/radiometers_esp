@@ -38,6 +38,7 @@ void HeaterSetPowerPercent(float percent);
 void FanSetPowerPercent(float percent);
 
 void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode);
+void ApplyNetworkConfig();
 
 bool EnsureTimeSynced(int timeout_ms);
 

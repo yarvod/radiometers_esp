@@ -23,6 +23,9 @@ inline constexpr char TAG[] = "APP";
 inline constexpr char TO_UPLOAD_DIR[] = "/sdcard/to_upload";
 inline constexpr char UPLOADED_DIR[] = "/sdcard/uploaded";
 
+enum class NetMode : uint8_t { kWifiOnly = 0, kEthOnly = 1, kWifiEth = 2 };
+enum class NetPriority : uint8_t { kWifi = 0, kEth = 1 };
+
 struct AppConfig {
   std::string wifi_ssid;
   std::string wifi_password;
@@ -46,6 +49,8 @@ struct AppConfig {
   std::string mqtt_user;
   std::string mqtt_password;
   bool mqtt_enabled;
+  NetMode net_mode;
+  NetPriority net_priority;
 };
 
 struct PidConfig {
@@ -111,6 +116,9 @@ struct SharedState {
   std::string wifi_ip;
   std::string wifi_ip_sta;
   std::string wifi_ip_ap;
+  std::string eth_ip;
+  bool eth_link_up;
+  bool eth_ip_up;
   uint64_t sd_total_bytes;
   uint64_t sd_used_bytes;
   int sd_data_root_files;

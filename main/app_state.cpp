@@ -29,6 +29,8 @@ AppConfig app_config{
     "",                 // mqtt_user
     "",                 // mqtt_password
     false,              // mqtt_enabled
+    NetMode::kWifiOnly, // net_mode
+    NetPriority::kWifi, // net_priority
 };
 
 PidConfig pid_config{

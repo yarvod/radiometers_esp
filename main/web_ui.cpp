@@ -282,6 +282,30 @@ const char INDEX_HTML[] = R"rawliteral(
             </div>
             <button class="btn" onclick="applyWifi()">Apply Wi‑Fi</button>
           </div>
+          <div class="control-panel">
+            <h3>Network</h3>
+            <div class="form-group">
+              <div>Wi‑Fi IP: <span id="wifiIpLabel">--</span></div>
+              <div>Ethernet link: <span id="ethLink">--</span></div>
+              <div>Ethernet IP: <span id="ethIp">--</span></div>
+            </div>
+            <div class="form-group">
+              <label for="netMode">Interfaces</label>
+              <select id="netMode">
+                <option value="wifi">Wi‑Fi only</option>
+                <option value="eth">Ethernet only</option>
+                <option value="both">Wi‑Fi + Ethernet</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="netPriority">Priority</label>
+              <select id="netPriority">
+                <option value="wifi">Prefer Wi‑Fi</option>
+                <option value="eth">Prefer Ethernet</option>
+              </select>
+            </div>
+            <button class="btn" onclick="applyNetwork()">Apply Network</button>
+          </div>
         </div>
       </div>
 
@@ -716,6 +740,12 @@ const char INDEX_HTML[] = R"rawliteral(
       const wifiQualEl = document.getElementById('wifiQuality');
       if (wifiRssiEl && data.wifiRssi !== undefined) wifiRssiEl.textContent = data.wifiRssi + ' dBm';
       if (wifiQualEl && data.wifiQuality !== undefined) wifiQualEl.textContent = data.wifiQuality + ' %';
+      const wifiIpEl = document.getElementById('wifiIpLabel');
+      if (wifiIpEl) wifiIpEl.textContent = data.wifiStaIp || data.wifiIp || '--';
+      const ethLinkEl = document.getElementById('ethLink');
+      if (ethLinkEl) ethLinkEl.textContent = data.ethLink ? 'Up' : 'Down';
+      const ethIpEl = document.getElementById('ethIp');
+      if (ethIpEl) ethIpEl.textContent = data.ethIp || '--';
       document.getElementById('fanPowerDisplay').textContent = data.fanPower.toFixed(0) + ' %';
       document.getElementById('fan1RpmDisplay').textContent = data.fan1Rpm;
       document.getElementById('fan2RpmDisplay').textContent = data.fan2Rpm;
@@ -755,6 +785,10 @@ const char INDEX_HTML[] = R"rawliteral(
         if (wifiModeEl) wifiModeEl.value = data.wifiApMode ? 'ap' : 'sta';
         setValueIfIdle('wifiSsid', data.wifiSsid || '');
         setValueIfIdle('wifiPassword', data.wifiPassword || '');
+        const netModeEl = document.getElementById('netMode');
+        if (netModeEl) netModeEl.value = data.netMode || 'wifi';
+        const netPriorityEl = document.getElementById('netPriority');
+        if (netPriorityEl) netPriorityEl.value = data.netPriority || 'wifi';
         setValueIfIdle('deviceId', data.deviceId || '');
         setValueIfIdle('minioEndpoint', data.minioEndpoint || '');
         setValueIfIdle('minioBucket', data.minioBucket || '');
@@ -984,6 +1018,23 @@ const char INDEX_HTML[] = R"rawliteral(
         alert('Wi‑Fi settings applied. Device may reconnect or switch mode.');
       }).catch(err => {
         alert('Wi‑Fi apply failed: ' + err.message);
+      });
+    }
+
+    function applyNetwork() {
+      const mode = document.getElementById('netMode').value;
+      const priority = document.getElementById('netPriority').value;
+      fetch('/net/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, priority })
+      }).then(res => {
+        if (!res.ok) throw new Error('Failed to apply network');
+        return res.json();
+      }).then(() => {
+        alert('Network settings applied. Interface may switch.');
+      }).catch(err => {
+        alert('Network apply failed: ' + err.message);
       });
     }
 

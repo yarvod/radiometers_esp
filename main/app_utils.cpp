@@ -38,6 +38,74 @@ bool ParseBool(const std::string& value, bool* out) {
   return false;
 }
 
+static std::string ToLowerAscii(const std::string& value) {
+  std::string lower;
+  lower.reserve(value.size());
+  for (char c : value) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return lower;
+}
+
+bool ParseNetMode(const std::string& value, NetMode* out) {
+  if (!out) {
+    return false;
+  }
+  const std::string lower = ToLowerAscii(value);
+  if (lower == "wifi" || lower == "wifi_only" || lower == "wifi-only") {
+    *out = NetMode::kWifiOnly;
+    return true;
+  }
+  if (lower == "eth" || lower == "ethernet" || lower == "eth_only" || lower == "eth-only") {
+    *out = NetMode::kEthOnly;
+    return true;
+  }
+  if (lower == "both" || lower == "wifi+eth" || lower == "wifi_eth" || lower == "wifi-eth") {
+    *out = NetMode::kWifiEth;
+    return true;
+  }
+  return false;
+}
+
+bool ParseNetPriority(const std::string& value, NetPriority* out) {
+  if (!out) {
+    return false;
+  }
+  const std::string lower = ToLowerAscii(value);
+  if (lower == "wifi") {
+    *out = NetPriority::kWifi;
+    return true;
+  }
+  if (lower == "eth" || lower == "ethernet") {
+    *out = NetPriority::kEth;
+    return true;
+  }
+  return false;
+}
+
+std::string NetModeToString(NetMode mode) {
+  switch (mode) {
+    case NetMode::kWifiOnly:
+      return "wifi";
+    case NetMode::kEthOnly:
+      return "eth";
+    case NetMode::kWifiEth:
+      return "both";
+    default:
+      return "wifi";
+  }
+}
+
+std::string NetPriorityToString(NetPriority priority) {
+  switch (priority) {
+    case NetPriority::kEth:
+      return "eth";
+    case NetPriority::kWifi:
+    default:
+      return "wifi";
+  }
+}
+
 bool SanitizeFilename(const std::string& name, std::string* out_full) {
   if (name.empty() || name.size() > 255) return false;
   for (char c : name) {

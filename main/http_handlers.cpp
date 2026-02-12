@@ -13,6 +13,7 @@
 #include "app_state.h"
 #include "app_services.h"
 #include "control_actions.h"
+#include "app_utils.h"
 #include "web_ui.h"
 #include "mqtt_bridge.h"
 #include "error_manager.h"
@@ -122,6 +123,9 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "wifiIp", snapshot.wifi_ip.c_str());
   cJSON_AddStringToObject(root, "wifiStaIp", snapshot.wifi_ip_sta.c_str());
   cJSON_AddStringToObject(root, "wifiApIp", snapshot.wifi_ip_ap.c_str());
+  cJSON_AddStringToObject(root, "ethIp", snapshot.eth_ip.c_str());
+  cJSON_AddBoolToObject(root, "ethLink", snapshot.eth_link_up);
+  cJSON_AddBoolToObject(root, "ethIpUp", snapshot.eth_ip_up);
   cJSON_AddNumberToObject(root, "sdTotalBytes", static_cast<double>(snapshot.sd_total_bytes));
   cJSON_AddNumberToObject(root, "sdUsedBytes", static_cast<double>(snapshot.sd_used_bytes));
   cJSON_AddNumberToObject(root, "sdRootDataFiles", snapshot.sd_data_root_files);
@@ -150,6 +154,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
   cJSON_AddStringToObject(root, "wifiPassword", app_config.wifi_password.c_str());
+  cJSON_AddStringToObject(root, "netMode", NetModeToString(app_config.net_mode).c_str());
+  cJSON_AddStringToObject(root, "netPriority", NetPriorityToString(app_config.net_priority).c_str());
   cJSON_AddStringToObject(root, "deviceId", app_config.device_id.c_str());
   cJSON_AddStringToObject(root, "minioEndpoint", app_config.minio_endpoint.c_str());
   cJSON_AddStringToObject(root, "minioAccessKey", app_config.minio_access_key.c_str());
@@ -435,6 +441,8 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   fprintf(f, "wifi_ssid = %s\n", cfg.wifi_ssid.c_str());
   fprintf(f, "wifi_password = %s\n", cfg.wifi_password.c_str());
   fprintf(f, "wifi_ap_mode = %s\n", (cfg.wifi_ap_mode ? "true" : "false"));
+  fprintf(f, "net_mode = %s\n", NetModeToString(cfg.net_mode).c_str());
+  fprintf(f, "net_priority = %s\n", NetPriorityToString(cfg.net_priority).c_str());
   fprintf(f, "usb_mass_storage = %s\n", (current_usb_mode == UsbMode::kMsc) ? "true" : "false");
   fprintf(f, "logging_active = %s\n", (cfg.logging_active ? "true" : "false"));
   if (!cfg.logging_postfix.empty()) {
@@ -1544,10 +1552,56 @@ esp_err_t WifiApplyHandler(httpd_req_t* req) {
   app_config.wifi_from_file = true;
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
-  InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+  ApplyNetworkConfig();
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"wifi_applied\"}");
+}
+
+esp_err_t NetApplyHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 160);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  cJSON* mode_item = cJSON_GetObjectItem(root, "mode");
+  cJSON* prio_item = cJSON_GetObjectItem(root, "priority");
+  std::string mode = (mode_item && cJSON_IsString(mode_item) && mode_item->valuestring) ? mode_item->valuestring : "";
+  std::string priority =
+      (prio_item && cJSON_IsString(prio_item) && prio_item->valuestring) ? prio_item->valuestring : "";
+  cJSON_Delete(root);
+
+  NetMode new_mode = app_config.net_mode;
+  NetPriority new_priority = app_config.net_priority;
+  if (!mode.empty() && !ParseNetMode(mode, &new_mode)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid net mode");
+    return ESP_FAIL;
+  }
+  if (!priority.empty() && !ParseNetPriority(priority, &new_priority)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid net priority");
+    return ESP_FAIL;
+  }
+
+  app_config.net_mode = new_mode;
+  app_config.net_priority = new_priority;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  ApplyNetworkConfig();
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"net_applied\"}");
 }
 
 esp_err_t CloudApplyHandler(httpd_req_t* req) {
@@ -1621,6 +1675,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
   httpd_uri_t wifi_apply_uri = {.uri = "/wifi/apply", .method = HTTP_POST, .handler = WifiApplyHandler, .user_ctx = nullptr};
+  httpd_uri_t net_apply_uri = {.uri = "/net/apply", .method = HTTP_POST, .handler = NetApplyHandler, .user_ctx = nullptr};
   httpd_uri_t cloud_apply_uri = {.uri = "/cloud/apply", .method = HTTP_POST, .handler = CloudApplyHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
   httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
@@ -1645,6 +1700,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &usb_mode_get_uri);
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   httpd_register_uri_handler(http_server, &wifi_apply_uri);
+  httpd_register_uri_handler(http_server, &net_apply_uri);
   httpd_register_uri_handler(http_server, &cloud_apply_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
   httpd_register_uri_handler(http_server, &fan_set_uri);

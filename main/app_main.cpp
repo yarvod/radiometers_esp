@@ -25,9 +25,14 @@
 #include "http_handlers.h"
 #include "driver/gpio.h"
 #include "driver/spi_common.h"
+#include "driver/spi_master.h"
 #include "driver/ledc.h"
 #include "esp_check.h"
 #include "esp_event.h"
+#include "esp_eth.h"
+#include "esp_eth_mac.h"
+#include "esp_eth_netif_glue.h"
+#include "esp_eth_phy.h"
 #include "esp_http_server.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -59,6 +64,7 @@
 #include "tusb_msc_storage.h"
 #include "esp_rom_sys.h"
 #include "onewire_m1820.h"
+#include "sdkconfig.h"
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -88,6 +94,8 @@ constexpr int WIFI_FAIL_BIT = BIT1;
 EventGroupHandle_t wifi_event_group = nullptr;
 int retry_count = 0;
 bool time_synced = false;
+static bool netif_inited = false;
+static bool sntp_started = false;
 bool wifi_inited = false;
 esp_netif_t* wifi_netif_sta = nullptr;
 esp_netif_t* wifi_netif_ap = nullptr;
@@ -95,6 +103,15 @@ static TaskHandle_t wifi_recover_task = nullptr;
 static bool fallback_ap_active = false;
 static bool wifi_recover_active = false;
 static wifi_config_t sta_cfg_cached = {};
+static bool eth_inited = false;
+static bool eth_started = false;
+static bool eth_bus_inited = false;
+static bool eth_handlers_registered = false;
+static esp_eth_handle_t eth_handle = nullptr;
+static esp_netif_t* eth_netif = nullptr;
+static esp_eth_mac_t* eth_mac = nullptr;
+static esp_eth_phy_t* eth_phy = nullptr;
+static spi_device_interface_config_t eth_devcfg = {};
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
@@ -115,7 +132,9 @@ bool IsHallTriggered() {
   return gpio_get_level(MT_HALL_SEN) == 0;
 }
 
+void StartSntp();
 bool EnsureTimeSynced(int timeout_ms);
+static void StopWifiRecoverTask();
 
 std::string BuildLogFilename(const std::string& postfix_raw) {
   const std::string postfix = SanitizePostfix(postfix_raw);
@@ -166,6 +185,288 @@ static std::string GetNetifIp(esp_netif_t* netif) {
     return "";
   }
   return FormatIp4(info.ip);
+}
+
+static void EnsureNetifInit() {
+  if (!netif_inited) {
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    netif_inited = true;
+  }
+}
+
+static void UpdateDefaultNetif() {
+  esp_netif_t* target = nullptr;
+  const NetMode mode = app_config.net_mode;
+  const NetPriority prio = app_config.net_priority;
+  const SharedState snap = CopyState();
+  const bool wifi_up = !snap.wifi_ip_sta.empty();
+  const bool eth_up = snap.eth_ip_up || !snap.eth_ip.empty();
+
+  if (mode == NetMode::kWifiOnly) {
+    if (wifi_netif_sta) {
+      target = wifi_netif_sta;
+    }
+  } else if (mode == NetMode::kEthOnly) {
+    if (eth_netif) {
+      target = eth_netif;
+    }
+  } else {
+    if (prio == NetPriority::kWifi) {
+      if (wifi_up && wifi_netif_sta) {
+        target = wifi_netif_sta;
+      } else if (eth_up && eth_netif) {
+        target = eth_netif;
+      }
+    } else {
+      if (eth_up && eth_netif) {
+        target = eth_netif;
+      } else if (wifi_up && wifi_netif_sta) {
+        target = wifi_netif_sta;
+      }
+    }
+  }
+
+  if (target) {
+    esp_netif_set_default_netif(target);
+  }
+}
+
+static bool TrySyncTimeOnNetif(esp_netif_t* netif, int timeout_ms) {
+  if (!netif || timeout_ms <= 0) {
+    return false;
+  }
+  esp_netif_t* prev = esp_netif_get_default_netif();
+  if (prev != netif) {
+    esp_netif_set_default_netif(netif);
+  }
+
+  esp_sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
+  if (!esp_sntp_restart()) {
+    StartSntp();
+  }
+
+  const int step_ms = 200;
+  const int max_steps = std::max(1, timeout_ms / step_ms);
+  bool ok = false;
+  for (int i = 0; i < max_steps; ++i) {
+    time_t now = 0;
+    time(&now);
+    if (now > 1'700'000'000) {
+      ok = true;
+      break;
+    }
+    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+      time(&now);
+      if (now > 1'700'000'000) {
+        ok = true;
+        break;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(step_ms));
+  }
+  if (ok) {
+    time_synced = true;
+  }
+  if (prev && prev != netif) {
+    esp_netif_set_default_netif(prev);
+  }
+  return ok;
+}
+
+static void NetworkMonitorTask(void*) {
+  const int interval_ms = 15000;
+  const int check_timeout_ms = 1500;
+  while (true) {
+    if (app_config.net_mode == NetMode::kWifiEth) {
+      SharedState snap = CopyState();
+      const bool wifi_up = !snap.wifi_ip_sta.empty();
+      const bool eth_up = snap.eth_ip_up || !snap.eth_ip.empty();
+      esp_netif_t* prefer = (app_config.net_priority == NetPriority::kWifi) ? wifi_netif_sta : eth_netif;
+      esp_netif_t* other = (prefer == wifi_netif_sta) ? eth_netif : wifi_netif_sta;
+      bool prefer_has_ip = (prefer == wifi_netif_sta) ? wifi_up : eth_up;
+      bool other_has_ip = (other == wifi_netif_sta) ? wifi_up : eth_up;
+
+      bool prefer_ok = false;
+      bool other_ok = false;
+      if (prefer && prefer_has_ip) {
+        prefer_ok = TrySyncTimeOnNetif(prefer, check_timeout_ms);
+      }
+      if (!prefer_ok && other && other_has_ip) {
+        other_ok = TrySyncTimeOnNetif(other, check_timeout_ms);
+      }
+
+      if (prefer_ok && prefer) {
+        esp_netif_set_default_netif(prefer);
+      } else if (other_ok && other) {
+        esp_netif_set_default_netif(other);
+      } else {
+        UpdateDefaultNetif();
+      }
+    } else {
+      UpdateDefaultNetif();
+    }
+    vTaskDelay(pdMS_TO_TICKS(interval_ms));
+  }
+}
+
+void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
+  if (event_base == ETH_EVENT) {
+    if (event_id == ETHERNET_EVENT_CONNECTED) {
+      UpdateState([](SharedState& s) { s.eth_link_up = true; });
+    } else if (event_id == ETHERNET_EVENT_DISCONNECTED) {
+      UpdateState([](SharedState& s) {
+        s.eth_link_up = false;
+        s.eth_ip.clear();
+        s.eth_ip_up = false;
+      });
+      UpdateDefaultNetif();
+    } else if (event_id == ETHERNET_EVENT_STOP) {
+      UpdateState([](SharedState& s) {
+        s.eth_link_up = false;
+        s.eth_ip.clear();
+        s.eth_ip_up = false;
+      });
+      UpdateDefaultNetif();
+    }
+  } else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
+    auto* event = static_cast<ip_event_got_ip_t*>(event_data);
+    const std::string ip = FormatIp4(event->ip_info.ip);
+    ESP_LOGI(TAG, "Ethernet got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    UpdateState([&](SharedState& s) {
+      s.eth_ip = ip;
+      s.eth_ip_up = !ip.empty();
+    });
+    UpdateDefaultNetif();
+  }
+}
+
+static esp_err_t InitEthernet() {
+#if !CONFIG_ETH_SPI_ETHERNET_W5500
+  ESP_LOGE(TAG, "W5500 support not enabled in sdkconfig");
+  return ESP_ERR_NOT_SUPPORTED;
+#else
+  if (eth_inited) {
+    return ESP_OK;
+  }
+  EnsureNetifInit();
+  if (!eth_bus_inited) {
+    spi_bus_config_t buscfg = {};
+    buscfg.mosi_io_num = ETH_MOSI;
+    buscfg.miso_io_num = ETH_MISO;
+    buscfg.sclk_io_num = ETH_SCK;
+    buscfg.quadwp_io_num = -1;
+    buscfg.quadhd_io_num = -1;
+    buscfg.max_transfer_sz = 1536;
+    esp_err_t ret = spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    if (ret == ESP_ERR_INVALID_STATE) {
+      ret = ESP_OK;
+    }
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "Ethernet SPI bus init failed: %s", esp_err_to_name(ret));
+      return ret;
+    }
+    eth_bus_inited = true;
+  }
+
+  eth_devcfg = {};
+  eth_devcfg.mode = 0;
+  eth_devcfg.clock_speed_hz = ETH_SPI_FREQ_HZ;
+  eth_devcfg.spics_io_num = ETH_CS;
+  eth_devcfg.queue_size = 20;
+
+  eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+  eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+  phy_config.reset_gpio_num = ETH_RST;
+
+  eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(SPI3_HOST, &eth_devcfg);
+  w5500_config.int_gpio_num = -1;
+  w5500_config.poll_period_ms = 10;
+
+  eth_mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
+  eth_phy = esp_eth_phy_new_w5500(&phy_config);
+  if (!eth_mac || !eth_phy) {
+    ESP_LOGE(TAG, "Failed to create W5500 MAC/PHY");
+    return ESP_FAIL;
+  }
+
+  esp_eth_config_t config = ETH_DEFAULT_CONFIG(eth_mac, eth_phy);
+  esp_err_t install_err = esp_eth_driver_install(&config, &eth_handle);
+  if (install_err != ESP_OK) {
+    ESP_LOGE(TAG, "Ethernet driver install failed: %s", esp_err_to_name(install_err));
+    return install_err;
+  }
+
+  esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+  eth_netif = esp_netif_new(&cfg);
+  ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
+  if (strlen(HOSTNAME) > 0) {
+    esp_netif_set_hostname(eth_netif, HOSTNAME);
+  }
+  if (!eth_handlers_registered) {
+    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &EthEventHandler, nullptr));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &EthEventHandler, nullptr));
+    eth_handlers_registered = true;
+  }
+  eth_inited = true;
+  return ESP_OK;
+#endif
+}
+
+static void StartEthernet() {
+  if (eth_started) {
+    return;
+  }
+  if (InitEthernet() != ESP_OK) {
+    return;
+  }
+  esp_err_t err = esp_eth_start(eth_handle);
+  if (err == ESP_OK) {
+    eth_started = true;
+  } else {
+    ESP_LOGE(TAG, "Ethernet start failed: %s", esp_err_to_name(err));
+  }
+}
+
+static void StopEthernet() {
+  if (!eth_started || !eth_handle) {
+    return;
+  }
+  esp_eth_stop(eth_handle);
+  eth_started = false;
+  UpdateState([](SharedState& s) {
+    s.eth_link_up = false;
+    s.eth_ip.clear();
+    s.eth_ip_up = false;
+  });
+  UpdateDefaultNetif();
+}
+
+void ApplyNetworkConfig() {
+  const NetMode mode = app_config.net_mode;
+  if (mode == NetMode::kWifiOnly) {
+    StopEthernet();
+    InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+  } else if (mode == NetMode::kEthOnly) {
+    StopWifiRecoverTask();
+    fallback_ap_active = false;
+    if (wifi_inited) {
+      esp_wifi_stop();
+      esp_wifi_set_mode(WIFI_MODE_NULL);
+    }
+    UpdateState([](SharedState& s) {
+      s.wifi_ip.clear();
+      s.wifi_ip_sta.clear();
+      s.wifi_ip_ap.clear();
+      s.wifi_rssi_dbm = -127;
+      s.wifi_quality = 0;
+    });
+    StartEthernet();
+  } else {
+    InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+    StartEthernet();
+  }
+  UpdateDefaultNetif();
 }
 
 static void WifiRecoverTask(void* arg) {
@@ -977,6 +1278,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool mqtt_password_set = false;
   bool mqtt_enabled_val = config->mqtt_enabled;
   bool mqtt_enabled_set = false;
+  bool net_mode_set = false;
+  NetMode net_mode_val = config->net_mode;
+  bool net_priority_set = false;
+  NetPriority net_priority_val = config->net_priority;
 
   while (fgets(line, sizeof(line), file)) {
     std::string raw(line);
@@ -1094,6 +1399,18 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
       if (ParseBool(value, &mqtt_enabled_val)) {
         mqtt_enabled_set = true;
       }
+    } else if (key == "net_mode") {
+      if (ParseNetMode(value, &net_mode_val)) {
+        net_mode_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid net_mode in config.txt");
+      }
+    } else if (key == "net_priority") {
+      if (ParseNetPriority(value, &net_priority_val)) {
+        net_priority_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid net_priority in config.txt");
+      }
     }
   }
 
@@ -1158,6 +1475,12 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (mqtt_enabled_set) {
     config->mqtt_enabled = mqtt_enabled_val;
   }
+  if (net_mode_set) {
+    config->net_mode = net_mode_val;
+  }
+  if (net_priority_set) {
+    config->net_priority = net_priority_val;
+  }
   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set || pid_mask_set) {
     pid_config.kp = pid_kp;
     pid_config.ki = pid_ki;
@@ -1183,7 +1506,7 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || log_use_motor_set ||
          log_duration_set || stepper_speed_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
          minio_bucket_set || minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || mqtt_enabled_set ||
-         pid_config.from_file;
+         net_mode_set || net_priority_set || pid_config.from_file;
 }
 
 void LoadConfigFromSdCard(AppConfig* config) {
@@ -1262,6 +1585,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       s.wifi_ip.clear();
       s.wifi_ip_sta.clear();
     });
+    UpdateDefaultNetif();
     if (retry_count < 5) {
       esp_wifi_connect();
       retry_count++;
@@ -1301,6 +1625,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
         s.wifi_ip_ap = ap_ip;
       }
     });
+    UpdateDefaultNetif();
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     StopWifiRecoverTask();
     if (fallback_ap_active && !app_config.wifi_ap_mode) {
@@ -1335,8 +1660,7 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
   }
 
   if (!wifi_inited) {
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    EnsureNetifInit();
     wifi_netif_sta = esp_netif_create_default_wifi_sta();
     wifi_netif_ap = esp_netif_create_default_wifi_ap();
     if (wifi_netif_sta && strlen(HOSTNAME) > 0) {
@@ -1422,6 +1746,10 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
 }
 
 void StartSntp() {
+  if (sntp_started) {
+    return;
+  }
+  sntp_started = true;
   esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
   esp_sntp_setservername(0, "pool.ntp.org");
   esp_sntp_init();
@@ -2178,7 +2506,7 @@ extern "C" void app_main(void) {
       s.stepper_home_status = "idle";
     }
   });
-  InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+  ApplyNetworkConfig();
   StartSntp();
   if (WaitForTimeSyncMs(8000)) {
     ESP_LOGI(TAG, "Time synced via NTP");
@@ -2200,6 +2528,7 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
   }
   xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(&NetworkMonitorTask, "net_mon", 3072, nullptr, 1, nullptr, 0);
   if (upload_task == nullptr) {
     // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
     xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
