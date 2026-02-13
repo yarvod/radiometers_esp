@@ -36,3 +36,5 @@ tests/firmware/build/
 
 *.crt
 *.pem
+
+config.txt
