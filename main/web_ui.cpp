@@ -225,6 +225,8 @@ const char INDEX_HTML[] = R"rawliteral(
               Status: <span id="stepperStatus">Disabled</span><br>
               Position: <span id="stepperPosition">0</span> steps<br>
               Target: <span id="stepperTarget">0</span> steps<br>
+              Home offset: <span id="stepperHomeOffsetDisplay">0</span> steps<br>
+              Hall: raw <span id="motorHallRaw">?</span>, active <span id="motorHallActive">0</span>, triggered <span id="motorHallTriggered">No</span><br>
               Moving: <span id="stepperMoving">No</span>
             </div>
             
@@ -246,6 +248,20 @@ const char INDEX_HTML[] = R"rawliteral(
               <input type="number" id="speed" value="1000" step="1">
               <div class="speed-info">Lower value = faster speed. Значение берётся из веб-инпута без ограничений и сохраняется в config.txt.</div>
             </div>
+
+            <div class="form-group">
+              <label for="homeOffsetSteps">Home offset after Hall (steps):</label>
+              <input type="number" id="homeOffsetSteps" value="0" step="1">
+              <div class="speed-info">После Hall мотор отъезжает на этот signed offset, затем позиция становится 0.</div>
+            </div>
+
+            <div class="form-group">
+              <label for="hallActiveLevel">Hall active level:</label>
+              <select id="hallActiveLevel" onchange="saveHomeOffset()">
+                <option value="0">0 / LOW</option>
+                <option value="1">1 / HIGH</option>
+              </select>
+            </div>
             
             <button class="btn btn-stepper" onclick="enableStepper()">Enable Motor</button>
             <button class="btn btn-stop" onclick="disableStepper()">Disable Motor</button>
@@ -253,6 +269,7 @@ const char INDEX_HTML[] = R"rawliteral(
             <button class="btn btn-stop" onclick="stopStepper()">Stop</button>
             <button class="btn" onclick="setZero()">Set Position to Zero</button>
             <button class="btn" onclick="findZero()">Find Zero (Hall)</button>
+            <button class="btn" onclick="saveHomeOffset()">Save Home Offset</button>
           </div>
         </div>
       </div>
@@ -337,7 +354,7 @@ const char INDEX_HTML[] = R"rawliteral(
           <h3>Облако (MinIO) и MQTT</h3>
           <div class="form-group">
             <label for="deviceId">Device ID</label>
-            <input type="text" id="deviceId" placeholder="dev1">
+            <input type="text" id="deviceId" placeholder="dev2">
           </div>
           <div class="form-group">
             <label><input type="checkbox" id="minioEnabled"> Включить MinIO</label>
@@ -807,11 +824,21 @@ const char INDEX_HTML[] = R"rawliteral(
         }
         measurementsInitialized = true;
       }
-      document.getElementById('stepperStatus').textContent = data.stepperEnabled ? 'Enabled' : 'Disabled';
+      document.getElementById('stepperStatus').textContent =
+        (data.stepperEnabled ? 'Enabled' : 'Disabled') + (data.stepperHomeStatus ? ` / ${data.stepperHomeStatus}` : '');
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
+      document.getElementById('stepperHomeOffsetDisplay').textContent = data.stepperHomeOffsetSteps ?? 0;
+      document.getElementById('motorHallRaw').textContent = data.motorHallRawLevel ?? '?';
+      document.getElementById('motorHallActive').textContent = data.motorHallActiveLevel ?? 0;
+      document.getElementById('motorHallTriggered').textContent = data.motorHallTriggered ? 'Yes' : 'No';
       document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes' : 'No';
       setValueIfIdle('speed', data.stepperSpeedUs ?? '');
+      setValueIfIdle('homeOffsetSteps', data.stepperHomeOffsetSteps ?? 0);
+      const hallActiveLevelEl = document.getElementById('hallActiveLevel');
+      if (hallActiveLevelEl && document.activeElement !== hallActiveLevelEl) {
+        hallActiveLevelEl.value = String(data.motorHallActiveLevel ?? 0);
+      }
       const lastUpdateEl = document.getElementById('lastUpdate');
       if (lastUpdateEl) {
         if (data.timestampIso) {
@@ -958,6 +985,25 @@ const char INDEX_HTML[] = R"rawliteral(
       fetch('/stepper/find_zero', { method: 'POST' })
         .then(() => refreshData())
         .catch(() => refreshData());
+    }
+
+    function saveHomeOffset() {
+      const offsetSteps = parseInt(document.getElementById('homeOffsetSteps').value, 10) || 0;
+      const hallActiveLevel = parseInt(document.getElementById('hallActiveLevel').value, 10) ? 1 : 0;
+      fetch('/stepper/home_offset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offsetSteps, hallActiveLevel })
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to save home offset');
+        return response.json();
+      })
+      .then(() => refreshData())
+      .catch(error => {
+        alert(error.message || 'Home offset save failed');
+        refreshData();
+      });
     }
 
     function setHeater() {

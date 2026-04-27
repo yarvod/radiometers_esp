@@ -17,22 +17,19 @@ inline constexpr gpio_num_t ADC_CS3 = GPIO_NUM_7;
 
 // Ethernet (W5500 over shared SPI)
 inline constexpr gpio_num_t ETH_CS = GPIO_NUM_1;
-inline constexpr gpio_num_t ETH_RST = GPIO_NUM_45;
-inline constexpr gpio_num_t ETH_INT = GPIO_NUM_48;
+inline constexpr gpio_num_t ETH_RST = GPIO_NUM_21;
+inline constexpr gpio_num_t ETH_INT = GPIO_NUM_47;
 
 // INA219 pins (I2C)
 inline constexpr gpio_num_t INA_SDA = GPIO_NUM_42;
 inline constexpr gpio_num_t INA_SCL = GPIO_NUM_41;
 
 // Status LEDs (active high)
-inline constexpr gpio_num_t STATUS_LED_RED = GPIO_NUM_21;
-inline constexpr gpio_num_t STATUS_LED_GREEN = GPIO_NUM_47;
+inline constexpr gpio_num_t STATUS_LED_RED = GPIO_NUM_45;
+inline constexpr gpio_num_t STATUS_LED_GREEN = GPIO_NUM_48;
 
 // Heater
 inline constexpr gpio_num_t HEATER_PWM = GPIO_NUM_14;
-
-// External +12V power switch for meteo connector.
-inline constexpr gpio_num_t EXT_PWR_ON = GPIO_NUM_2;
 
 // The current main-board schematic has no MCU fan PWM/tach lines.
 inline constexpr gpio_num_t FAN_PWM = GPIO_NUM_NC;
@@ -57,4 +54,18 @@ inline constexpr gpio_num_t STEPPER_DIR = GPIO_NUM_36;
 inline constexpr gpio_num_t STEPPER_STEP = GPIO_NUM_37;
 
 inline constexpr int ADC_SPI_FREQ_HZ = 100'000;
-inline constexpr int ETH_SPI_FREQ_HZ = 2'000'000;
+inline constexpr int ETH_SPI_FREQ_HZ = 8'000'000;
+
+// USB
+inline constexpr gpio_num_t USB_CONN = GPIO_NUM_8;
+
+// GPS
+inline constexpr gpio_num_t GPS_UART2_TX = GPIO_NUM_10; // cross
+inline constexpr gpio_num_t GPS_UART2_RX = GPIO_NUM_9;
+inline constexpr gpio_num_t GPS_ANT_SHORT = GPIO_NUM_46;
+
+// Meteo RS 485
+inline constexpr gpio_num_t METEO_RS485_TX = GPIO_NUM_13;
+inline constexpr gpio_num_t METEO_RS485_RX = GPIO_NUM_11;
+inline constexpr gpio_num_t METEO_RS485_RTS = GPIO_NUM_12;
+inline constexpr gpio_num_t EXT_PWR_ON = GPIO_NUM_2;

@@ -184,6 +184,10 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
   cJSON_AddNumberToObject(root, "stepperSpeedUs", snapshot.stepper_speed_us);
+  cJSON_AddNumberToObject(root, "stepperHomeOffsetSteps", snapshot.stepper_home_offset_steps);
+  cJSON_AddNumberToObject(root, "motorHallActiveLevel", snapshot.motor_hall_active_level);
+  cJSON_AddNumberToObject(root, "motorHallRawLevel", gpio_get_level(MT_HALL_SEN));
+  cJSON_AddBoolToObject(root, "motorHallTriggered", IsHallTriggered());
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
   cJSON_AddStringToObject(root, "stepperHomeStatus", snapshot.stepper_home_status.c_str());
@@ -285,6 +289,64 @@ esp_err_t StepperMoveHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"movement_started\"}");
 }
 
+esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 128);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  cJSON* offset_item = cJSON_GetObjectItem(root, "offsetSteps");
+  if (!offset_item) {
+    offset_item = cJSON_GetObjectItem(root, "offset");
+  }
+  if (!offset_item || !cJSON_IsNumber(offset_item)) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing offsetSteps");
+    return ESP_FAIL;
+  }
+  const int offset_steps = offset_item->valueint;
+  cJSON* hall_item = cJSON_GetObjectItem(root, "hallActiveLevel");
+  if (!hall_item) {
+    hall_item = cJSON_GetObjectItem(root, "motorHallActiveLevel");
+  }
+  bool hall_active_set = false;
+  int hall_active_level = app_config.motor_hall_active_level;
+  if (hall_item && cJSON_IsNumber(hall_item)) {
+    hall_active_level = hall_item->valueint ? 1 : 0;
+    hall_active_set = true;
+  }
+  cJSON_Delete(root);
+
+  app_config.stepper_home_offset_steps = offset_steps;
+  if (hall_active_set) {
+    app_config.motor_hall_active_level = hall_active_level;
+  }
+  UpdateState([&](SharedState& s) {
+    s.stepper_home_offset_steps = offset_steps;
+    s.motor_hall_active_level = app_config.motor_hall_active_level;
+  });
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+
+  httpd_resp_set_type(req, "application/json");
+  char resp[128];
+  std::snprintf(resp, sizeof(resp), "{\"status\":\"home_offset_saved\",\"offsetSteps\":%d,\"hallActiveLevel\":%d}",
+                offset_steps, app_config.motor_hall_active_level);
+  return httpd_resp_sendstr(req, resp);
+}
+
 esp_err_t StepperStopHandler(httpd_req_t* req) {
   StopStepper();
   httpd_resp_set_type(req, "application/json");
@@ -302,60 +364,126 @@ esp_err_t StepperZeroHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"position_zeroed\"}");
 }
 
-void FindZeroTask(void*) {
-  UpdateState([](SharedState& s) { s.stepper_abort = false; });
-  const bool hall_initial = IsHallTriggered();
-  ESP_LOGI(TAG, "FindZero: start, hall_triggered=%s", hall_initial ? "yes" : "no");
-  UpdateState([](SharedState& s) {
-    s.homing = true;
-    s.stepper_home_status = "running";
-    s.stepper_homed = false;
-  });
-  SharedState snapshot = CopyState();
-  const int step_delay_us = std::max(snapshot.stepper_speed_us, 1);
-  int steps = 0;
-  const int max_steps = 20000;
-  gpio_set_level(STEPPER_DIR, 0);
+namespace {
+
+struct StepperHomeResult {
   bool aborted = false;
-  while (!IsHallTriggered() && steps < max_steps) {
+  bool hall_found = false;
+  bool offset_done = false;
+  int hall_steps = 0;
+  int offset_steps = 0;
+};
+
+static void StepperPulseOnce() {
+  gpio_set_level(STEPPER_STEP, 1);
+  esp_rom_delay_us(4);
+  gpio_set_level(STEPPER_STEP, 0);
+}
+
+static bool MoveStepperBlockingSigned(int signed_steps, int step_delay_us, const char* log_context) {
+  if (signed_steps == 0) {
+    return true;
+  }
+  const bool forward = signed_steps > 0;
+  const int steps = std::abs(signed_steps);
+  gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
+  UpdateState([&](SharedState& s) {
+    s.stepper_direction_forward = forward;
+    s.stepper_moving = true;
+    s.stepper_target = s.stepper_position + signed_steps;
+  });
+  for (int i = 0; i < steps; ++i) {
     if (CopyState().stepper_abort) {
-      ESP_LOGW(TAG, "FindZero: aborted by user after %d steps", steps);
-      aborted = true;
+      ESP_LOGW(TAG, "%s offset aborted after %d/%d steps", log_context, i, steps);
+      return false;
+    }
+    StepperPulseOnce();
+    UpdateState([&](SharedState& s) {
+      s.stepper_position += forward ? 1 : -1;
+    });
+    esp_rom_delay_us(step_delay_us);
+  }
+  UpdateState([](SharedState& s) { s.stepper_moving = false; });
+  return true;
+}
+
+static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const char* log_context) {
+  StepperHomeResult result{};
+  if (enable_motor) {
+    EnableStepper();
+  }
+
+  UpdateState([](SharedState& s) {
+    s.stepper_abort = false;
+    s.homing = true;
+    s.stepper_moving = true;
+    s.stepper_homed = false;
+    s.stepper_home_status = "seeking_hall";
+  });
+
+  const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
+  constexpr int max_steps = 20000;
+  gpio_set_level(STEPPER_DIR, 0);
+  UpdateState([](SharedState& s) { s.stepper_direction_forward = false; });
+
+  while (!IsHallTriggered() && result.hall_steps < max_steps) {
+    if (CopyState().stepper_abort) {
+      ESP_LOGW(TAG, "%s aborted before Hall after %d steps", log_context, result.hall_steps);
+      result.aborted = true;
       break;
     }
-    gpio_set_level(STEPPER_STEP, 1);
-    esp_rom_delay_us(4);
-    gpio_set_level(STEPPER_STEP, 0);
+    StepperPulseOnce();
     UpdateState([](SharedState& s) {
       s.stepper_position -= 1;
       s.stepper_target = s.stepper_position;
     });
     esp_rom_delay_us(step_delay_us);
-    steps++;
+    result.hall_steps++;
   }
-  const bool hall_after = IsHallTriggered();
-  if (hall_after) {
-    ESP_LOGI(TAG, "FindZero: hall detected after %d steps", steps);
-  } else {
-    ESP_LOGW(TAG, "FindZero: hall NOT detected, stopped after %d steps", steps);
+
+  result.hall_found = IsHallTriggered();
+  if (result.hall_found && !result.aborted) {
+    ESP_LOGI(TAG, "%s Hall detected after %d steps", log_context, result.hall_steps);
+    const int offset = app_config.stepper_home_offset_steps;
+    UpdateState([](SharedState& s) {
+      s.stepper_position = 0;
+      s.stepper_target = 0;
+      s.stepper_home_status = "applying_offset";
+    });
+    result.offset_steps = offset;
+    result.offset_done = MoveStepperBlockingSigned(offset, step_delay_us, log_context);
+  } else if (!result.aborted) {
+    ESP_LOGW(TAG, "%s Hall NOT detected, stopped after %d steps", log_context, result.hall_steps);
   }
+
   UpdateState([&](SharedState& s) {
     s.stepper_position = 0;
     s.stepper_target = 0;
     s.stepper_moving = false;
     s.homing = false;
     s.stepper_abort = false;
-    if (aborted) {
+    if (result.aborted || (result.hall_found && !result.offset_done)) {
       s.stepper_home_status = "aborted";
       s.stepper_homed = false;
-    } else if (hall_after) {
-      s.stepper_home_status = "ok";
+    } else if (result.hall_found) {
+      s.stepper_home_status = (result.offset_steps == 0) ? "hall_zero" : "offset_zero";
       s.stepper_homed = true;
     } else {
       s.stepper_home_status = "not_found";
       s.stepper_homed = false;
     }
   });
+
+  return result;
+}
+
+}  // namespace
+
+void FindZeroTask(void*) {
+  const bool hall_initial = IsHallTriggered();
+  ESP_LOGI(TAG, "FindZero: start, hall_triggered=%s, offset=%d",
+           hall_initial ? "yes" : "no", app_config.stepper_home_offset_steps);
+  (void)HomeStepperToUserZeroBlocking(false, "FindZero");
   find_zero_task = nullptr;
   vTaskDelete(nullptr);
 }
@@ -451,6 +579,8 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   fprintf(f, "logging_use_motor = %s\n", (cfg.logging_use_motor ? "true" : "false"));
   fprintf(f, "logging_duration_s = %.3f\n", cfg.logging_duration_s);
   fprintf(f, "stepper_speed_us = %d\n", cfg.stepper_speed_us);
+  fprintf(f, "stepper_home_offset_steps = %d\n", cfg.stepper_home_offset_steps);
+  fprintf(f, "motor_hall_active_level = %d\n", cfg.motor_hall_active_level);
   fprintf(f, "pid_kp = %.6f\n", pid.kp);
   fprintf(f, "pid_ki = %.6f\n", pid.ki);
   fprintf(f, "pid_kd = %.6f\n", pid.kd);
@@ -532,30 +662,7 @@ void LoggingTask(void*) {
   constexpr UBaseType_t kLogStackLowWords = 512;
 
   auto home_blocking = [&]() {
-    UpdateState([](SharedState& s) { s.stepper_abort = false; });
-    UpdateState([](SharedState& s) { s.homing = true; });
-    EnableStepper();
-    gpio_set_level(STEPPER_DIR, 0);
-    int steps = 0;
-    const int max_steps = 20000;
-    const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
-    while (!IsHallTriggered() && steps < max_steps) {
-      if (CopyState().stepper_abort) {
-        ESP_LOGW(TAG, "Logging home aborted after %d steps", steps);
-        break;
-      }
-      gpio_set_level(STEPPER_STEP, 1);
-      esp_rom_delay_us(4);
-      gpio_set_level(STEPPER_STEP, 0);
-      esp_rom_delay_us(step_delay_us);
-      steps++;
-    }
-    UpdateState([](SharedState& s) {
-      s.stepper_position = 0;
-      s.stepper_target = 0;
-      s.stepper_moving = false;
-      s.homing = false;
-    });
+    return HomeStepperToUserZeroBlocking(true, "Logging home");
   };
 
   auto move_blocking = [&](int steps, bool forward) {
@@ -622,10 +729,13 @@ void LoggingTask(void*) {
   bool at_zero = true;
 
   if (log_config.use_motor || !log_config.homed_once) {
-    home_blocking();
+    StepperHomeResult home_result = home_blocking();
     log_config.homed_once = true;
-    if (CopyState().stepper_abort) {
-      ESP_LOGW(TAG, "Logging aborted during initial homing");
+    if (home_result.aborted || !home_result.hall_found || !home_result.offset_done) {
+      ESP_LOGW(TAG, "Logging stopped: homing failed (hall=%s offset=%s aborted=%s)",
+               home_result.hall_found ? "yes" : "no",
+               home_result.offset_done ? "yes" : "no",
+               home_result.aborted ? "yes" : "no");
       StopLogging();
       vTaskDelete(nullptr);
     }
@@ -1655,7 +1765,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 28;
+  config.max_uri_handlers = 29;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -1672,6 +1782,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t stepper_stop_uri = {.uri = "/stepper/stop", .method = HTTP_POST, .handler = StepperStopHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_zero_uri = {.uri = "/stepper/zero", .method = HTTP_POST, .handler = StepperZeroHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_find_zero_uri = {.uri = "/stepper/find_zero", .method = HTTP_POST, .handler = StepperFindZeroHandler, .user_ctx = nullptr};
+  httpd_uri_t stepper_home_offset_uri = {.uri = "/stepper/home_offset", .method = HTTP_POST, .handler = StepperHomeOffsetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
   httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
   httpd_uri_t wifi_apply_uri = {.uri = "/wifi/apply", .method = HTTP_POST, .handler = WifiApplyHandler, .user_ctx = nullptr};
@@ -1697,6 +1808,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &stepper_stop_uri);
   httpd_register_uri_handler(http_server, &stepper_zero_uri);
   httpd_register_uri_handler(http_server, &stepper_find_zero_uri);
+  httpd_register_uri_handler(http_server, &stepper_home_offset_uri);
   httpd_register_uri_handler(http_server, &usb_mode_get_uri);
   httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   httpd_register_uri_handler(http_server, &wifi_apply_uri);

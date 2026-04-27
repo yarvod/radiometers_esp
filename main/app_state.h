@@ -38,6 +38,8 @@ struct AppConfig {
   bool logging_use_motor;
   float logging_duration_s;
   int stepper_speed_us;
+  int stepper_home_offset_steps;
+  int motor_hall_active_level;
   // Cloud / remote control
   std::string device_id;
   std::string minio_endpoint;
@@ -102,6 +104,8 @@ struct SharedState {
   bool stepper_direction_forward;
   bool stepper_homed;
   int stepper_speed_us;
+  int stepper_home_offset_steps;
+  int motor_hall_active_level;
   int stepper_target;
   int stepper_position;
   int64_t last_step_timestamp_us;

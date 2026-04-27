@@ -136,7 +136,7 @@ static void IRAM_ATTR FanTachIsr(void* arg) {
 }
 
 bool IsHallTriggered() {
-  return gpio_get_level(MT_HALL_SEN) == 0;
+  return gpio_get_level(MT_HALL_SEN) == app_config.motor_hall_active_level;
 }
 
 void StartSntp();
@@ -363,6 +363,9 @@ static esp_err_t InitEthernet() {
     ESP_LOGE(TAG, "Shared SPI bus init for Ethernet failed: %s", esp_err_to_name(ret));
     return ret;
   }
+  gpio_set_level(ETH_CS, 1);
+  gpio_set_level(ETH_RST, 1);
+  vTaskDelay(pdMS_TO_TICKS(10));
 
   eth_devcfg = {};
   eth_devcfg.mode = 0;
@@ -376,12 +379,14 @@ static esp_err_t InitEthernet() {
 
   eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(SPI2_HOST, &eth_devcfg);
   w5500_config.int_gpio_num = ETH_INT;
-  w5500_config.poll_period_ms = 10;
+  w5500_config.poll_period_ms = 0;
 
   eth_mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
   eth_phy = esp_eth_phy_new_w5500(&phy_config);
   if (!eth_mac || !eth_phy) {
     ESP_LOGE(TAG, "Failed to create W5500 MAC/PHY");
+    gpio_set_level(ETH_CS, 1);
+    gpio_set_level(ETH_RST, 0);
     return ESP_FAIL;
   }
 
@@ -503,7 +508,7 @@ static bool WaitForTempSensors(int timeout_ms) {
 }
 
 // Devices
-LTC2440 adc1(ADC_CS1, ADC_MISO);
+LTC2440 adc1(ADC_CS1, ADC_MISO, false);
 LTC2440 adc2(ADC_CS2, ADC_MISO);
 LTC2440 adc3(ADC_CS3, ADC_MISO);
 
@@ -1241,6 +1246,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   float log_duration_val = log_config.duration_s;
   bool stepper_speed_set = false;
   int stepper_speed_val = config->stepper_speed_us;
+  bool stepper_home_offset_set = false;
+  int stepper_home_offset_val = config->stepper_home_offset_steps;
+  bool motor_hall_active_set = false;
+  int motor_hall_active_val = config->motor_hall_active_level;
   bool pid_enabled_set = false;
   bool pid_enabled_val = false;
   bool pid_kp_set = false, pid_ki_set = false, pid_kd_set = false, pid_sp_set = false, pid_sensor_set = false;
@@ -1360,6 +1369,12 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
       } else {
         ESP_LOGW(TAG, "Invalid stepper_speed_us in config.txt");
       }
+    } else if (key == "stepper_home_offset_steps") {
+      stepper_home_offset_val = std::atoi(value.c_str());
+      stepper_home_offset_set = true;
+    } else if (key == "motor_hall_active_level") {
+      motor_hall_active_val = std::atoi(value.c_str()) ? 1 : 0;
+      motor_hall_active_set = true;
     } else if (key == "device_id") {
       if (!value.empty()) {
         device_id = value;
@@ -1440,6 +1455,14 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     config->stepper_speed_us = stepper_speed_val;
     UpdateState([&](SharedState& s) { s.stepper_speed_us = stepper_speed_val; });
   }
+  if (stepper_home_offset_set) {
+    config->stepper_home_offset_steps = stepper_home_offset_val;
+    UpdateState([&](SharedState& s) { s.stepper_home_offset_steps = stepper_home_offset_val; });
+  }
+  if (motor_hall_active_set) {
+    config->motor_hall_active_level = motor_hall_active_val;
+    UpdateState([&](SharedState& s) { s.motor_hall_active_level = motor_hall_active_val; });
+  }
   if (device_id_set) {
     config->device_id = device_id;
   }
@@ -1499,7 +1522,7 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
     pid_config.from_file = true;
   }
   return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || log_use_motor_set ||
-         log_duration_set || stepper_speed_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
+         log_duration_set || stepper_speed_set || stepper_home_offset_set || motor_hall_active_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
          minio_bucket_set || minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || mqtt_enabled_set ||
          net_mode_set || net_priority_set || pid_config.from_file;
 }
@@ -1833,7 +1856,8 @@ void InitGpios() {
   io_conf.pin_bit_mask =
       GpioMask(RELAY_PIN) | GpioMask(STEPPER_EN) | GpioMask(STEPPER_DIR) | GpioMask(STEPPER_STEP) |
       GpioMask(HEATER_PWM) | GpioMask(FAN_PWM) | GpioMask(EXT_PWR_ON) |
-      GpioMask(STATUS_LED_RED) | GpioMask(STATUS_LED_GREEN);
+      GpioMask(STATUS_LED_RED) | GpioMask(STATUS_LED_GREEN) |
+      GpioMask(ADC_CS1) | GpioMask(ADC_CS2) | GpioMask(ADC_CS3) | GpioMask(ETH_CS) | GpioMask(ETH_RST);
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   if (io_conf.pin_bit_mask != 0) {
@@ -1848,6 +1872,11 @@ void InitGpios() {
   gpio_set_level(EXT_PWR_ON, 0);
   gpio_set_level(STATUS_LED_RED, 0);
   gpio_set_level(STATUS_LED_GREEN, 0);
+  gpio_set_level(ADC_CS1, 1);
+  gpio_set_level(ADC_CS2, 1);
+  gpio_set_level(ADC_CS3, 1);
+  gpio_set_level(ETH_CS, 1);
+  gpio_set_level(ETH_RST, 0);
 
   // Hall sensor input
   gpio_config_t hall_conf = {};
@@ -2206,19 +2235,17 @@ esp_err_t ReadAllAdc(float* v1, float* v2, float* v3) {
   int32_t raw1 = 0, raw2 = 0, raw3 = 0;
   esp_err_t err = adc1.Read(&raw1);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "ADC1 read failed");
-    ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC1 read failed");
-    return err;
+    raw1 = 0;
   }
   err = adc2.Read(&raw2);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "ADC2 read failed");
+    ESP_LOGW(TAG, "ADC2 read failed: %s", esp_err_to_name(err));
     ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC2 read failed");
     return err;
   }
   err = adc3.Read(&raw3);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "ADC3 read failed");
+    ESP_LOGW(TAG, "ADC3 read failed: %s", esp_err_to_name(err));
     ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC3 read failed");
     return err;
   }
@@ -2247,7 +2274,6 @@ void AdcTask(void*) {
         s.voltage3_cal = raw3;
         s.last_update_ms = now_ms;
       });
-      ESP_LOGD(TAG, "ADC: %.6f %.6f %.6f", v1, v2, v3);
     }
     vTaskDelay(pdMS_TO_TICKS(200));
   }
@@ -2527,6 +2553,8 @@ extern "C" void app_main(void) {
     s.pid_sensor_index = pid_config.sensor_index;
     s.pid_sensor_mask = pid_config.sensor_mask;
     s.stepper_speed_us = app_config.stepper_speed_us;
+    s.stepper_home_offset_steps = app_config.stepper_home_offset_steps;
+    s.motor_hall_active_level = app_config.motor_hall_active_level;
     if (s.stepper_home_status.empty()) {
       s.stepper_home_status = "idle";
     }

@@ -10,8 +10,8 @@ namespace {
 constexpr char TAG[] = "LTC2440";
 }
 
-LTC2440::LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin)
-    : chip_select_pin_(chip_select_pin), drdy_pin_(drdy_pin) {}
+LTC2440::LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin, bool log_errors)
+    : chip_select_pin_(chip_select_pin), drdy_pin_(drdy_pin), log_errors_(log_errors) {}
 
 esp_err_t LTC2440::Init(spi_host_device_t host, int clock_hz) {
   // Manual CS control so we can hold it low while monitoring DRDY on SDO.
@@ -27,23 +27,24 @@ esp_err_t LTC2440::Init(spi_host_device_t host, int clock_hz) {
 
   esp_err_t ret = spi_bus_add_device(host, &devcfg, &spi_handle_);
   if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "spi_bus_add_device failed: %s", esp_err_to_name(ret));
+    if (log_errors_) {
+      ESP_LOGE(TAG, "spi_bus_add_device failed: %s", esp_err_to_name(ret));
+    }
     return ret;
   }
 
-  // Настроим DRDY пин, если он задан
+  // Enable reading DRDY on the shared SDO/MISO pad without re-routing the SPI pin
+  // back to plain GPIO after spi_bus_initialize().
   if (drdy_pin_ != GPIO_NUM_NC) {
-    gpio_config_t io_conf{};
-    io_conf.pin_bit_mask = 1ULL << drdy_pin_;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;     // обычно DRDY open-drain / с внешней подтяжкой
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    ret = gpio_config(&io_conf);
+    ret = gpio_input_enable(drdy_pin_);
     if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "gpio_config failed for DRDY: %s", esp_err_to_name(ret));
+      if (log_errors_) {
+        ESP_LOGE(TAG, "gpio_input_enable failed for DRDY: %s", esp_err_to_name(ret));
+      }
       return ret;
     }
+    gpio_pullup_en(drdy_pin_);
+    gpio_pulldown_dis(drdy_pin_);
   }
 
   initialized_ = true;
@@ -87,11 +88,14 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   // Pull CS low so the ADC can present DRDY (EOC) on SDO.
   gpio_set_level(chip_select_pin_, 0);
 
-  // Wait until conversion complete (DOUT/SDO goes low) to avoid reading 0xFF headers.
-  esp_err_t ready = WaitReady_(pdMS_TO_TICKS(800));
+  // On the shared ADC/W5500 bus do not hold CS/bus for hundreds of ms while
+  // waiting for DRDY. The fixed conversion guard above should usually be enough;
+  // if DRDY is still high, release the bus and try again on the next ADC cycle.
+  esp_err_t ready = WaitReady_(pdMS_TO_TICKS(3));
   if (ready != ESP_OK) {
-    // Try to proceed anyway after a brief delay; sometimes DRDY not seen on shared MISO.
-    vTaskDelay(pdMS_TO_TICKS(5));
+    gpio_set_level(chip_select_pin_, 1);
+    spi_device_release_bus(spi_handle_);
+    return ready;
   }
   // Give a short guard time after ready before clocking out bits.
   vTaskDelay(pdMS_TO_TICKS(2));
@@ -104,7 +108,7 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
   transaction.tx_buffer = tx;
   transaction.rx_buffer = rx;
 
-  const int kMaxAttempts = 8;
+  const int kMaxAttempts = 2;
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
     esp_err_t ret = spi_device_transmit(spi_handle_, &transaction);
     if (ret != ESP_OK) {
@@ -114,8 +118,7 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
     }
 
     uint8_t header = rx[0];
-    uint8_t prefix = header >> 4;
-    if (prefix == 0b0010 || prefix == 0b0001) {
+    if ((header & 0xC0) == 0) {
       bool negative = (header & 0x20) == 0;
       header &= 0x1F;
 
@@ -135,17 +138,19 @@ esp_err_t LTC2440::ReadRaw_(int32_t* value) {
       return ESP_OK;
     }
 
-    // Busy/invalid header: raise CS, wait briefly, and retry
+    // Busy/invalid header: raise CS, wait briefly, and retry.
+    // LTC2440 frames are ready when EOC=0 and DMY=0 (top two bits are 00).
     if (attempt < kMaxAttempts - 1) {
       gpio_set_level(chip_select_pin_, 1);
-      // 0xFF or 0x3x often means "not ready yet" on a shared MISO line; wait longer.
-      const TickType_t wait_ms = (header == 0xFF || prefix == 0b0011) ? 10 : 5;
+      const TickType_t wait_ms = (rx[0] & 0x80) ? 2 : 1;
       vTaskDelay(pdMS_TO_TICKS(wait_ms));
       gpio_set_level(chip_select_pin_, 0);
-      (void)WaitReady_(pdMS_TO_TICKS(200));
+      (void)WaitReady_(pdMS_TO_TICKS(3));
       continue;
     } else {
-      ESP_LOGW(TAG, "Unexpected header 0x%02X", rx[0]);
+      if (log_errors_) {
+        ESP_LOGW(TAG, "Unexpected frame %02X %02X %02X %02X", rx[0], rx[1], rx[2], rx[3]);
+      }
     }
   }
 

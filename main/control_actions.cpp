@@ -34,6 +34,8 @@ std::string BuildStateJsonInternal() {
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
+  cJSON_AddNumberToObject(root, "stepperHomeOffsetSteps", snapshot.stepper_home_offset_steps);
+  cJSON_AddNumberToObject(root, "motorHallActiveLevel", snapshot.motor_hall_active_level);
   cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
   cJSON_AddStringToObject(root, "stepperHomeStatus", snapshot.stepper_home_status.c_str());
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);

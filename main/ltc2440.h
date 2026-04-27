@@ -10,7 +10,8 @@
 
 class LTC2440 {
  public:
-  explicit LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin = GPIO_NUM_NC);
+  explicit LTC2440(gpio_num_t chip_select_pin, gpio_num_t drdy_pin = GPIO_NUM_NC,
+                   bool log_errors = true);
 
   // Initialize device on already-configured SPI bus.
   esp_err_t Init(spi_host_device_t host, int clock_hz = 100'000);  // я бы по умолчанию <= 2.5 MHz
@@ -30,6 +31,7 @@ class LTC2440 {
   spi_device_handle_t spi_handle_{nullptr};
   gpio_num_t chip_select_pin_;
   gpio_num_t drdy_pin_;
+  bool log_errors_;
   int32_t adc_offset_ = 0;
   bool initialized_ = false;
   int64_t last_conv_start_us_ = 0;
