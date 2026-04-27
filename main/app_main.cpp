@@ -105,7 +105,7 @@ static bool wifi_recover_active = false;
 static wifi_config_t sta_cfg_cached = {};
 static bool eth_inited = false;
 static bool eth_started = false;
-static bool eth_bus_inited = false;
+static bool shared_spi_bus_inited = false;
 static bool eth_handlers_registered = false;
 static esp_eth_handle_t eth_handle = nullptr;
 static esp_netif_t* eth_netif = nullptr;
@@ -118,6 +118,13 @@ volatile uint32_t fan2_pulse_count = 0;
 
 i2c_master_bus_handle_t i2c_bus = nullptr;
 i2c_master_dev_handle_t ina219_dev = nullptr;
+
+static uint64_t GpioMask(gpio_num_t pin) {
+  if (pin == GPIO_NUM_NC) {
+    return 0;
+  }
+  return 1ULL << static_cast<uint32_t>(pin);
+}
 
 static void IRAM_ATTR FanTachIsr(void* arg) {
   uint32_t gpio = (uint32_t)arg;
@@ -134,6 +141,7 @@ bool IsHallTriggered() {
 
 void StartSntp();
 bool EnsureTimeSynced(int timeout_ms);
+esp_err_t InitSpiBus();
 static void StopWifiRecoverTask();
 
 std::string BuildLogFilename(const std::string& postfix_raw) {
@@ -350,23 +358,10 @@ static esp_err_t InitEthernet() {
     return ESP_OK;
   }
   EnsureNetifInit();
-  if (!eth_bus_inited) {
-    spi_bus_config_t buscfg = {};
-    buscfg.mosi_io_num = ETH_MOSI;
-    buscfg.miso_io_num = ETH_MISO;
-    buscfg.sclk_io_num = ETH_SCK;
-    buscfg.quadwp_io_num = -1;
-    buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = 1536;
-    esp_err_t ret = spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    if (ret == ESP_ERR_INVALID_STATE) {
-      ret = ESP_OK;
-    }
-    if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "Ethernet SPI bus init failed: %s", esp_err_to_name(ret));
-      return ret;
-    }
-    eth_bus_inited = true;
+  esp_err_t ret = InitSpiBus();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Shared SPI bus init for Ethernet failed: %s", esp_err_to_name(ret));
+    return ret;
   }
 
   eth_devcfg = {};
@@ -379,8 +374,8 @@ static esp_err_t InitEthernet() {
   eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
   phy_config.reset_gpio_num = ETH_RST;
 
-  eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(SPI3_HOST, &eth_devcfg);
-  w5500_config.int_gpio_num = -1;
+  eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(SPI2_HOST, &eth_devcfg);
+  w5500_config.int_gpio_num = ETH_INT;
   w5500_config.poll_period_ms = 10;
 
   eth_mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
@@ -1782,14 +1777,25 @@ bool EnsureTimeSynced(int timeout_ms) {
 }
 
 esp_err_t InitSpiBus() {
+  if (shared_spi_bus_inited) {
+    return ESP_OK;
+  }
   spi_bus_config_t buscfg = {};
-  buscfg.mosi_io_num = ADC_MOSI;
-  buscfg.miso_io_num = ADC_MISO;
-  buscfg.sclk_io_num = ADC_SCK;
+  buscfg.mosi_io_num = SPI_MOSI;
+  buscfg.miso_io_num = SPI_MISO;
+  buscfg.sclk_io_num = SPI_SCK;
   buscfg.quadwp_io_num = -1;
   buscfg.quadhd_io_num = -1;
-  buscfg.max_transfer_sz = 4;
-  return spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+  buscfg.max_transfer_sz = 1536;
+  esp_err_t ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+  if (ret == ESP_ERR_INVALID_STATE) {
+    shared_spi_bus_inited = true;
+    return ESP_OK;
+  }
+  if (ret == ESP_OK) {
+    shared_spi_bus_inited = true;
+  }
+  return ret;
 }
 
 struct TempMeta {
@@ -1825,17 +1831,21 @@ void InitGpios() {
   io_conf.intr_type = GPIO_INTR_DISABLE;
   io_conf.mode = GPIO_MODE_OUTPUT;
   io_conf.pin_bit_mask =
-      (1ULL << RELAY_PIN) | (1ULL << STEPPER_EN) | (1ULL << STEPPER_DIR) | (1ULL << STEPPER_STEP) |
-      (1ULL << HEATER_PWM) | (1ULL << FAN_PWM) | (1ULL << STATUS_LED_RED) | (1ULL << STATUS_LED_GREEN);
+      GpioMask(RELAY_PIN) | GpioMask(STEPPER_EN) | GpioMask(STEPPER_DIR) | GpioMask(STEPPER_STEP) |
+      GpioMask(HEATER_PWM) | GpioMask(FAN_PWM) | GpioMask(EXT_PWR_ON) |
+      GpioMask(STATUS_LED_RED) | GpioMask(STATUS_LED_GREEN);
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-  ESP_ERROR_CHECK(gpio_config(&io_conf));
+  if (io_conf.pin_bit_mask != 0) {
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+  }
 
   gpio_set_level(RELAY_PIN, 0);
   gpio_set_level(STEPPER_EN, 1);   // disable motor by default
   gpio_set_level(STEPPER_DIR, 0);
   gpio_set_level(STEPPER_STEP, 0);
   gpio_set_level(HEATER_PWM, 0);
+  gpio_set_level(EXT_PWR_ON, 0);
   gpio_set_level(STATUS_LED_RED, 0);
   gpio_set_level(STATUS_LED_GREEN, 0);
 
@@ -1852,17 +1862,24 @@ void InitGpios() {
   gpio_config_t tach_conf = {};
   tach_conf.intr_type = GPIO_INTR_POSEDGE;
   tach_conf.mode = GPIO_MODE_INPUT;
-  tach_conf.pin_bit_mask = (1ULL << FAN1_TACH) | (1ULL << FAN2_TACH);
+  tach_conf.pin_bit_mask = GpioMask(FAN1_TACH) | GpioMask(FAN2_TACH);
   tach_conf.pull_up_en = GPIO_PULLUP_ENABLE;
   tach_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  if (tach_conf.pin_bit_mask == 0) {
+    return;
+  }
   ESP_ERROR_CHECK(gpio_config(&tach_conf));
 
   esp_err_t isr_err = gpio_install_isr_service(0);
   if (isr_err != ESP_ERR_INVALID_STATE) {
     ESP_ERROR_CHECK(isr_err);
   }
-  ESP_ERROR_CHECK(gpio_isr_handler_add(FAN1_TACH, FanTachIsr, (void*)FAN1_TACH));
-  ESP_ERROR_CHECK(gpio_isr_handler_add(FAN2_TACH, FanTachIsr, (void*)FAN2_TACH));
+  if (FAN1_TACH != GPIO_NUM_NC) {
+    ESP_ERROR_CHECK(gpio_isr_handler_add(FAN1_TACH, FanTachIsr, (void*)FAN1_TACH));
+  }
+  if (FAN2_TACH != GPIO_NUM_NC) {
+    ESP_ERROR_CHECK(gpio_isr_handler_add(FAN2_TACH, FanTachIsr, (void*)FAN2_TACH));
+  }
 }
 
 void InitHeaterPwm() {
@@ -1898,6 +1915,10 @@ void HeaterSetPowerPercent(float p) {
 void FanSetPowerPercent(float p) {
   if (p < 0.0f) p = 0.0f;
   if (p > 100.0f) p = 100.0f;
+  if (FAN_PWM == GPIO_NUM_NC) {
+    UpdateState([&](SharedState& s) { s.fan_power = 100.0f; });
+    return;
+  }
   const uint32_t duty = static_cast<uint32_t>(p * 1023.0f / 100.0f);
   ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
@@ -1905,6 +1926,10 @@ void FanSetPowerPercent(float p) {
 }
 
 void InitFanPwm() {
+  if (FAN_PWM == GPIO_NUM_NC) {
+    UpdateState([](SharedState& s) { s.fan_power = 100.0f; });
+    return;
+  }
   ledc_timer_config_t t = {};
   t.speed_mode = LEDC_LOW_SPEED_MODE;
   t.duty_resolution = LEDC_TIMER_10_BIT;
@@ -2523,7 +2548,9 @@ extern "C" void app_main(void) {
   if (ina_err == ESP_OK) {
     xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 3072, nullptr, 2, nullptr, 0);
   }
-  xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
+  if (FAN1_TACH != GPIO_NUM_NC || FAN2_TACH != GPIO_NUM_NC) {
+    xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
+  }
   if (temp_ok) {
     xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
   }

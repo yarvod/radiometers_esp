@@ -3,6 +3,7 @@
 typedef int gpio_num_t;
 
 enum {
+  GPIO_NUM_NC = -1,
   GPIO_NUM_1 = 1,
   GPIO_NUM_2 = 2,
   GPIO_NUM_3 = 3,
@@ -25,6 +26,7 @@ enum {
   GPIO_NUM_41 = 41,
   GPIO_NUM_42 = 42,
   GPIO_NUM_45 = 45,
+  GPIO_NUM_47 = 47,
   GPIO_NUM_48 = 48,
 };
 

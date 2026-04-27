@@ -19,7 +19,7 @@ AppConfig app_config{
     false,              // logging_use_motor
     1.0f,               // logging_duration_s
     1500,               // stepper_speed_us
-    "dev1",             // device_id
+    "dev2",             // device_id
     "",                 // minio_endpoint
     "",                 // minio_access_key
     "",                 // minio_secret_key

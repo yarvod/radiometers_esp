@@ -2,36 +2,42 @@
 
 #include "driver/gpio.h"
 
+// Shared SPI bus: LTC2440 ADCs and W5500 Ethernet.
+inline constexpr gpio_num_t SPI_MISO = GPIO_NUM_4;
+inline constexpr gpio_num_t SPI_MOSI = GPIO_NUM_5;
+inline constexpr gpio_num_t SPI_SCK = GPIO_NUM_6;
+
 // ADC pins
-inline constexpr gpio_num_t ADC_MISO = GPIO_NUM_4;
-inline constexpr gpio_num_t ADC_MOSI = GPIO_NUM_5;
-inline constexpr gpio_num_t ADC_SCK = GPIO_NUM_6;
+inline constexpr gpio_num_t ADC_MISO = SPI_MISO;
+inline constexpr gpio_num_t ADC_MOSI = SPI_MOSI;
+inline constexpr gpio_num_t ADC_SCK = SPI_SCK;
 inline constexpr gpio_num_t ADC_CS1 = GPIO_NUM_16;
 inline constexpr gpio_num_t ADC_CS2 = GPIO_NUM_15;
 inline constexpr gpio_num_t ADC_CS3 = GPIO_NUM_7;
 
-// Ethernet (W5500 over SPI)
-inline constexpr gpio_num_t ETH_CS = GPIO_NUM_10;
-inline constexpr gpio_num_t ETH_MOSI = GPIO_NUM_11;
-inline constexpr gpio_num_t ETH_SCK = GPIO_NUM_12;
-inline constexpr gpio_num_t ETH_MISO = GPIO_NUM_13;
-inline constexpr gpio_num_t ETH_RST = GPIO_NUM_46;
+// Ethernet (W5500 over shared SPI)
+inline constexpr gpio_num_t ETH_CS = GPIO_NUM_1;
+inline constexpr gpio_num_t ETH_RST = GPIO_NUM_45;
+inline constexpr gpio_num_t ETH_INT = GPIO_NUM_48;
 
 // INA219 pins (I2C)
 inline constexpr gpio_num_t INA_SDA = GPIO_NUM_42;
 inline constexpr gpio_num_t INA_SCL = GPIO_NUM_41;
 
 // Status LEDs (active high)
-inline constexpr gpio_num_t STATUS_LED_RED = GPIO_NUM_45;
-inline constexpr gpio_num_t STATUS_LED_GREEN = GPIO_NUM_48;
+inline constexpr gpio_num_t STATUS_LED_RED = GPIO_NUM_21;
+inline constexpr gpio_num_t STATUS_LED_GREEN = GPIO_NUM_47;
 
 // Heater
 inline constexpr gpio_num_t HEATER_PWM = GPIO_NUM_14;
 
-// Fans
-inline constexpr gpio_num_t FAN_PWM = GPIO_NUM_2;
-inline constexpr gpio_num_t FAN1_TACH = GPIO_NUM_1;
-inline constexpr gpio_num_t FAN2_TACH = GPIO_NUM_21;
+// External +12V power switch for meteo connector.
+inline constexpr gpio_num_t EXT_PWR_ON = GPIO_NUM_2;
+
+// The current main-board schematic has no MCU fan PWM/tach lines.
+inline constexpr gpio_num_t FAN_PWM = GPIO_NUM_NC;
+inline constexpr gpio_num_t FAN1_TACH = GPIO_NUM_NC;
+inline constexpr gpio_num_t FAN2_TACH = GPIO_NUM_NC;
 
 // Temperature (1-Wire)
 inline constexpr gpio_num_t TEMP_1WIRE = GPIO_NUM_18;
