@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -8,6 +9,7 @@
 #include <vector>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "cJSON.h"
 #include "app_state.h"
@@ -312,12 +314,16 @@ esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
   if (!offset_item) {
     offset_item = cJSON_GetObjectItem(root, "offset");
   }
-  if (!offset_item || !cJSON_IsNumber(offset_item)) {
-    cJSON_Delete(root);
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing offsetSteps");
-    return ESP_FAIL;
+  const int offset_steps = (offset_item && cJSON_IsNumber(offset_item))
+                               ? offset_item->valueint
+                               : app_config.stepper_home_offset_steps;
+  cJSON* speed_item = cJSON_GetObjectItem(root, "speedUs");
+  if (!speed_item) {
+    speed_item = cJSON_GetObjectItem(root, "speed");
   }
-  const int offset_steps = offset_item->valueint;
+  const int speed_us = (speed_item && cJSON_IsNumber(speed_item) && speed_item->valueint > 0)
+                           ? speed_item->valueint
+                           : app_config.stepper_speed_us;
   cJSON* hall_item = cJSON_GetObjectItem(root, "hallActiveLevel");
   if (!hall_item) {
     hall_item = cJSON_GetObjectItem(root, "motorHallActiveLevel");
@@ -331,19 +337,22 @@ esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
   cJSON_Delete(root);
 
   app_config.stepper_home_offset_steps = offset_steps;
+  app_config.stepper_speed_us = speed_us;
   if (hall_active_set) {
     app_config.motor_hall_active_level = hall_active_level;
   }
   UpdateState([&](SharedState& s) {
     s.stepper_home_offset_steps = offset_steps;
+    s.stepper_speed_us = speed_us;
     s.motor_hall_active_level = app_config.motor_hall_active_level;
   });
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
-  char resp[128];
-  std::snprintf(resp, sizeof(resp), "{\"status\":\"home_offset_saved\",\"offsetSteps\":%d,\"hallActiveLevel\":%d}",
-                offset_steps, app_config.motor_hall_active_level);
+  char resp[160];
+  std::snprintf(resp, sizeof(resp),
+                "{\"status\":\"stepper_settings_saved\",\"speedUs\":%d,\"offsetSteps\":%d,\"hallActiveLevel\":%d}",
+                speed_us, offset_steps, app_config.motor_hall_active_level);
   return httpd_resp_sendstr(req, resp);
 }
 
@@ -557,9 +566,11 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
       return false;
     }
   }
-  FILE* f = fopen(CONFIG_FILE_PATH, "w");
+  const char* tmp_path = "/sdcard/config.tmp";
+  const char* backup_path = "/sdcard/config.bak";
+  FILE* f = fopen(tmp_path, "w");
   if (!f) {
-    ESP_LOGE(TAG, "Failed to open %s for writing", CONFIG_FILE_PATH);
+    ESP_LOGE(TAG, "Failed to open %s for writing", tmp_path);
     if (!already_mounted && !log_file) {
       UnmountLogSd();
     }
@@ -614,7 +625,39 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
     fprintf(f, "mqtt_password = %s\n", cfg.mqtt_password.c_str());
   }
   fprintf(f, "mqtt_enabled = %s\n", (cfg.mqtt_enabled ? "true" : "false"));
-  fclose(f);
+
+  bool write_ok = true;
+  if (fflush(f) != 0) {
+    write_ok = false;
+  }
+  if (write_ok && fsync(fileno(f)) != 0) {
+    write_ok = false;
+  }
+  if (fclose(f) != 0) {
+    write_ok = false;
+  }
+  if (!write_ok) {
+    ESP_LOGE(TAG, "Failed to flush %s", tmp_path);
+    remove(tmp_path);
+    if (!already_mounted && !log_file) {
+      UnmountLogSd();
+    }
+    return false;
+  }
+  remove(backup_path);
+  if (rename(CONFIG_FILE_PATH, backup_path) != 0 && errno != ENOENT) {
+    ESP_LOGW(TAG, "Failed to backup %s to %s: %d", CONFIG_FILE_PATH, backup_path, errno);
+  }
+  if (rename(tmp_path, CONFIG_FILE_PATH) != 0) {
+    ESP_LOGE(TAG, "Failed to replace %s with %s: %d", CONFIG_FILE_PATH, tmp_path, errno);
+    rename(backup_path, CONFIG_FILE_PATH);
+    remove(tmp_path);
+    if (!already_mounted && !log_file) {
+      UnmountLogSd();
+    }
+    return false;
+  }
+  remove(backup_path);
   // Keep mounted if logging is active to avoid invalidating open log file.
   if (!already_mounted && !log_file) {
     UnmountLogSd();
@@ -911,8 +954,7 @@ bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode
 esp_err_t StepperFindZeroHandler(httpd_req_t* req) {
   SharedState snapshot = CopyState();
   if (!snapshot.stepper_enabled) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stepper not enabled");
-    return ESP_FAIL;
+    EnableStepper();
   }
   std::string msg;
   if (!StartFindZeroTask(&msg)) {
@@ -1749,7 +1791,7 @@ esp_err_t CloudApplyHandler(httpd_req_t* req) {
   app_config.minio_secret_key = get_str("minioSecretKey");
   app_config.minio_bucket = get_str("minioBucket");
   app_config.minio_enabled = get_bool("minioEnabled", app_config.minio_enabled);
-  app_config.mqtt_uri = get_str("mqttUri");
+  app_config.mqtt_uri = NormalizeMqttUri(get_str("mqttUri"));
   app_config.mqtt_user = get_str("mqttUser");
   app_config.mqtt_password = get_str("mqttPassword");
   app_config.mqtt_enabled = get_bool("mqttEnabled", app_config.mqtt_enabled);

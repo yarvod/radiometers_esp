@@ -83,6 +83,27 @@ bool ParseNetPriority(const std::string& value, NetPriority* out) {
   return false;
 }
 
+std::string NormalizeMqttUri(const std::string& raw) {
+  std::string uri = Trim(raw);
+  if (uri.size() >= 2 && ((uri.front() == '"' && uri.back() == '"') || (uri.front() == '\'' && uri.back() == '\''))) {
+    uri = Trim(uri.substr(1, uri.size() - 2));
+  }
+  const std::string lower = ToLowerAscii(uri);
+  const size_t scheme_pos = lower.find("://");
+  if (scheme_pos == std::string::npos) {
+    return uri;
+  }
+  std::string scheme = lower.substr(0, scheme_pos);
+  std::string rest = Trim(uri.substr(scheme_pos + 3));
+  while (!rest.empty() && rest.front() == ':') {
+    rest.erase(rest.begin());
+  }
+  while (rest.rfind("//", 0) == 0) {
+    rest.erase(0, 1);
+  }
+  return scheme + "://" + rest;
+}
+
 std::string NetModeToString(NetMode mode) {
   switch (mode) {
     case NetMode::kWifiOnly:

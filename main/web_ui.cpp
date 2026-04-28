@@ -245,19 +245,19 @@ const char INDEX_HTML[] = R"rawliteral(
             
             <div class="form-group">
               <label for="speed">Speed (microseconds delay):</label>
-              <input type="number" id="speed" value="1000" step="1">
+              <input type="number" id="speed" value="1000" step="1" onchange="saveStepperSettings()">
               <div class="speed-info">Lower value = faster speed. Значение берётся из веб-инпута без ограничений и сохраняется в config.txt.</div>
             </div>
 
             <div class="form-group">
               <label for="homeOffsetSteps">Home offset after Hall (steps):</label>
-              <input type="number" id="homeOffsetSteps" value="0" step="1">
+              <input type="number" id="homeOffsetSteps" value="0" step="1" onchange="saveStepperSettings()">
               <div class="speed-info">После Hall мотор отъезжает на этот signed offset, затем позиция становится 0.</div>
             </div>
 
             <div class="form-group">
               <label for="hallActiveLevel">Hall active level:</label>
-              <select id="hallActiveLevel" onchange="saveHomeOffset()">
+              <select id="hallActiveLevel" onchange="saveStepperSettings()">
                 <option value="0">0 / LOW</option>
                 <option value="1">1 / HIGH</option>
               </select>
@@ -268,8 +268,8 @@ const char INDEX_HTML[] = R"rawliteral(
             <button class="btn" onclick="moveStepper()">Move</button>
             <button class="btn btn-stop" onclick="stopStepper()">Stop</button>
             <button class="btn" onclick="setZero()">Set Position to Zero</button>
-            <button class="btn" onclick="findZero()">Find Zero (Hall)</button>
-            <button class="btn" onclick="saveHomeOffset()">Save Home Offset</button>
+            <button class="btn" onclick="goToOffsetZero()">Go To Zero (Hall + Offset)</button>
+            <button class="btn" onclick="saveStepperSettings()">Save Motor Settings</button>
           </div>
         </div>
       </div>
@@ -981,28 +981,33 @@ const char INDEX_HTML[] = R"rawliteral(
         });
     }
 
-    function findZero() {
-      fetch('/stepper/find_zero', { method: 'POST' })
+    function goToOffsetZero() {
+      saveStepperSettings(false)
+        .then(() => fetch('/stepper/find_zero', { method: 'POST' }))
         .then(() => refreshData())
         .catch(() => refreshData());
     }
 
-    function saveHomeOffset() {
+    function saveStepperSettings(showAlert = true) {
+      const speedUs = parseInt(document.getElementById('speed').value, 10) || 1;
       const offsetSteps = parseInt(document.getElementById('homeOffsetSteps').value, 10) || 0;
       const hallActiveLevel = parseInt(document.getElementById('hallActiveLevel').value, 10) ? 1 : 0;
-      fetch('/stepper/home_offset', {
+      return fetch('/stepper/home_offset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ offsetSteps, hallActiveLevel })
+        body: JSON.stringify({ speedUs, offsetSteps, hallActiveLevel })
       })
       .then(response => {
-        if (!response.ok) throw new Error('Failed to save home offset');
+        if (!response.ok) throw new Error('Failed to save motor settings');
         return response.json();
       })
       .then(() => refreshData())
       .catch(error => {
-        alert(error.message || 'Home offset save failed');
+        if (showAlert) {
+          alert(error.message || 'Motor settings save failed');
+        }
         refreshData();
+        throw error;
       });
     }
 

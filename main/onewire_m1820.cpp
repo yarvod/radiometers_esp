@@ -15,7 +15,7 @@
 
 namespace {
 
-constexpr int kMaxDevices = 8;
+constexpr int kMaxDevices = 16;
 constexpr uint8_t kCmdSearchRom = 0xF0;
 constexpr uint8_t kCmdMatchRom = 0x55;
 constexpr uint8_t kCmdSkipRom = 0xCC;
@@ -47,9 +47,9 @@ bool BusReset() {
 }
 
 // Minimal port of the Arduino OneWire search algorithm.
-bool SearchNext(uint64_t* out_rom, int* last_discrepancy, bool* last_device_flag, int* last_family_discrepancy) {
-  if (!out_rom || !g_bus) return false;
-  uint8_t rom[8] = {};
+bool SearchNext(uint64_t* out_rom, std::array<uint8_t, 8>* search_rom, int* last_discrepancy,
+                bool* last_device_flag, int* last_family_discrepancy) {
+  if (!out_rom || !search_rom || !g_bus) return false;
   int id_bit_number = 1;
   int last_zero = 0;
   uint8_t rom_byte_number = 0;
@@ -89,7 +89,7 @@ bool SearchNext(uint64_t* out_rom, int* last_discrepancy, bool* last_device_flag
       search_direction = id_bit;
     } else {
       if (id_bit_number < *last_discrepancy) {
-        search_direction = ((rom[rom_byte_number] & rom_byte_mask) > 0);
+        search_direction = (((*search_rom)[rom_byte_number] & rom_byte_mask) > 0);
       } else {
         search_direction = (id_bit_number == *last_discrepancy);
       }
@@ -102,9 +102,9 @@ bool SearchNext(uint64_t* out_rom, int* last_discrepancy, bool* last_device_flag
     }
 
     if (search_direction) {
-      rom[rom_byte_number] |= rom_byte_mask;
+      (*search_rom)[rom_byte_number] |= rom_byte_mask;
     } else {
-      rom[rom_byte_number] &= static_cast<uint8_t>(~rom_byte_mask);
+      (*search_rom)[rom_byte_number] &= static_cast<uint8_t>(~rom_byte_mask);
     }
 
     if (onewire_bus_write_bit(g_bus, search_direction) != ESP_OK) {
@@ -129,7 +129,7 @@ bool SearchNext(uint64_t* out_rom, int* last_discrepancy, bool* last_device_flag
     *last_device_flag = true;
   }
 
-  std::memcpy(out_rom, rom, sizeof(rom));
+  std::memcpy(out_rom, search_rom->data(), search_rom->size());
   return true;
 }
 
@@ -172,26 +172,21 @@ bool ReadScratchpad(const uint8_t* rom, uint8_t* out_data, size_t len) {
   return onewire_bus_read_bytes(g_bus, out_data, 9) == ESP_OK;
 }
 
-}  // namespace
-
-bool M1820Init(gpio_num_t pin) {
+int ScanSensors() {
   g_addresses.fill(0);
   g_sensor_count = 0;
-
-  if (!InitBus(pin)) {
-    return false;
-  }
 
   ESP_LOGI(TAG, "Start searching M1820 sensors...");
   int last_discrepancy = 0;
   bool last_device_flag = false;
   int last_family_discrepancy = 0;
+  std::array<uint8_t, 8> search_rom{};
 
   int found = 0;
   int attempts = 0;
   while (found < kMaxDevices && attempts < 64) {
     uint64_t rom = 0;
-    if (!SearchNext(&rom, &last_discrepancy, &last_device_flag, &last_family_discrepancy)) {
+    if (!SearchNext(&rom, &search_rom, &last_discrepancy, &last_device_flag, &last_family_discrepancy)) {
       break;
     }
     attempts++;
@@ -224,6 +219,20 @@ bool M1820Init(gpio_num_t pin) {
 
   g_sensor_count = found;
   ESP_LOGI(TAG, "Searching done, %d M1820 device(s) found", g_sensor_count);
+  return g_sensor_count;
+}
+
+}  // namespace
+
+bool M1820Init(gpio_num_t pin) {
+  g_addresses.fill(0);
+  g_sensor_count = 0;
+
+  if (!InitBus(pin)) {
+    return false;
+  }
+
+  ScanSensors();
   return g_sensor_count > 0;
 }
 

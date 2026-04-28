@@ -81,11 +81,11 @@ constexpr char HOSTNAME[] = "miap-device";
 constexpr bool USE_CUSTOM_MAC = true;
 uint8_t CUSTOM_MAC[6] = {0x10, 0x00, 0x3B, 0x6E, 0x83, 0x70};
 constexpr char MSC_BASE_PATH[] = "/usb_msc";
-// INA219 constants (32V, 2A, Rshunt=0.1 ohm)
+// INA219 constants (32V range, hardware shunt is 0.05 ohm).
 constexpr uint8_t INA219_ADDR = 0x40;
 constexpr uint16_t INA219_CONFIG = 0x399F;           // 32V range, gain /8 (320mV), 12-bit, continuous
-constexpr uint16_t INA219_CALIBRATION = 4096;        // current_LSB=100uA for 0.1R, power_LSB=2mW
-constexpr float INA219_CURRENT_LSB = 0.0001f;        // 100 uA
+constexpr uint16_t INA219_CALIBRATION = 4096;        // Register calibration kept from 0.1R setup.
+constexpr float INA219_CURRENT_LSB = 0.0002f;        // 200 uA; 0.05R shunt doubles physical current
 constexpr float INA219_POWER_LSB = INA219_CURRENT_LSB * 20.0f;
 constexpr float INA219_BUS_LSB = 0.004f;             // 4 mV
 // Wi-Fi helpers
@@ -133,6 +133,20 @@ static void IRAM_ATTR FanTachIsr(void* arg) {
   } else if (gpio == static_cast<uint32_t>(FAN2_TACH)) {
     __atomic_fetch_add(&fan2_pulse_count, 1, __ATOMIC_RELAXED);
   }
+}
+
+static void EnsureGpioIsrServiceInstalled() {
+  static bool installed = false;
+  if (installed) {
+    return;
+  }
+  esp_err_t err = gpio_install_isr_service(0);
+  if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+    installed = true;
+    return;
+  }
+  ESP_LOGE(TAG, "gpio_install_isr_service failed: %s", esp_err_to_name(err));
+  ESP_ERROR_CHECK(err);
 }
 
 bool IsHallTriggered() {
@@ -203,13 +217,32 @@ static void EnsureNetifInit() {
   }
 }
 
+static void ReadNetworkUpFlags(bool* wifi_up, bool* eth_up) {
+  bool wifi = false;
+  bool eth = false;
+  if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    wifi = !state.wifi_ip_sta.empty();
+    eth = state.eth_ip_up || !state.eth_ip.empty();
+    xSemaphoreGive(state_mutex);
+  } else {
+    wifi = !state.wifi_ip_sta.empty();
+    eth = state.eth_ip_up || !state.eth_ip.empty();
+  }
+  if (wifi_up) {
+    *wifi_up = wifi;
+  }
+  if (eth_up) {
+    *eth_up = eth;
+  }
+}
+
 static void UpdateDefaultNetif() {
   esp_netif_t* target = nullptr;
   const NetMode mode = app_config.net_mode;
   const NetPriority prio = app_config.net_priority;
-  const SharedState snap = CopyState();
-  const bool wifi_up = !snap.wifi_ip_sta.empty();
-  const bool eth_up = snap.eth_ip_up || !snap.eth_ip.empty();
+  bool wifi_up = false;
+  bool eth_up = false;
+  ReadNetworkUpFlags(&wifi_up, &eth_up);
 
   if (mode == NetMode::kWifiOnly) {
     if (wifi_netif_sta) {
@@ -287,9 +320,9 @@ static void NetworkMonitorTask(void*) {
   const int check_timeout_ms = 1500;
   while (true) {
     if (app_config.net_mode == NetMode::kWifiEth) {
-      SharedState snap = CopyState();
-      const bool wifi_up = !snap.wifi_ip_sta.empty();
-      const bool eth_up = snap.eth_ip_up || !snap.eth_ip.empty();
+      bool wifi_up = false;
+      bool eth_up = false;
+      ReadNetworkUpFlags(&wifi_up, &eth_up);
       esp_netif_t* prefer = (app_config.net_priority == NetPriority::kWifi) ? wifi_netif_sta : eth_netif;
       esp_netif_t* other = (prefer == wifi_netif_sta) ? eth_netif : wifi_netif_sta;
       bool prefer_has_ip = (prefer == wifi_netif_sta) ? wifi_up : eth_up;
@@ -1397,7 +1430,7 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
         minio_enabled_set = true;
       }
     } else if (key == "mqtt_uri") {
-      mqtt_uri = value;
+      mqtt_uri = NormalizeMqttUri(value);
       mqtt_uri_set = true;
     } else if (key == "mqtt_user") {
       mqtt_user = value;
@@ -1562,9 +1595,13 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
   FILE* file = fopen(CONFIG_FILE_PATH, "r");
   if (!file) {
-    ESP_LOGW(TAG, "Config file not found at %s", CONFIG_FILE_PATH);
-    esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, card);
-    return;
+    file = fopen("/sdcard/config.bak", "r");
+    if (!file) {
+      ESP_LOGW(TAG, "Config file not found at %s", CONFIG_FILE_PATH);
+      esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, card);
+      return;
+    }
+    ESP_LOGW(TAG, "Using backup config at /sdcard/config.bak");
   }
 
   const bool parsed = ParseConfigFile(file, config);
@@ -1869,7 +1906,7 @@ void InitGpios() {
   gpio_set_level(STEPPER_DIR, 0);
   gpio_set_level(STEPPER_STEP, 0);
   gpio_set_level(HEATER_PWM, 0);
-  gpio_set_level(EXT_PWR_ON, 0);
+  gpio_set_level(EXT_PWR_ON, 1);
   gpio_set_level(STATUS_LED_RED, 0);
   gpio_set_level(STATUS_LED_GREEN, 0);
   gpio_set_level(ADC_CS1, 1);
@@ -1887,6 +1924,10 @@ void InitGpios() {
   hall_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   ESP_ERROR_CHECK(gpio_config(&hall_conf));
 
+  if (ETH_INT != GPIO_NUM_NC || FAN1_TACH != GPIO_NUM_NC || FAN2_TACH != GPIO_NUM_NC) {
+    EnsureGpioIsrServiceInstalled();
+  }
+
   // Tachometer inputs with interrupts
   gpio_config_t tach_conf = {};
   tach_conf.intr_type = GPIO_INTR_POSEDGE;
@@ -1899,10 +1940,6 @@ void InitGpios() {
   }
   ESP_ERROR_CHECK(gpio_config(&tach_conf));
 
-  esp_err_t isr_err = gpio_install_isr_service(0);
-  if (isr_err != ESP_ERR_INVALID_STATE) {
-    ESP_ERROR_CHECK(isr_err);
-  }
   if (FAN1_TACH != GPIO_NUM_NC) {
     ESP_ERROR_CHECK(gpio_isr_handler_add(FAN1_TACH, FanTachIsr, (void*)FAN1_TACH));
   }
@@ -2189,11 +2226,37 @@ void StartStepperMove(int steps, bool forward, int speed_us) {
   gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
 }
 
+struct StepperTaskSnapshot {
+  bool homing = false;
+  bool stepper_abort = false;
+  bool stepper_enabled = false;
+  bool stepper_moving = false;
+  bool stepper_direction_forward = true;
+  int stepper_speed_us = 1;
+  int64_t last_step_timestamp_us = 0;
+};
+
+static StepperTaskSnapshot ReadStepperTaskSnapshot() {
+  StepperTaskSnapshot out{};
+  if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    out.homing = state.homing;
+    out.stepper_abort = state.stepper_abort;
+    out.stepper_enabled = state.stepper_enabled;
+    out.stepper_moving = state.stepper_moving;
+    out.stepper_direction_forward = state.stepper_direction_forward;
+    out.stepper_speed_us = state.stepper_speed_us;
+    out.last_step_timestamp_us = state.last_step_timestamp_us;
+    xSemaphoreGive(state_mutex);
+  }
+  out.stepper_speed_us = std::max(out.stepper_speed_us, 1);
+  return out;
+}
+
 void StepperTask(void*) {
   const TickType_t idle_delay_active = pdMS_TO_TICKS(1);
   const TickType_t idle_delay_idle = pdMS_TO_TICKS(5);
   while (true) {
-    SharedState snapshot = CopyState();
+    StepperTaskSnapshot snapshot = ReadStepperTaskSnapshot();
     if (snapshot.homing && !snapshot.stepper_abort) {
       vTaskDelay(idle_delay_idle);
       continue;
@@ -2580,10 +2643,10 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
   }
   if (temp_ok) {
-    xTaskCreatePinnedToCore(&TempTask, "temp_task", 3072, nullptr, 2, nullptr, 0);
+    xTaskCreatePinnedToCore(&TempTask, "temp_task", 8192, nullptr, 2, nullptr, 0);
   }
-  xTaskCreatePinnedToCore(&PidTask, "pid_task", 4096, nullptr, 2, nullptr, 0);
-  xTaskCreatePinnedToCore(&NetworkMonitorTask, "net_mon", 3072, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(&PidTask, "pid_task", 8192, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(&NetworkMonitorTask, "net_mon", 5120, nullptr, 1, nullptr, 0);
   if (upload_task == nullptr) {
     // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
     xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);

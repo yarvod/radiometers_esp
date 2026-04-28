@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <string>
 
 #include "control_actions.h"
 #include "app_services.h"
 #include "app_state.h"
+#include "app_utils.h"
 #include "cJSON.h"
 #include "error_manager.h"
 #include "esp_log.h"
@@ -21,6 +23,77 @@ extern const uint8_t ca_crt_start[] asm("_binary_ca_crt_start");
 extern const uint8_t ca_crt_end[] asm("_binary_ca_crt_end");
 extern const uint8_t isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
 extern const uint8_t isrgrootx1_pem_end[] asm("_binary_isrgrootx1_pem_end");
+
+struct ParsedMqttUri {
+  esp_mqtt_transport_t transport = MQTT_TRANSPORT_UNKNOWN;
+  std::string host;
+  std::string path;
+  uint32_t port = 0;
+};
+
+bool IsAllDigits(const std::string& value) {
+  if (value.empty()) {
+    return false;
+  }
+  return std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c); });
+}
+
+bool ParseMqttUri(const std::string& raw_uri, ParsedMqttUri* out) {
+  if (!out) {
+    return false;
+  }
+  const std::string uri = NormalizeMqttUri(raw_uri);
+  const std::string lower = NormalizeMqttUri(raw_uri);
+  const size_t scheme_pos = lower.find("://");
+  if (scheme_pos == std::string::npos) {
+    return false;
+  }
+  const std::string scheme = lower.substr(0, scheme_pos);
+  std::string rest = uri.substr(scheme_pos + 3);
+  while (!rest.empty() && rest.front() == ':') {
+    rest.erase(rest.begin());
+  }
+
+  if (scheme == "mqtt") {
+    out->transport = MQTT_TRANSPORT_OVER_TCP;
+    out->port = 1883;
+  } else if (scheme == "mqtts") {
+    out->transport = MQTT_TRANSPORT_OVER_SSL;
+    out->port = 8883;
+  } else if (scheme == "ws") {
+    out->transport = MQTT_TRANSPORT_OVER_WS;
+    out->port = 80;
+  } else if (scheme == "wss") {
+    out->transport = MQTT_TRANSPORT_OVER_WSS;
+    out->port = 443;
+  } else {
+    return false;
+  }
+
+  const size_t path_pos = rest.find('/');
+  std::string host_port = path_pos == std::string::npos ? rest : rest.substr(0, path_pos);
+  out->path = path_pos == std::string::npos ? std::string() : rest.substr(path_pos);
+  while (!host_port.empty() && host_port.front() == ':') {
+    host_port.erase(host_port.begin());
+  }
+
+  const size_t port_pos = host_port.rfind(':');
+  if (port_pos != std::string::npos) {
+    const std::string port_str = host_port.substr(port_pos + 1);
+    if (IsAllDigits(port_str)) {
+      out->port = static_cast<uint32_t>(std::strtoul(port_str.c_str(), nullptr, 10));
+      out->host = host_port.substr(0, port_pos);
+    } else {
+      out->host = host_port;
+    }
+  } else {
+    out->host = host_port;
+  }
+  while (!out->host.empty() && out->host.front() == ':') {
+    out->host.erase(out->host.begin());
+  }
+  return !out->host.empty() && out->port > 0 && out->transport != MQTT_TRANSPORT_UNKNOWN;
+}
 
 void MqttPublish(const std::string& topic, const std::string& payload, int qos = 0, bool retain = false) {
   if (!mqtt_client || topic.empty()) return;
@@ -312,21 +385,32 @@ void StartMqttBridge() {
     ESP_LOGI(TAG_MQTT, "MQTT disabled (uri empty)");
     return;
   }
+  ParsedMqttUri parsed_uri;
+  if (!ParseMqttUri(app_config.mqtt_uri, &parsed_uri)) {
+    ESP_LOGE(TAG_MQTT, "Invalid MQTT URI: %s", app_config.mqtt_uri.c_str());
+    ErrorManagerSet(ErrorCode::kMqttDisconnected, ErrorSeverity::kError, "Invalid MQTT URI");
+    return;
+  }
   if (mqtt_client) {
     esp_mqtt_client_stop(mqtt_client);
     esp_mqtt_client_destroy(mqtt_client);
     mqtt_client = nullptr;
   }
   esp_mqtt_client_config_t cfg = {};
-  cfg.broker.address.uri = app_config.mqtt_uri.c_str();
+  cfg.broker.address.hostname = parsed_uri.host.c_str();
+  cfg.broker.address.port = parsed_uri.port;
+  cfg.broker.address.transport = parsed_uri.transport;
+  cfg.broker.address.path = parsed_uri.path.empty() ? nullptr : parsed_uri.path.c_str();
   cfg.credentials.username = app_config.mqtt_user.empty() ? nullptr : app_config.mqtt_user.c_str();
   cfg.credentials.authentication.password = app_config.mqtt_password.empty() ? nullptr : app_config.mqtt_password.c_str();
   cfg.session.keepalive = 30;
   cfg.network.disable_auto_reconnect = false;
   cfg.session.disable_clean_session = false;
   cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
-  cfg.broker.verification.certificate = reinterpret_cast<const char*>(ca_crt_start);
-  cfg.broker.verification.certificate_len = ca_crt_end - ca_crt_start;
+  if (parsed_uri.transport == MQTT_TRANSPORT_OVER_SSL || parsed_uri.transport == MQTT_TRANSPORT_OVER_WSS) {
+    cfg.broker.verification.certificate = reinterpret_cast<const char*>(ca_crt_start);
+    cfg.broker.verification.certificate_len = ca_crt_end - ca_crt_start;
+  }
   mqtt_client = esp_mqtt_client_init(&cfg);
   if (!mqtt_client) {
     ESP_LOGE(TAG_MQTT, "MQTT init failed");
@@ -344,7 +428,7 @@ void StartMqttBridge() {
     return;
   }
   if (mqtt_state_task == nullptr) {
-    xTaskCreatePinnedToCore(&MqttStateTask, "mqtt_state", 4096, nullptr, 2, &mqtt_state_task, 0);
+    xTaskCreatePinnedToCore(&MqttStateTask, "mqtt_state", 8192, nullptr, 2, &mqtt_state_task, 0);
   }
 }
 

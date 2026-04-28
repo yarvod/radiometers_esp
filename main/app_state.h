@@ -12,7 +12,7 @@
 #include "freertos/semphr.h"
 #include "sdmmc_cmd.h"
 
-constexpr int MAX_TEMP_SENSORS = 8;
+constexpr int MAX_TEMP_SENSORS = 16;
 inline constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
 inline constexpr char CONFIG_FILE_PATH[] = "/sdcard/config.txt";
 inline constexpr char DEFAULT_WIFI_SSID[] = "Altai INASAN";

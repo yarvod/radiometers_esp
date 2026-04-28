@@ -34,6 +34,7 @@ std::string BuildStateJsonInternal() {
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddNumberToObject(root, "stepperPosition", snapshot.stepper_position);
   cJSON_AddNumberToObject(root, "stepperTarget", snapshot.stepper_target);
+  cJSON_AddNumberToObject(root, "stepperSpeedUs", snapshot.stepper_speed_us);
   cJSON_AddNumberToObject(root, "stepperHomeOffsetSteps", snapshot.stepper_home_offset_steps);
   cJSON_AddNumberToObject(root, "motorHallActiveLevel", snapshot.motor_hall_active_level);
   cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
@@ -141,7 +142,7 @@ ActionResult ActionStepperMove(const StepperMoveRequest& req) {
 ActionResult ActionStepperFindZero() {
   SharedState snapshot = CopyState();
   if (!snapshot.stepper_enabled) {
-    return {false, "Stepper not enabled", {}};
+    EnableStepper();
   }
   std::string msg;
   if (!StartFindZeroTask(&msg)) {

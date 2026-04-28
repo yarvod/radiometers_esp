@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-constexpr int MAX_TEMP_SENSORS = 8;
+constexpr int MAX_TEMP_SENSORS = 16;
 inline constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
 
 enum class NetMode : uint8_t { kWifiOnly = 0, kEthOnly = 1, kWifiEth = 2 };
