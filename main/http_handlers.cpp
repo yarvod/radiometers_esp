@@ -208,10 +208,12 @@ esp_err_t DataHandler(httpd_req_t* req) {
 }
 
 esp_err_t CalibrateHandler(httpd_req_t* req) {
-  if (calibration_task == nullptr) {
-    xTaskCreatePinnedToCore(&CalibrationTask, "calibrate", 4096, nullptr, 4, &calibration_task, tskNO_AFFINITY);
-  }
+  ActionResult res = ActionCalibrate();
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"calibration_started\"}");
 }
 
@@ -336,17 +338,16 @@ esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
   }
   cJSON_Delete(root);
 
-  app_config.stepper_home_offset_steps = offset_steps;
-  app_config.stepper_speed_us = speed_us;
-  if (hall_active_set) {
-    app_config.motor_hall_active_level = hall_active_level;
+  StepperHomeOffsetRequest action_req;
+  action_req.offset_steps = offset_steps;
+  action_req.speed_us = speed_us;
+  action_req.hall_active_level = hall_active_level;
+  action_req.hall_active_level_set = hall_active_set;
+  ActionResult res = ActionStepperHomeOffset(action_req);
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
   }
-  UpdateState([&](SharedState& s) {
-    s.stepper_home_offset_steps = offset_steps;
-    s.stepper_speed_us = speed_us;
-    s.motor_hall_active_level = app_config.motor_hall_active_level;
-  });
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
   char resp[160];
@@ -357,19 +358,22 @@ esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
 }
 
 esp_err_t StepperStopHandler(httpd_req_t* req) {
-  StopStepper();
+  ActionResult res = ActionStepperStop();
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"movement_stopped\"}");
 }
 
 esp_err_t StepperZeroHandler(httpd_req_t* req) {
-  UpdateState([](SharedState& s) {
-    s.stepper_position = 0;
-    s.stepper_target = 0;
-    s.stepper_homed = true;
-    s.stepper_home_status = "manual_zero";
-  });
+  ActionResult res = ActionStepperZero();
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"position_zeroed\"}");
 }
 
@@ -952,13 +956,9 @@ bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode
 }
 
 esp_err_t StepperFindZeroHandler(httpd_req_t* req) {
-  SharedState snapshot = CopyState();
-  if (!snapshot.stepper_enabled) {
-    EnableStepper();
-  }
-  std::string msg;
-  if (!StartFindZeroTask(&msg)) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg.c_str());
+  ActionResult res = ActionStepperFindZero();
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;
   }
   httpd_resp_set_type(req, "application/json");
@@ -1539,69 +1539,41 @@ esp_err_t PidApplyHandler(httpd_req_t* req) {
   }
   cJSON_Delete(root);
 
-  SharedState snapshot = CopyState();
-  if (snapshot.temp_sensor_count > 0) {
-    sensor = std::clamp(sensor, 0, snapshot.temp_sensor_count - 1);
-  } else if (sensor < 0) {
-    sensor = 0;
+  PidApplyRequest action_req;
+  action_req.kp = kp;
+  action_req.ki = ki;
+  action_req.kd = kd;
+  action_req.setpoint = sp;
+  action_req.sensor = sensor;
+  action_req.sensor_mask = sensor_mask;
+  action_req.sensor_mask_set = sensor_mask_set;
+  ActionResult res = ActionPidApply(action_req);
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
+    return ESP_FAIL;
   }
-  if (sensor_mask_set) {
-    const uint16_t allowed = snapshot.temp_sensor_count > 0
-                                 ? static_cast<uint16_t>((1u << std::min(snapshot.temp_sensor_count, MAX_TEMP_SENSORS)) - 1u)
-                                 : 0;
-    sensor_mask = static_cast<uint16_t>(sensor_mask & allowed);
-    if (sensor_mask == 0 && snapshot.temp_sensor_count > 0) {
-      sensor_mask = static_cast<uint16_t>(1u << sensor);
-    }
-    for (int i = 0; i < MAX_TEMP_SENSORS; ++i) {
-      if (sensor_mask & (1u << i)) {
-        sensor = i;
-        break;
-      }
-    }
-  }
-
-  pid_config.kp = kp;
-  pid_config.ki = ki;
-  pid_config.kd = kd;
-  pid_config.setpoint = sp;
-  pid_config.sensor_index = sensor;
-  if (sensor_mask_set) {
-    pid_config.sensor_mask = sensor_mask;
-  } else {
-    pid_config.sensor_mask = static_cast<uint16_t>(1u << sensor);
-  }
-
-  UpdateState([&](SharedState& s) {
-    s.pid_kp = kp;
-    s.pid_ki = ki;
-    s.pid_kd = kd;
-    s.pid_setpoint = sp;
-    s.pid_sensor_index = sensor;
-    s.pid_sensor_mask = pid_config.sensor_mask;
-  });
-
-  // Persist PID config and current enable state
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"pid_applied\"}");
 }
 
 esp_err_t PidEnableHandler(httpd_req_t* req) {
-  SharedState snapshot = CopyState();
-  if (snapshot.temp_sensor_count == 0) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No temp sensors");
+  ActionResult res = ActionPidEnable();
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;
   }
-  UpdateState([](SharedState& s) { s.pid_enabled = true; });
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"pid_enabled\"}");
 }
 
 esp_err_t PidDisableHandler(httpd_req_t* req) {
-  UpdateState([](SharedState& s) { s.pid_enabled = false; });
+  ActionResult res = ActionPidDisable();
   httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
   return httpd_resp_sendstr(req, "{\"status\":\"pid_disabled\"}");
 }
 
@@ -1638,27 +1610,18 @@ esp_err_t UsbModeSetHandler(httpd_req_t* req) {
   UsbMode requested = (std::strcmp(mode_str, "msc") == 0) ? UsbMode::kMsc : UsbMode::kCdc;
   cJSON_Delete(root);
 
-#if !CONFIG_TINYUSB_MSC_ENABLED
-  if (requested == UsbMode::kMsc) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC not enabled in firmware");
-    return ESP_FAIL;
-  }
-#endif
-
   if (requested == usb_mode) {
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"status\":\"unchanged\"}");
   }
 
-  // If leaving MSC, unmount before reboot to keep host happy
-  if (usb_mode == UsbMode::kMsc && requested == UsbMode::kCdc) {
-    tinyusb_msc_storage_unmount();
+  ActionResult res = ActionUsbModeSet(requested);
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
+    return ESP_FAIL;
   }
-
-  SaveUsbModeToNvs(requested);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, "{\"status\":\"restarting\",\"mode\":\"pending\"}");
-  ScheduleRestart();
   return ESP_OK;
 }
 
@@ -1689,22 +1652,11 @@ esp_err_t WifiApplyHandler(httpd_req_t* req) {
   std::string pass = (pass_item && cJSON_IsString(pass_item) && pass_item->valuestring) ? pass_item->valuestring : "";
   cJSON_Delete(root);
 
-  if (ssid.empty() || ssid.size() >= WIFI_SSID_MAX_LEN) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid SSID");
+  ActionResult res = ActionWifiApply({mode, ssid, pass});
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;
   }
-  if (pass.size() >= WIFI_PASSWORD_MAX_LEN) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid password");
-    return ESP_FAIL;
-  }
-
-  app_config.wifi_ssid = ssid;
-  app_config.wifi_password = pass;
-  app_config.wifi_ap_mode = (mode == "ap");
-  app_config.wifi_from_file = true;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
-
-  ApplyNetworkConfig();
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"wifi_applied\"}");
@@ -1736,21 +1688,11 @@ esp_err_t NetApplyHandler(httpd_req_t* req) {
       (prio_item && cJSON_IsString(prio_item) && prio_item->valuestring) ? prio_item->valuestring : "";
   cJSON_Delete(root);
 
-  NetMode new_mode = app_config.net_mode;
-  NetPriority new_priority = app_config.net_priority;
-  if (!mode.empty() && !ParseNetMode(mode, &new_mode)) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid net mode");
+  ActionResult res = ActionNetApply({mode, priority});
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;
   }
-  if (!priority.empty() && !ParseNetPriority(priority, &new_priority)) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid net priority");
-    return ESP_FAIL;
-  }
-
-  app_config.net_mode = new_mode;
-  app_config.net_priority = new_priority;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
-  ApplyNetworkConfig();
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"net_applied\"}");
@@ -1785,19 +1727,24 @@ esp_err_t CloudApplyHandler(httpd_req_t* req) {
     if (item && cJSON_IsNumber(item)) return item->valueint != 0;
     return def;
   };
-  app_config.device_id = get_str("deviceId");
-  app_config.minio_endpoint = get_str("minioEndpoint");
-  app_config.minio_access_key = get_str("minioAccessKey");
-  app_config.minio_secret_key = get_str("minioSecretKey");
-  app_config.minio_bucket = get_str("minioBucket");
-  app_config.minio_enabled = get_bool("minioEnabled", app_config.minio_enabled);
-  app_config.mqtt_uri = NormalizeMqttUri(get_str("mqttUri"));
-  app_config.mqtt_user = get_str("mqttUser");
-  app_config.mqtt_password = get_str("mqttPassword");
-  app_config.mqtt_enabled = get_bool("mqttEnabled", app_config.mqtt_enabled);
+  CloudApplyRequest action_req;
+  action_req.device_id = get_str("deviceId");
+  action_req.minio_endpoint = get_str("minioEndpoint");
+  action_req.minio_access_key = get_str("minioAccessKey");
+  action_req.minio_secret_key = get_str("minioSecretKey");
+  action_req.minio_bucket = get_str("minioBucket");
+  action_req.minio_enabled = get_bool("minioEnabled", app_config.minio_enabled);
+  action_req.mqtt_uri = get_str("mqttUri");
+  action_req.mqtt_user = get_str("mqttUser");
+  action_req.mqtt_password = get_str("mqttPassword");
+  action_req.mqtt_enabled = get_bool("mqttEnabled", app_config.mqtt_enabled);
   cJSON_Delete(root);
 
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  ActionResult res = ActionCloudApply(action_req);
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
+    return ESP_FAIL;
+  }
 
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"status\":\"cloud_applied\"}");

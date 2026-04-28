@@ -1,9 +1,13 @@
 #include "control_actions.h"
 
 #include <algorithm>
+#include <cctype>
 
 #include "app_services.h"
+#include "app_utils.h"
 #include "cJSON.h"
+#include "freertos/task.h"
+#include "tusb_msc_storage.h"
 
 namespace {
 
@@ -139,6 +143,11 @@ ActionResult ActionStepperMove(const StepperMoveRequest& req) {
   return {true, "movement_started", {}};
 }
 
+ActionResult ActionStepperStop() {
+  StopStepper();
+  return {true, "movement_stopped", {}};
+}
+
 ActionResult ActionStepperFindZero() {
   SharedState snapshot = CopyState();
   if (!snapshot.stepper_enabled) {
@@ -161,6 +170,30 @@ ActionResult ActionStepperZero() {
   return {true, "position_zeroed", {}};
 }
 
+ActionResult ActionStepperHomeOffset(const StepperHomeOffsetRequest& req) {
+  const int speed = req.speed_us > 0 ? req.speed_us : app_config.stepper_speed_us;
+  app_config.stepper_home_offset_steps = req.offset_steps;
+  app_config.stepper_speed_us = speed;
+  if (req.hall_active_level_set) {
+    app_config.motor_hall_active_level = req.hall_active_level ? 1 : 0;
+  }
+  UpdateState([&](SharedState& s) {
+    s.stepper_home_offset_steps = app_config.stepper_home_offset_steps;
+    s.stepper_speed_us = app_config.stepper_speed_us;
+    s.motor_hall_active_level = app_config.motor_hall_active_level;
+  });
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  cJSON* root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "speedUs", app_config.stepper_speed_us);
+  cJSON_AddNumberToObject(root, "offsetSteps", app_config.stepper_home_offset_steps);
+  cJSON_AddNumberToObject(root, "hallActiveLevel", app_config.motor_hall_active_level);
+  const char* json = cJSON_PrintUnformatted(root);
+  std::string payload = json ? json : "{}";
+  cJSON_free((void*)json);
+  cJSON_Delete(root);
+  return {true, "stepper_settings_saved", payload};
+}
+
 ActionResult ActionHeaterSet(float power_percent) {
   HeaterSetPowerPercent(power_percent);
   return {true, "heater_set", {}};
@@ -169,6 +202,140 @@ ActionResult ActionHeaterSet(float power_percent) {
 ActionResult ActionFanSet(float power_percent) {
   FanSetPowerPercent(power_percent);
   return {true, "fan_set", {}};
+}
+
+ActionResult ActionPidApply(const PidApplyRequest& req) {
+  int sensor = req.sensor;
+  uint16_t sensor_mask = req.sensor_mask;
+
+  SharedState snapshot = CopyState();
+  if (snapshot.temp_sensor_count > 0) {
+    sensor = std::clamp(sensor, 0, snapshot.temp_sensor_count - 1);
+  } else if (sensor < 0) {
+    sensor = 0;
+  }
+  if (req.sensor_mask_set) {
+    sensor_mask = ClampSensorMask(sensor_mask, snapshot.temp_sensor_count);
+    if (sensor_mask == 0 && snapshot.temp_sensor_count > 0) {
+      sensor_mask = static_cast<uint16_t>(1u << sensor);
+    }
+    sensor = FirstSetBitIndex(sensor_mask);
+  } else {
+    sensor_mask = static_cast<uint16_t>(1u << sensor);
+  }
+
+  pid_config.kp = req.kp;
+  pid_config.ki = req.ki;
+  pid_config.kd = req.kd;
+  pid_config.setpoint = req.setpoint;
+  pid_config.sensor_index = sensor;
+  pid_config.sensor_mask = sensor_mask;
+
+  UpdateState([&](SharedState& s) {
+    s.pid_kp = pid_config.kp;
+    s.pid_ki = pid_config.ki;
+    s.pid_kd = pid_config.kd;
+    s.pid_setpoint = pid_config.setpoint;
+    s.pid_sensor_index = pid_config.sensor_index;
+    s.pid_sensor_mask = pid_config.sensor_mask;
+  });
+
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  return {true, "pid_applied", {}};
+}
+
+ActionResult ActionPidEnable() {
+  SharedState snapshot = CopyState();
+  if (snapshot.temp_sensor_count == 0) {
+    return {false, "no temp sensors", {}};
+  }
+  UpdateState([](SharedState& s) { s.pid_enabled = true; });
+  return {true, "pid_enabled", {}};
+}
+
+ActionResult ActionPidDisable() {
+  UpdateState([](SharedState& s) { s.pid_enabled = false; });
+  return {true, "pid_disabled", {}};
+}
+
+ActionResult ActionWifiApply(const WifiApplyRequest& req) {
+  std::string mode = req.mode;
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (mode != "ap") mode = "sta";
+
+  if (req.ssid.empty() || req.ssid.size() >= WIFI_SSID_MAX_LEN) {
+    return {false, "invalid ssid", {}};
+  }
+  if (req.password.size() >= WIFI_PASSWORD_MAX_LEN) {
+    return {false, "invalid password", {}};
+  }
+
+  app_config.wifi_ssid = req.ssid;
+  app_config.wifi_password = req.password;
+  app_config.wifi_ap_mode = (mode == "ap");
+  app_config.wifi_from_file = true;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  ApplyNetworkConfig();
+  return {true, "wifi_applied", {}};
+}
+
+ActionResult ActionNetApply(const NetApplyRequest& req) {
+  NetMode new_mode = app_config.net_mode;
+  NetPriority new_priority = app_config.net_priority;
+  if (!req.mode.empty() && !ParseNetMode(req.mode, &new_mode)) {
+    return {false, "invalid net mode", {}};
+  }
+  if (!req.priority.empty() && !ParseNetPriority(req.priority, &new_priority)) {
+    return {false, "invalid net priority", {}};
+  }
+  app_config.net_mode = new_mode;
+  app_config.net_priority = new_priority;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  ApplyNetworkConfig();
+  return {true, "net_applied", {}};
+}
+
+ActionResult ActionCloudApply(const CloudApplyRequest& req) {
+  app_config.device_id = req.device_id;
+  app_config.minio_endpoint = req.minio_endpoint;
+  app_config.minio_access_key = req.minio_access_key;
+  app_config.minio_secret_key = req.minio_secret_key;
+  app_config.minio_bucket = req.minio_bucket;
+  app_config.minio_enabled = req.minio_enabled;
+  app_config.mqtt_uri = NormalizeMqttUri(req.mqtt_uri);
+  app_config.mqtt_user = req.mqtt_user;
+  app_config.mqtt_password = req.mqtt_password;
+  app_config.mqtt_enabled = req.mqtt_enabled;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  return {true, "cloud_applied", {}};
+}
+
+ActionResult ActionUsbModeSet(UsbMode requested) {
+#if !CONFIG_TINYUSB_MSC_ENABLED
+  if (requested == UsbMode::kMsc) {
+    return {false, "MSC not enabled in firmware", {}};
+  }
+#endif
+  if (requested == usb_mode) {
+    return {true, "unchanged", {}};
+  }
+  if (usb_mode == UsbMode::kMsc && requested == UsbMode::kCdc) {
+    tinyusb_msc_storage_unmount();
+  }
+  SaveUsbModeToNvs(requested);
+  ScheduleRestart();
+  return {true, "restarting", {}};
+}
+
+ActionResult ActionUsbModeGet() {
+  return {true, usb_mode == UsbMode::kMsc ? "msc" : "cdc", {}};
+}
+
+ActionResult ActionCalibrate() {
+  if (calibration_task == nullptr) {
+    xTaskCreatePinnedToCore(&CalibrationTask, "calibrate", 4096, nullptr, 4, &calibration_task, tskNO_AFFINITY);
+  }
+  return {true, "calibration_started", {}};
 }
 
 ActionResult ActionRestart() {

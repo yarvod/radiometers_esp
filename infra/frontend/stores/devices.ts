@@ -35,7 +35,7 @@ export const useDevicesStore = defineStore('devices', {
 
       const subscribeTopics = () => {
         this.mqttOnline = true
-        mqtt.subscribe("+/resp", { qos: 1 }, (err) => {
+        mqtt.subscribe("+/resp", { qos: 0 }, (err) => {
           if (err) console.error('MQTT subscribe +/resp failed', err)
         })
         mqtt.subscribe("+/state", { qos: 0 }, (err) => {
@@ -113,10 +113,10 @@ export const useDevicesStore = defineStore('devices', {
         const timeout = setTimeout(() => {
           this.pending.delete(reqId)
           reject(new Error(`MQTT command timeout: ${topic}`))
-        }, 12000)
+        }, 8000)
         this.pending.set(reqId, { resolve, reject, timeout })
       })
-      mqtt.publish(topic, msg, { qos: 1 }, (err?: Error) => {
+      mqtt.publish(topic, msg, { qos: 0 }, (err?: Error) => {
         if (!err) return
         const pending = this.pending.get(reqId)
         if (!pending) return
