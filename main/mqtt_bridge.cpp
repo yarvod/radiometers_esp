@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
-#include <new>
 #include <string>
 
 #include "control_actions.h"
@@ -13,8 +13,6 @@
 #include "cJSON.h"
 #include "error_manager.h"
 #include "esp_log.h"
-#include "freertos/queue.h"
-#include "freertos/task.h"
 #include "mqtt_client.h"
 
 namespace {
@@ -24,8 +22,6 @@ esp_mqtt_client_handle_t mqtt_client = nullptr;
 static bool mqtt_connected = false;
 static std::string mqtt_rx_topic;
 static std::string mqtt_rx_payload;
-static QueueHandle_t mqtt_cmd_queue = nullptr;
-static TaskHandle_t mqtt_cmd_task = nullptr;
 extern const uint8_t ca_crt_start[] asm("_binary_ca_crt_start");
 extern const uint8_t ca_crt_end[] asm("_binary_ca_crt_end");
 extern const uint8_t isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
@@ -36,11 +32,6 @@ struct ParsedMqttUri {
   std::string host;
   std::string path;
   uint32_t port = 0;
-};
-
-struct MqttCommand {
-  std::string topic;
-  std::string payload;
 };
 
 void HandleMqttCommand(const std::string& topic, const std::string& payload);
@@ -109,15 +100,19 @@ bool ParseMqttUri(const std::string& raw_uri, ParsedMqttUri* out) {
   return !out->host.empty() && out->port > 0 && out->transport != MQTT_TRANSPORT_UNKNOWN;
 }
 
-bool MqttPublish(const std::string& topic, const std::string& payload, int qos = 0, bool retain = false) {
+bool MqttPublish(const std::string& topic, const char* payload, int len, int qos = 0, bool retain = false) {
   if (!mqtt_client || !mqtt_connected || topic.empty()) return false;
   const int msg_id =
-      esp_mqtt_client_enqueue(mqtt_client, topic.c_str(), payload.c_str(), payload.size(), qos, retain ? 1 : 0, true);
+      esp_mqtt_client_enqueue(mqtt_client, topic.c_str(), payload, len, qos, retain ? 1 : 0, true);
   if (msg_id < 0) {
     ESP_LOGD(TAG_MQTT, "MQTT enqueue dropped: %s", topic.c_str());
     return false;
   }
   return true;
+}
+
+bool MqttPublish(const std::string& topic, const std::string& payload, int qos = 0, bool retain = false) {
+  return MqttPublish(topic, payload.c_str(), payload.size(), qos, retain);
 }
 
 void PublishMeasurementPayloadInternal(const std::string& payload) {
@@ -134,53 +129,56 @@ void PublishErrorPayloadInternal(const std::string& payload) {
   MqttPublish(topic, payload);
 }
 
-void MqttSendResponse(const std::string& device, const std::string& req_id, const ActionResult& res) {
-  cJSON* root = cJSON_CreateObject();
-  cJSON_AddBoolToObject(root, "ok", res.ok);
-  if (!req_id.empty()) cJSON_AddStringToObject(root, "reqId", req_id.c_str());
-  if (!res.message.empty()) cJSON_AddStringToObject(root, "message", res.message.c_str());
-  if (!res.json.empty()) {
-    cJSON* data = cJSON_Parse(res.json.c_str());
-    if (data) {
-      cJSON_AddItemToObject(root, "data", data);
-    }
+void MqttSendResponse(const std::string& device, const std::string& req_id, const ActionResult& res, const char* data_json = nullptr) {
+  char json[1024];
+  int len = 0;
+  if (data_json && data_json[0]) {
+    len = std::snprintf(json, sizeof(json), "{\"ok\":%s,\"reqId\":\"%s\",\"message\":\"%s\",\"data\":%s}",
+                        res.ok ? "true" : "false", req_id.c_str(), res.message.c_str(), data_json);
+  } else {
+    len = std::snprintf(json, sizeof(json), "{\"ok\":%s,\"reqId\":\"%s\",\"message\":\"%s\"}",
+                        res.ok ? "true" : "false", req_id.c_str(), res.message.c_str());
   }
-  const char* json = cJSON_PrintUnformatted(root);
+  if (len < 0) {
+    return;
+  }
+  if (len >= static_cast<int>(sizeof(json))) {
+    len = sizeof(json) - 1;
+  }
   std::string topic = device + "/resp";
-  MqttPublish(topic, json ? json : "{}");
-  cJSON_free((void*)json);
-  cJSON_Delete(root);
+  MqttPublish(topic, json, len);
 }
 
-void MqttCommandTask(void*) {
-  while (true) {
-    MqttCommand* cmd = nullptr;
-    if (xQueueReceive(mqtt_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE || !cmd) {
-      continue;
-    }
-    HandleMqttCommand(cmd->topic, cmd->payload);
-    delete cmd;
+void BuildMqttLightState(char* out, size_t out_len) {
+  if (!out || out_len == 0) return;
+  SharedState s{};
+  if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    s.logging = state.logging;
+    s.stepper_enabled = state.stepper_enabled;
+    s.stepper_moving = state.stepper_moving;
+    s.homing = state.homing;
+    s.stepper_position = state.stepper_position;
+    s.stepper_target = state.stepper_target;
+    s.heater_power = state.heater_power;
+    s.fan_power = state.fan_power;
+    s.wifi_rssi_dbm = state.wifi_rssi_dbm;
+    s.wifi_quality = state.wifi_quality;
+    xSemaphoreGive(state_mutex);
   }
-}
-
-bool EnqueueMqttCommand(const std::string& topic, const std::string& payload) {
-  if (!mqtt_cmd_queue) {
-    ESP_LOGW(TAG_MQTT, "MQTT command queue is not ready");
-    return false;
-  }
-  MqttCommand* cmd = new (std::nothrow) MqttCommand{topic, payload};
-  if (!cmd) {
-    ESP_LOGW(TAG_MQTT, "MQTT command allocation failed");
-    ErrorManagerSet(ErrorCode::kMqttTransport, ErrorSeverity::kWarning, "MQTT command allocation failed");
-    return false;
-  }
-  if (xQueueSend(mqtt_cmd_queue, &cmd, 0) != pdTRUE) {
-    ESP_LOGW(TAG_MQTT, "MQTT command queue full");
-    ErrorManagerSet(ErrorCode::kMqttTransport, ErrorSeverity::kWarning, "MQTT command queue full");
-    delete cmd;
-    return false;
-  }
-  return true;
+  std::snprintf(out, out_len,
+                "{\"logging\":%s,\"stepperEnabled\":%s,\"stepperMoving\":%s,\"stepperHoming\":%s,"
+                "\"stepperPosition\":%d,\"stepperTarget\":%d,\"heaterPower\":%.1f,\"fanPower\":%.1f,"
+                "\"wifiRssi\":%d,\"wifiQuality\":%d}",
+                s.logging ? "true" : "false",
+                s.stepper_enabled ? "true" : "false",
+                s.stepper_moving ? "true" : "false",
+                s.homing ? "true" : "false",
+                s.stepper_position,
+                s.stepper_target,
+                s.heater_power,
+                s.fan_power,
+                s.wifi_rssi_dbm,
+                s.wifi_quality);
 }
 
 void HandleMqttCommand(const std::string& topic, const std::string& payload) {
@@ -219,7 +217,11 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
   ActionResult res{false, "unknown type", {}};
 
   if (type == "get_state") {
-    res = ActionGetState();
+    char state_json[512];
+    BuildMqttLightState(state_json, sizeof(state_json));
+    MqttSendResponse(device, req_id, {true, "state", {}}, state_json);
+    cJSON_Delete(root);
+    return;
   } else if (type == "log_start") {
     LogRequest req;
     req.filename = get_str("filename");
@@ -335,7 +337,7 @@ void HandleMqttData(esp_mqtt_event_handle_t event) {
   if (!fragmented) {
     std::string topic(event->topic, event->topic_len);
     std::string payload(event->data, event->data_len);
-    EnqueueMqttCommand(topic, payload);
+    HandleMqttCommand(topic, payload);
     return;
   }
 
@@ -352,7 +354,7 @@ void HandleMqttData(esp_mqtt_event_handle_t event) {
   }
   mqtt_rx_payload.append(event->data, event->data_len);
   if (static_cast<int>(mqtt_rx_payload.size()) >= total_len) {
-    EnqueueMqttCommand(mqtt_rx_topic, mqtt_rx_payload);
+    HandleMqttCommand(mqtt_rx_topic, mqtt_rx_payload);
     mqtt_rx_topic.clear();
     mqtt_rx_payload.clear();
   }
@@ -417,20 +419,6 @@ static void mqtt_event_dispatch(void* handler_args, esp_event_base_t base, int32
   mqtt_event_handler_cb(static_cast<esp_mqtt_event_handle_t>(event_data));
 }
 
-static void MqttStateTask(void*) {
-  const TickType_t interval = pdMS_TO_TICKS(5000);
-  while (true) {
-    if (mqtt_connected && mqtt_client) {
-      const std::string device = SanitizeId(app_config.device_id);
-      const std::string topic = device + "/state";
-      std::string payload = BuildStateJsonString();
-      MqttPublish(topic, payload);
-      ESP_LOGD(TAG_MQTT, "MQTT state published to %s (%d bytes)", topic.c_str(), (int)payload.size());
-    }
-    vTaskDelay(interval);
-  }
-}
-
 }  // namespace
 
 void StartMqttBridge() {
@@ -475,27 +463,6 @@ void StartMqttBridge() {
     ErrorManagerSet(ErrorCode::kMqttDisconnected, ErrorSeverity::kError, "MQTT init failed");
     return;
   }
-  if (mqtt_cmd_queue == nullptr) {
-    mqtt_cmd_queue = xQueueCreate(8, sizeof(MqttCommand*));
-    if (mqtt_cmd_queue == nullptr) {
-      ESP_LOGE(TAG_MQTT, "MQTT command queue create failed");
-      ErrorManagerSet(ErrorCode::kMqttTransport, ErrorSeverity::kError, "MQTT command queue create failed");
-      esp_mqtt_client_destroy(mqtt_client);
-      mqtt_client = nullptr;
-      mqtt_connected = false;
-      return;
-    }
-  }
-  if (mqtt_cmd_task == nullptr) {
-    if (xTaskCreatePinnedToCore(&MqttCommandTask, "mqtt_cmd", 16384, nullptr, 3, &mqtt_cmd_task, 0) != pdTRUE) {
-      ESP_LOGE(TAG_MQTT, "MQTT command task create failed");
-      ErrorManagerSet(ErrorCode::kMqttTransport, ErrorSeverity::kError, "MQTT command task create failed");
-      esp_mqtt_client_destroy(mqtt_client);
-      mqtt_client = nullptr;
-      mqtt_connected = false;
-      return;
-    }
-  }
   esp_mqtt_client_register_event(mqtt_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID), mqtt_event_dispatch, nullptr);
   esp_err_t start_err = esp_mqtt_client_start(mqtt_client);
   if (start_err != ESP_OK) {
@@ -505,9 +472,6 @@ void StartMqttBridge() {
     mqtt_client = nullptr;
     mqtt_connected = false;
     return;
-  }
-  if (mqtt_state_task == nullptr) {
-    xTaskCreatePinnedToCore(&MqttStateTask, "mqtt_state", 8192, nullptr, 2, &mqtt_state_task, 0);
   }
 }
 
