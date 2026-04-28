@@ -100,6 +100,7 @@
           <button class="btn primary" @click="startLog">Старт</button>
           <button class="btn warning ghost" @click="stopLog">Стоп</button>
         </div>
+        <p class="muted" v-if="logStatus">{{ logStatus }}</p>
         <p class="muted">Текущий файл: {{ device?.state?.logFilename || '—' }}</p>
         <div class="log-stats">
           <div class="log-stat">
@@ -208,7 +209,7 @@
         <div class="inline">
           <button class="btn success" @click="stepperEnable">Enable</button>
           <button class="btn ghost" @click="stepperDisable">Disable</button>
-          <button class="btn primary" @click="stepperFindZero">Найти дом (Hall)</button>
+          <button class="btn primary" @click="stepperFindZero">Найти 0 Hall+offset</button>
           <button class="btn ghost" @click="stepperZero">Поставить 0</button>
         </div>
         <div class="form-group">
@@ -630,6 +631,7 @@ const adcLabel = (key: string, fallback: string) => adcLabelMap.value[key] || fa
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1500, reverse: false })
+const logStatus = ref('')
 const stepperStatus = ref('')
 const heaterPower = ref(0)
 const heaterEditing = ref(false)
@@ -754,7 +756,10 @@ const stepperHomeStatus = computed(() => (device.value?.state?.stepperHomeStatus
 const stepperHomeLabel = computed(() => {
   switch (stepperHomeStatus.value) {
     case 'ok':
+    case 'hall_zero':
       return 'Найден'
+    case 'offset_zero':
+      return 'Offset 0'
     case 'manual_zero':
       return 'Ручной 0'
     case 'not_found':
@@ -762,14 +767,16 @@ const stepperHomeLabel = computed(() => {
     case 'aborted':
       return 'Отменен'
     case 'running':
+    case 'seeking_hall':
+    case 'applying_offset':
       return 'Поиск...'
     default:
       return 'Нет'
   }
 })
 const stepperHomeChipClass = computed(() => {
-  if (stepperHomeStatus.value === 'ok' || stepperHomeStatus.value === 'manual_zero') return 'online'
-  if (stepperHomeStatus.value === 'running') return 'cool'
+  if (['ok', 'hall_zero', 'offset_zero', 'manual_zero'].includes(stepperHomeStatus.value)) return 'online'
+  if (['running', 'seeking_hall', 'applying_offset'].includes(stepperHomeStatus.value)) return 'cool'
   if (stepperHomeStatus.value === 'not_found' || stepperHomeStatus.value === 'aborted') return 'warn'
   return 'subtle'
 })
@@ -1129,13 +1136,25 @@ async function refreshState() {
   }
 }
 
-function startLog() {
+async function startLog() {
   if (!deviceId.value) return
-  store.logStart(nuxtApp.$mqtt, deviceId.value, { ...log })
+  logStatus.value = 'Запускаю лог...'
+  try {
+    await store.logStart(nuxtApp.$mqtt, deviceId.value, { ...log })
+    logStatus.value = 'Лог запущен'
+  } catch (e: any) {
+    logStatus.value = e?.message || 'Не удалось запустить лог'
+  }
 }
-function stopLog() {
+async function stopLog() {
   if (!deviceId.value) return
-  store.logStop(nuxtApp.$mqtt, deviceId.value)
+  logStatus.value = 'Останавливаю лог...'
+  try {
+    await store.logStop(nuxtApp.$mqtt, deviceId.value)
+    logStatus.value = 'Лог остановлен'
+  } catch (e: any) {
+    logStatus.value = e?.message || 'Не удалось остановить лог'
+  }
 }
 
 async function restartDevice() {
@@ -1153,17 +1172,29 @@ async function restartDevice() {
     restarting.value = false
   }
 }
-function stepperEnable() {
+async function stepperEnable() {
   if (!deviceId.value) return
-  store.stepperEnable(nuxtApp.$mqtt, deviceId.value)
+  stepperStatus.value = 'Включаю мотор...'
+  try {
+    await store.stepperEnable(nuxtApp.$mqtt, deviceId.value)
+    stepperStatus.value = 'Мотор включен'
+  } catch (e: any) {
+    stepperStatus.value = e?.message || 'Не удалось включить мотор'
+  }
 }
-function stepperDisable() {
+async function stepperDisable() {
   if (!deviceId.value) return
-  store.stepperDisable(nuxtApp.$mqtt, deviceId.value)
+  stepperStatus.value = 'Выключаю мотор...'
+  try {
+    await store.stepperDisable(nuxtApp.$mqtt, deviceId.value)
+    stepperStatus.value = 'Мотор выключен'
+  } catch (e: any) {
+    stepperStatus.value = e?.message || 'Не удалось выключить мотор'
+  }
 }
 async function stepperFindZero() {
   if (!deviceId.value) return
-  stepperStatus.value = 'Ищу дом по Hall...'
+  stepperStatus.value = 'Ищу Hall и применяю offset...'
   try {
     await store.stepperFindZero(nuxtApp.$mqtt, deviceId.value)
     stepperStatus.value = 'Поиск запущен'
@@ -1181,14 +1212,26 @@ async function stepperZero() {
     stepperStatus.value = e?.message || 'Не удалось установить 0'
   }
 }
-function stepperMove() {
+async function stepperMove() {
   if (!deviceId.value) return
-  store.stepperMove(nuxtApp.$mqtt, deviceId.value, { ...stepper })
+  stepperStatus.value = 'Отправляю движение...'
+  try {
+    await store.stepperMove(nuxtApp.$mqtt, deviceId.value, { ...stepper })
+    stepperStatus.value = 'Движение запущено'
+  } catch (e: any) {
+    stepperStatus.value = e?.message || 'Не удалось запустить движение'
+  }
 }
-function setHeater() {
+async function setHeater() {
   if (!deviceId.value) return
-  store.heaterSet(nuxtApp.$mqtt, deviceId.value, heaterPower.value)
-  heaterEditing.value = false
+  pidApplyStatus.value = 'Устанавливаю нагрев...'
+  try {
+    await store.heaterSet(nuxtApp.$mqtt, deviceId.value, heaterPower.value)
+    heaterEditing.value = false
+    pidApplyStatus.value = 'Нагрев установлен'
+  } catch (e: any) {
+    pidApplyStatus.value = e?.message || 'Не удалось установить нагрев'
+  }
 }
 function togglePidSensor(idx: number) {
   pidDirty.value = true
@@ -1582,8 +1625,14 @@ watch(
       stepperStatus.value = 'Дом не найден'
     } else if (value === 'aborted') {
       stepperStatus.value = 'Поиск остановлен'
-    } else if (value === 'ok') {
+    } else if (value === 'ok' || value === 'hall_zero') {
       stepperStatus.value = 'Дом найден'
+    } else if (value === 'offset_zero') {
+      stepperStatus.value = 'Ноль с offset найден'
+    } else if (value === 'seeking_hall') {
+      stepperStatus.value = 'Ищу Hall...'
+    } else if (value === 'applying_offset') {
+      stepperStatus.value = 'Применяю offset...'
     }
   }
 )

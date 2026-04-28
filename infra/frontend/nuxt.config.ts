@@ -15,7 +15,7 @@ export default defineNuxtConfig({
   },
   runtimeConfig: {
     public: {
-      mqttUrl: process.env.NUXT_PUBLIC_MQTT_URL || 'ws://localhost:9001',
+      mqttUrl: process.env.NUXT_PUBLIC_MQTT_URL || 'ws://localhost:9001/mqtt',
       mqttUser: process.env.NUXT_PUBLIC_MQTT_USER || '',
       mqttPassword: process.env.NUXT_PUBLIC_MQTT_PASSWORD || '',
       apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:8000',

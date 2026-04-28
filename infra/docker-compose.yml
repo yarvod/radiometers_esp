@@ -117,7 +117,7 @@ services:
       target: dev
     restart: unless-stopped
     environment:
-      NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-ws://mosquitto:9001/mqtt}
+      NUXT_PUBLIC_MQTT_URL: ${NUXT_PUBLIC_MQTT_URL:-ws://localhost:9001/mqtt}
       NUXT_PUBLIC_MQTT_USER: ${MQTT_USER}
       NUXT_PUBLIC_MQTT_PASSWORD: ${MQTT_PASSWORD}
       NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-http://localhost:8000}

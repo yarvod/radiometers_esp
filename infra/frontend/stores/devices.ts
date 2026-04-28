@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { MqttClient, ISubscriptionGrant } from 'mqtt'
+import type { MqttClient } from 'mqtt'
 
 type DeviceState = {
   id: string
@@ -11,7 +11,14 @@ type DeviceState = {
 type PendingReq = {
   resolve: (val: any) => void
   reject: (err: any) => void
-  timeout: NodeJS.Timeout
+  timeout: ReturnType<typeof setTimeout>
+}
+
+const makeReqId = () => {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID()
+  }
+  return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 export const useDevicesStore = defineStore('devices', {
@@ -19,6 +26,7 @@ export const useDevicesStore = defineStore('devices', {
     devices: new Map<string, DeviceState>(),
     pending: new Map<string, PendingReq>(),
     mqttReady: false,
+    mqttOnline: false,
   }),
   actions: {
     init(mqtt?: MqttClient | null) {
@@ -26,8 +34,13 @@ export const useDevicesStore = defineStore('devices', {
       this.mqttReady = true
 
       const subscribeTopics = () => {
-        mqtt.subscribe("+/resp")
-        mqtt.subscribe("+/state")
+        this.mqttOnline = true
+        mqtt.subscribe("+/resp", { qos: 1 }, (err) => {
+          if (err) console.error('MQTT subscribe +/resp failed', err)
+        })
+        mqtt.subscribe("+/state", { qos: 0 }, (err) => {
+          if (err) console.error('MQTT subscribe +/state failed', err)
+        })
         console.info('MQTT connected')
       }
 
@@ -67,7 +80,14 @@ export const useDevicesStore = defineStore('devices', {
       })
       mqtt.on('error', (err) => console.error('MQTT error', err))
       mqtt.on('reconnect', () => console.warn('MQTT reconnecting...'))
-      mqtt.on('close', () => console.warn('MQTT closed'))
+      mqtt.on('close', () => {
+        this.mqttOnline = false
+        console.warn('MQTT closed')
+      })
+      mqtt.on('offline', () => {
+        this.mqttOnline = false
+        console.warn('MQTT offline')
+      })
     },
     markOnline(id: string) {
       const prev = this.devices.get(id) || { id, online: false }
@@ -84,17 +104,26 @@ export const useDevicesStore = defineStore('devices', {
     },
     sendCommand(mqtt: MqttClient | null | undefined, deviceId: string, cmd: any) {
       if (!mqtt) throw new Error('MQTT client not ready')
-      const reqId = crypto.randomUUID()
+      if (!deviceId) throw new Error('Device id is empty')
+      if (!mqtt.connected) throw new Error('MQTT не подключен')
+      const reqId = makeReqId()
       const topic = `${deviceId}/cmd`
       const msg = JSON.stringify({ ...cmd, reqId })
       const p = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.pending.delete(reqId)
-          reject(new Error('timeout'))
-        }, 8000)
+          reject(new Error(`MQTT command timeout: ${topic}`))
+        }, 12000)
         this.pending.set(reqId, { resolve, reject, timeout })
       })
-      mqtt.publish(topic, msg, { qos: 0 })
+      mqtt.publish(topic, msg, { qos: 1 }, (err?: Error) => {
+        if (!err) return
+        const pending = this.pending.get(reqId)
+        if (!pending) return
+        clearTimeout(pending.timeout)
+        this.pending.delete(reqId)
+        pending.reject(err)
+      })
       return p
     },
     async getState(mqtt: MqttClient, deviceId: string) {
