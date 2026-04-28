@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "control_actions.h"
@@ -11,9 +13,13 @@
 #include "app_state.h"
 #include "app_utils.h"
 #include "cJSON.h"
+#include "driver/gpio.h"
 #include "error_manager.h"
 #include "esp_log.h"
+#include "freertos/task.h"
+#include "hw_pins.h"
 #include "mqtt_client.h"
+#include "sdkconfig.h"
 
 namespace {
 
@@ -22,6 +28,9 @@ esp_mqtt_client_handle_t mqtt_client = nullptr;
 static bool mqtt_connected = false;
 static std::string mqtt_rx_topic;
 static std::string mqtt_rx_payload;
+static char mqtt_state_topic_buf[80];
+static char mqtt_state_payload_buf[4096];
+static SemaphoreHandle_t mqtt_state_publish_mutex = nullptr;
 extern const uint8_t ca_crt_start[] asm("_binary_ca_crt_start");
 extern const uint8_t ca_crt_end[] asm("_binary_ca_crt_end");
 extern const uint8_t isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
@@ -100,19 +109,125 @@ bool ParseMqttUri(const std::string& raw_uri, ParsedMqttUri* out) {
   return !out->host.empty() && out->port > 0 && out->transport != MQTT_TRANSPORT_UNKNOWN;
 }
 
-bool MqttPublish(const std::string& topic, const char* payload, int len, int qos = 0, bool retain = false) {
-  if (!mqtt_client || !mqtt_connected || topic.empty()) return false;
+bool MqttPublish(const char* topic, const char* payload, int len, int qos = 0, bool retain = false) {
+  if (!mqtt_client || !mqtt_connected || !topic || topic[0] == '\0') return false;
   const int msg_id =
-      esp_mqtt_client_enqueue(mqtt_client, topic.c_str(), payload, len, qos, retain ? 1 : 0, true);
+      esp_mqtt_client_enqueue(mqtt_client, topic, payload, len, qos, retain ? 1 : 0, true);
   if (msg_id < 0) {
-    ESP_LOGD(TAG_MQTT, "MQTT enqueue dropped: %s", topic.c_str());
+    ESP_LOGD(TAG_MQTT, "MQTT enqueue dropped: %s", topic);
     return false;
   }
   return true;
 }
 
+bool MqttPublish(const std::string& topic, const char* payload, int len, int qos = 0, bool retain = false) {
+  return MqttPublish(topic.c_str(), payload, len, qos, retain);
+}
+
 bool MqttPublish(const std::string& topic, const std::string& payload, int qos = 0, bool retain = false) {
   return MqttPublish(topic, payload.c_str(), payload.size(), qos, retain);
+}
+
+void BuildMqttTopic(char* out, size_t out_len, const char* suffix) {
+  if (!out || out_len == 0) return;
+  const char* id = app_config.device_id.empty() ? "dev2" : app_config.device_id.c_str();
+  size_t pos = 0;
+  for (const char* p = id; *p; ++p) {
+    const char c = *p;
+    if (pos + 2 >= out_len) break;
+    const unsigned char uc = static_cast<unsigned char>(c);
+    out[pos++] = (std::isalnum(uc) || c == '_' || c == '-') ? c : '_';
+  }
+  if (pos == 0 && pos + 1 < out_len) {
+    out[pos++] = 'd';
+  }
+  if (pos + 1 < out_len) {
+    out[pos++] = '/';
+  }
+  while (suffix && *suffix && pos + 1 < out_len) {
+    out[pos++] = *suffix++;
+  }
+  out[pos] = '\0';
+}
+
+struct JsonBuf {
+  char* out = nullptr;
+  size_t cap = 0;
+  size_t used = 0;
+  bool truncated = false;
+};
+
+void JsonAppend(JsonBuf* b, const char* fmt, ...) {
+  if (!b || !b->out || b->cap == 0 || b->used >= b->cap) return;
+  va_list args;
+  va_start(args, fmt);
+  const int written = std::vsnprintf(b->out + b->used, b->cap - b->used, fmt, args);
+  va_end(args);
+  if (written < 0) {
+    b->truncated = true;
+    return;
+  }
+  const size_t available = b->cap - b->used;
+  if (static_cast<size_t>(written) >= available) {
+    b->used = b->cap - 1;
+    b->out[b->used] = '\0';
+    b->truncated = true;
+    return;
+  }
+  b->used += static_cast<size_t>(written);
+}
+
+void JsonAppendEscaped(JsonBuf* b, const char* value) {
+  JsonAppend(b, "\"");
+  if (!value) {
+    JsonAppend(b, "\"");
+    return;
+  }
+  for (const unsigned char* p = reinterpret_cast<const unsigned char*>(value); *p; ++p) {
+    const unsigned char c = *p;
+    switch (c) {
+      case '\\':
+        JsonAppend(b, "\\\\");
+        break;
+      case '"':
+        JsonAppend(b, "\\\"");
+        break;
+      case '\n':
+        JsonAppend(b, "\\n");
+        break;
+      case '\r':
+        JsonAppend(b, "\\r");
+        break;
+      case '\t':
+        JsonAppend(b, "\\t");
+        break;
+      default:
+        if (c < 0x20) {
+          JsonAppend(b, "\\u%04x", c);
+        } else {
+          JsonAppend(b, "%c", c);
+        }
+        break;
+    }
+    if (b->truncated) break;
+  }
+  JsonAppend(b, "\"");
+}
+
+const char* NetModeName(NetMode mode) {
+  switch (mode) {
+    case NetMode::kEthOnly:
+      return "eth";
+    case NetMode::kWifiEth:
+      return "both";
+    case NetMode::kWifiOnly:
+    default:
+      return "wifi";
+  }
+}
+
+const char* NetPriorityName(NetPriority priority) {
+  return priority == NetPriority::kEth ? "eth" : "wifi";
 }
 
 void PublishMeasurementPayloadInternal(const std::string& payload) {
@@ -130,7 +245,7 @@ void PublishErrorPayloadInternal(const std::string& payload) {
 }
 
 void MqttSendResponse(const std::string& device, const std::string& req_id, const ActionResult& res, const char* data_json = nullptr) {
-  char json[1024];
+  char json[1536];
   int len = 0;
   if (data_json && data_json[0]) {
     len = std::snprintf(json, sizeof(json), "{\"ok\":%s,\"reqId\":\"%s\",\"message\":\"%s\",\"data\":%s}",
@@ -149,36 +264,152 @@ void MqttSendResponse(const std::string& device, const std::string& req_id, cons
   MqttPublish(topic, json, len);
 }
 
-void BuildMqttLightState(char* out, size_t out_len) {
+void BuildMqttState(char* out, size_t out_len) {
   if (!out || out_len == 0) return;
-  SharedState s{};
+  JsonBuf b{out, out_len, 0, false};
+  out[0] = '\0';
+  const int hall_raw = gpio_get_level(MT_HALL_SEN);
+  const bool hall_triggered = hall_raw == app_config.motor_hall_active_level;
+  JsonAppend(&b, "{");
   if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-    s.logging = state.logging;
-    s.stepper_enabled = state.stepper_enabled;
-    s.stepper_moving = state.stepper_moving;
-    s.homing = state.homing;
-    s.stepper_position = state.stepper_position;
-    s.stepper_target = state.stepper_target;
-    s.heater_power = state.heater_power;
-    s.fan_power = state.fan_power;
-    s.wifi_rssi_dbm = state.wifi_rssi_dbm;
-    s.wifi_quality = state.wifi_quality;
+    JsonAppend(&b,
+               "\"voltage1\":%.6f,\"voltage2\":%.6f,\"voltage3\":%.6f,"
+               "\"voltage1_cal\":%.6f,\"voltage2_cal\":%.6f,\"voltage3_cal\":%.6f,"
+               "\"inaBusVoltage\":%.3f,\"inaCurrent\":%.3f,\"inaPower\":%.3f,"
+               "\"heaterPower\":%.1f,\"fanPower\":%.1f,\"fan1Rpm\":%u,\"fan2Rpm\":%u,"
+               "\"tempSensorCount\":%d,\"tempSensors\":{",
+               state.voltage1,
+               state.voltage2,
+               state.voltage3,
+               state.voltage1_cal,
+               state.voltage2_cal,
+               state.voltage3_cal,
+               state.ina_bus_voltage,
+               state.ina_current,
+               state.ina_power,
+               state.heater_power,
+               state.fan_power,
+               static_cast<unsigned>(state.fan1_rpm),
+               static_cast<unsigned>(state.fan2_rpm),
+               state.temp_sensor_count);
+    const int temp_count = std::min(state.temp_sensor_count, MAX_TEMP_SENSORS);
+    for (int i = 0; i < temp_count; ++i) {
+      JsonAppend(&b, "%s\"t%d\":{\"value\":%.2f,\"address\":", i == 0 ? "" : ",", i + 1, state.temps_c[i]);
+      JsonAppendEscaped(&b, state.temp_addresses[i].c_str());
+      JsonAppend(&b, ",\"label\":\"t%d\"}", i + 1);
+    }
+    JsonAppend(&b,
+               "},\"logging\":%s,\"logFilename\":",
+               state.logging ? "true" : "false");
+    JsonAppendEscaped(&b, state.log_filename.c_str());
+    JsonAppend(&b,
+               ",\"logUseMotor\":%s,\"logDuration\":%.3f,"
+               "\"pidEnabled\":%s,\"pidSetpoint\":%.3f,\"pidSensorIndex\":%d,\"pidSensorMask\":%u,"
+               "\"pidKp\":%.6f,\"pidKi\":%.6f,\"pidKd\":%.6f,\"pidOutput\":%.3f,"
+               "\"stepperEnabled\":%s,\"stepperHoming\":%s,\"stepperDirForward\":%s,\"stepperMoving\":%s,"
+               "\"stepperHomed\":%s,\"stepperPosition\":%d,\"stepperTarget\":%d,"
+               "\"stepperSpeedUs\":%d,\"stepperHomeOffsetSteps\":%d,\"motorHallActiveLevel\":%d,"
+               "\"motorHallRawLevel\":%d,\"motorHallTriggered\":%s,\"stepperHomeStatus\":",
+               state.log_use_motor ? "true" : "false",
+               state.log_duration_s,
+               state.pid_enabled ? "true" : "false",
+               state.pid_setpoint,
+               state.pid_sensor_index,
+               static_cast<unsigned>(state.pid_sensor_mask),
+               state.pid_kp,
+               state.pid_ki,
+               state.pid_kd,
+               state.pid_output,
+               state.stepper_enabled ? "true" : "false",
+               state.homing ? "true" : "false",
+               state.stepper_direction_forward ? "true" : "false",
+               state.stepper_moving ? "true" : "false",
+               state.stepper_homed ? "true" : "false",
+               state.stepper_position,
+               state.stepper_target,
+               state.stepper_speed_us,
+               state.stepper_home_offset_steps,
+               state.motor_hall_active_level,
+               hall_raw,
+               hall_triggered ? "true" : "false");
+    JsonAppendEscaped(&b, state.stepper_home_status.c_str());
+    JsonAppend(&b,
+               ",\"wifiRssi\":%d,\"wifiQuality\":%d,\"wifiIp\":",
+               state.wifi_rssi_dbm,
+               state.wifi_quality);
+    JsonAppendEscaped(&b, state.wifi_ip.c_str());
+    JsonAppend(&b, ",\"wifiStaIp\":");
+    JsonAppendEscaped(&b, state.wifi_ip_sta.c_str());
+    JsonAppend(&b, ",\"wifiApIp\":");
+    JsonAppendEscaped(&b, state.wifi_ip_ap.c_str());
+    JsonAppend(&b, ",\"ethIp\":");
+    JsonAppendEscaped(&b, state.eth_ip.c_str());
+    JsonAppend(&b,
+               ",\"ethLink\":%s,\"ethIpUp\":%s,"
+               "\"sdTotalBytes\":%llu,\"sdUsedBytes\":%llu,\"sdRootDataFiles\":%d,"
+               "\"sdToUploadFiles\":%d,\"sdUploadedFiles\":%d,"
+               "\"timestamp\":%llu,\"usbMode\":",
+               state.eth_link_up ? "true" : "false",
+               state.eth_ip_up ? "true" : "false",
+               static_cast<unsigned long long>(state.sd_total_bytes),
+               static_cast<unsigned long long>(state.sd_used_bytes),
+               state.sd_data_root_files,
+               state.sd_to_upload_files,
+               state.sd_uploaded_files,
+               static_cast<unsigned long long>(state.last_update_ms));
+    JsonAppendEscaped(&b, state.usb_msc_mode ? "msc" : "cdc");
+    JsonAppend(&b, ",\"usbMscBuilt\":%s", CONFIG_TINYUSB_MSC_ENABLED ? "true" : "false");
+    if (!state.usb_error.empty()) {
+      JsonAppend(&b, ",\"usbError\":");
+      JsonAppendEscaped(&b, state.usb_error.c_str());
+    }
     xSemaphoreGive(state_mutex);
+  } else {
+    JsonAppend(&b, "\"stateLocked\":true");
   }
-  std::snprintf(out, out_len,
-                "{\"logging\":%s,\"stepperEnabled\":%s,\"stepperMoving\":%s,\"stepperHoming\":%s,"
-                "\"stepperPosition\":%d,\"stepperTarget\":%d,\"heaterPower\":%.1f,\"fanPower\":%.1f,"
-                "\"wifiRssi\":%d,\"wifiQuality\":%d}",
-                s.logging ? "true" : "false",
-                s.stepper_enabled ? "true" : "false",
-                s.stepper_moving ? "true" : "false",
-                s.homing ? "true" : "false",
-                s.stepper_position,
-                s.stepper_target,
-                s.heater_power,
-                s.fan_power,
-                s.wifi_rssi_dbm,
-                s.wifi_quality);
+  JsonAppend(&b,
+             ",\"wifiApMode\":%s,\"wifiMode\":",
+             app_config.wifi_ap_mode ? "true" : "false");
+  JsonAppendEscaped(&b, app_config.wifi_ap_mode ? "ap" : "sta");
+  JsonAppend(&b, ",\"wifiSsid\":");
+  JsonAppendEscaped(&b, app_config.wifi_ssid.c_str());
+  JsonAppend(&b, ",\"netMode\":");
+  JsonAppendEscaped(&b, NetModeName(app_config.net_mode));
+  JsonAppend(&b, ",\"netPriority\":");
+  JsonAppendEscaped(&b, NetPriorityName(app_config.net_priority));
+  JsonAppend(&b, ",\"deviceId\":");
+  JsonAppendEscaped(&b, app_config.device_id.c_str());
+  JsonAppend(&b, ",\"minioEndpoint\":");
+  JsonAppendEscaped(&b, app_config.minio_endpoint.c_str());
+  JsonAppend(&b, ",\"minioBucket\":");
+  JsonAppendEscaped(&b, app_config.minio_bucket.c_str());
+  JsonAppend(&b, ",\"minioEnabled\":%s,\"mqttUri\":", app_config.minio_enabled ? "true" : "false");
+  JsonAppendEscaped(&b, app_config.mqtt_uri.c_str());
+  JsonAppend(&b, ",\"mqttUser\":");
+  JsonAppendEscaped(&b, app_config.mqtt_user.c_str());
+  JsonAppend(&b, ",\"mqttEnabled\":%s}", app_config.mqtt_enabled ? "true" : "false");
+}
+
+void PublishCurrentState() {
+  if (!mqtt_connected || !mqtt_client) return;
+  if (mqtt_state_publish_mutex && xSemaphoreTake(mqtt_state_publish_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    return;
+  }
+  {
+      BuildMqttTopic(mqtt_state_topic_buf, sizeof(mqtt_state_topic_buf), "state");
+      BuildMqttState(mqtt_state_payload_buf, sizeof(mqtt_state_payload_buf));
+      MqttPublish(mqtt_state_topic_buf, mqtt_state_payload_buf, std::strlen(mqtt_state_payload_buf), 0, false);
+  }
+  if (mqtt_state_publish_mutex) {
+    xSemaphoreGive(mqtt_state_publish_mutex);
+  }
+}
+
+void MqttStateTask(void*) {
+  while (true) {
+    PublishCurrentState();
+    vTaskDelay(pdMS_TO_TICKS(2000));
+  }
 }
 
 void HandleMqttCommand(const std::string& topic, const std::string& payload) {
@@ -217,9 +448,8 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
   ActionResult res{false, "unknown type", {}};
 
   if (type == "get_state") {
-    char state_json[512];
-    BuildMqttLightState(state_json, sizeof(state_json));
-    MqttSendResponse(device, req_id, {true, "state", {}}, state_json);
+    PublishCurrentState();
+    MqttSendResponse(device, req_id, {true, "state_published", {}});
     cJSON_Delete(root);
     return;
   } else if (type == "log_start") {
@@ -441,6 +671,9 @@ void StartMqttBridge() {
     esp_mqtt_client_destroy(mqtt_client);
     mqtt_client = nullptr;
   }
+  if (!mqtt_state_publish_mutex) {
+    mqtt_state_publish_mutex = xSemaphoreCreateMutex();
+  }
   esp_mqtt_client_config_t cfg = {};
   cfg.broker.address.hostname = parsed_uri.host.c_str();
   cfg.broker.address.port = parsed_uri.port;
@@ -472,6 +705,9 @@ void StartMqttBridge() {
     mqtt_client = nullptr;
     mqtt_connected = false;
     return;
+  }
+  if (!mqtt_state_task) {
+    xTaskCreatePinnedToCore(&MqttStateTask, "mqtt_state", 4096, nullptr, 1, &mqtt_state_task, 0);
   }
 }
 
