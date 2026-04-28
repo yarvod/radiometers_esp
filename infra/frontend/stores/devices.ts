@@ -21,6 +21,29 @@ const makeReqId = () => {
   return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+const parsePayload = (payload: Buffer) => {
+  try {
+    return JSON.parse(payload.toString())
+  } catch (_) {
+    return {}
+  }
+}
+
+const normalizeDeviceState = (msg: any) => {
+  if (!msg || typeof msg !== 'object') return {}
+  const state: Record<string, any> = { ...msg }
+  if (typeof msg.adc1 === 'number' && typeof state.voltage1 !== 'number') state.voltage1 = msg.adc1
+  if (typeof msg.adc2 === 'number' && typeof state.voltage2 !== 'number') state.voltage2 = msg.adc2
+  if (typeof msg.adc3 === 'number' && typeof state.voltage3 !== 'number') state.voltage3 = msg.adc3
+  if (typeof msg.adc1Cal === 'number' && typeof state.voltage1_cal !== 'number') state.voltage1_cal = msg.adc1Cal
+  if (typeof msg.adc2Cal === 'number' && typeof state.voltage2_cal !== 'number') state.voltage2_cal = msg.adc2Cal
+  if (typeof msg.adc3Cal === 'number' && typeof state.voltage3_cal !== 'number') state.voltage3_cal = msg.adc3Cal
+  if (typeof msg.busV === 'number' && typeof state.inaBusVoltage !== 'number') state.inaBusVoltage = msg.busV
+  if (typeof msg.busI === 'number' && typeof state.inaCurrent !== 'number') state.inaCurrent = msg.busI
+  if (typeof msg.busP === 'number' && typeof state.inaPower !== 'number') state.inaPower = msg.busP
+  return state
+}
+
 export const useDevicesStore = defineStore('devices', {
   state: () => ({
     devices: new Map<string, DeviceState>(),
@@ -35,12 +58,11 @@ export const useDevicesStore = defineStore('devices', {
 
       const subscribeTopics = () => {
         this.mqttOnline = true
-        mqtt.subscribe("+/resp", { qos: 0 }, (err) => {
-          if (err) console.error('MQTT subscribe +/resp failed', err)
-        })
-        mqtt.subscribe("+/state", { qos: 0 }, (err) => {
-          if (err) console.error('MQTT subscribe +/state failed', err)
-        })
+        for (const topic of ['+/resp', '+/state', '+/measure', '+/error']) {
+          mqtt.subscribe(topic, { qos: 0 }, (err) => {
+            if (err) console.error(`MQTT subscribe ${topic} failed`, err)
+          })
+        }
         console.info('MQTT connected')
       }
 
@@ -51,11 +73,12 @@ export const useDevicesStore = defineStore('devices', {
 
       mqtt.on('message', (topic, payload) => {
         const parts = topic.split('/')
-        if (parts.length >= 2 && parts[1] === 'resp') {
-          const deviceId = parts[0]
-          const txt = payload.toString()
-          let msg: any = {}
-          try { msg = JSON.parse(txt) } catch (_) {}
+        if (parts.length < 2) return
+        const deviceId = parts[0]
+        const channel = parts[1]
+        const msg = parsePayload(payload)
+
+        if (channel === 'resp') {
           this.markOnline(deviceId)
           const reqId = msg.reqId
           if (reqId && this.pending.has(reqId)) {
@@ -67,15 +90,18 @@ export const useDevicesStore = defineStore('devices', {
           if (msg.data && deviceId) {
             this.setState(deviceId, msg.data)
           }
+          return
         }
-        if (parts.length >= 2 && parts[1] === 'state') {
-          const deviceId = parts[0]
+
+        if (channel === 'state' || channel === 'measure') {
           this.markOnline(deviceId)
-          const txt = payload.toString()
-          let msg: any = {}
-          try { msg = JSON.parse(txt) } catch (_) {}
           this.setState(deviceId, msg)
-          console.debug('state update', deviceId, msg)
+          console.debug(`${channel} update`, deviceId, msg)
+          return
+        }
+
+        if (channel === 'error') {
+          this.markOnline(deviceId)
         }
       })
       mqtt.on('error', (err) => console.error('MQTT error', err))
@@ -96,11 +122,14 @@ export const useDevicesStore = defineStore('devices', {
       this.devices.set(id, prev)
     },
     setState(id: string, state: any) {
-      const prev = this.devices.get(id) || { id, online: true }
-      prev.state = state
-      prev.online = true
-      prev.lastSeen = Date.now()
-      this.devices.set(id, prev)
+      const prev = this.devices.get(id)
+      this.devices.set(id, {
+        ...(prev || { id }),
+        id,
+        state: { ...(prev?.state || {}), ...normalizeDeviceState(state) },
+        online: true,
+        lastSeen: Date.now(),
+      })
     },
     sendCommand(mqtt: MqttClient | null | undefined, deviceId: string, cmd: any) {
       if (!mqtt) throw new Error('MQTT client not ready')
