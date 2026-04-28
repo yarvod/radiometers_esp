@@ -704,7 +704,7 @@ void StopLogging() {
 }
 
 void LoggingTask(void*) {
-  const int steps_180 = 200;  // adjust to your mechanics (microsteps for 180 degrees)
+  constexpr int kLoggingMotorSteps = 100;  // 90 degrees on the current motor/driver setup.
   const TickType_t settle_delay = pdMS_TO_TICKS(1000);  // pause after motor moves
   constexpr UBaseType_t kLogStackLowWords = 512;
 
@@ -712,8 +712,15 @@ void LoggingTask(void*) {
     return HomeStepperToUserZeroBlocking(true, "Logging home");
   };
 
-  auto move_blocking = [&](int steps, bool forward) {
-    UpdateState([](SharedState& s) { s.homing = true; s.stepper_abort = false; });
+  auto move_blocking = [&](int steps, bool forward) -> bool {
+    int completed_steps = 0;
+    UpdateState([&](SharedState& s) {
+      s.homing = true;
+      s.stepper_abort = false;
+      s.stepper_moving = true;
+      s.stepper_direction_forward = forward;
+      s.stepper_target = s.stepper_position + (forward ? steps : -steps);
+    });
     EnableStepper();
     gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
     const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
@@ -726,12 +733,15 @@ void LoggingTask(void*) {
       esp_rom_delay_us(4);
       gpio_set_level(STEPPER_STEP, 0);
       esp_rom_delay_us(step_delay_us);
+      completed_steps++;
     }
     UpdateState([&](SharedState& s) {
       s.homing = false;
-      s.stepper_position += forward ? steps : -steps;
+      s.stepper_moving = false;
+      s.stepper_position += forward ? completed_steps : -completed_steps;
       s.stepper_target = s.stepper_position;
     });
+    return completed_steps == steps && !CopyState().stepper_abort;
   };
 
   auto collect_avg = [&](float duration_s, int temp_count, SharedState* out) -> bool {
@@ -825,11 +835,10 @@ void LoggingTask(void*) {
           continue;
         }
 
-        // Сохраняем базу, уходим назад на 200
+        // Сохраняем базу на пользовательском нуле и уходим на +45 градусов.
         pending_base = avg;
         has_pending_base = true;
-        move_blocking(steps_180, false);
-        if (CopyState().stepper_abort) {
+        if (!move_blocking(kLoggingMotorSteps, true)) {
           ESP_LOGW(TAG, "Logging aborted during stepper move");
           StopLogging();
           vTaskDelete(nullptr);
@@ -838,7 +847,7 @@ void LoggingTask(void*) {
         continue;
       }
 
-      // Мы в -200 (или смещённом), это калибровочный замер
+      // Мы в +45 градусах от пользовательского нуля, это калибровочный замер.
       vTaskDelay(settle_delay);
       SharedState avg{};
       if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg)) {
@@ -875,9 +884,8 @@ void LoggingTask(void*) {
         });
       }
 
-      // Вернуться вперёд на 200 и продолжить цикл
-      move_blocking(steps_180, true);
-      if (CopyState().stepper_abort) {
+      // Вернуться на пользовательский ноль и продолжить цикл.
+      if (!move_blocking(kLoggingMotorSteps, false)) {
         ESP_LOGW(TAG, "Logging aborted during stepper move");
         StopLogging();
         vTaskDelete(nullptr);
