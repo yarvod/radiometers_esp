@@ -113,7 +113,7 @@ class GpsUnicoreClient {
 
   void sendCommand(const std::string& cmd);
   void probeReceiver();
-  void configurePeriodicOutput();
+  void configurePeriodicOutput(bool auto_base_config = true);
   void startFrame(uint32_t frame_index);
   void pollFrame();
   void stopFrameOutput();

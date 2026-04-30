@@ -220,6 +220,11 @@ bool DecodeRtcm1004(const RtcmFrame& frame, Rtcm1004Debug* out) {
   return true;
 }
 
+bool Rtcm1004HasObservations(const RtcmFrame& frame) {
+  Rtcm1004Debug dbg{};
+  return DecodeRtcm1004(frame, &dbg) && dbg.satellite_count > 0;
+}
+
 bool DecodeRtcm1006(const RtcmFrame& frame, Rtcm1006Debug* out) {
   if (!out || frame.raw.size() < 6 || frame.message_type != 1006) return false;
   const uint16_t payload_len = (static_cast<uint16_t>(frame.raw[1] & 0x03) << 8) | frame.raw[2];
@@ -636,7 +641,16 @@ void GpsUnicoreClient::probeReceiver() {
   }
 }
 
-void GpsUnicoreClient::configurePeriodicOutput() {
+void GpsUnicoreClient::configurePeriodicOutput(bool auto_base_config) {
+  if (auto_base_config) {
+    ESP_LOGI(TAG_GPS, "Configuring UM982 BASE mode before RTCM stream");
+    sendCommand("UNLOG");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    sendCommand("MODE BASE TIME 60");
+    ESP_LOGI(TAG_GPS, "Waiting 60 seconds for UM982 BASE TIME initialization");
+    vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+  }
+
   static constexpr std::array<const char*, 4> kStreamCommands = {
       "GPZDA COM2 30",
       "RTCM1006 COM2 30",
@@ -956,19 +970,29 @@ void GpsUnicoreClient::handleRtcmFrame(const RtcmFrame& frame) {
 }
 
 void GpsUnicoreClient::storeRtcmLocked(const RtcmFrame& frame) {
-  if (current_frame_active_) {
-    current_frame_.rtcm_by_type[frame.message_type] = frame;
-  }
   switch (frame.message_type) {
     case static_cast<uint16_t>(RtcmMessageType::kGpsL1L2Observables):
+      if (!Rtcm1004HasObservations(frame)) {
+        ESP_LOGW(TAG_GPS, "RTCM1004 has no decoded observations, not storing in GNSS frame");
+        return;
+      }
+      if (current_frame_active_) {
+        current_frame_.rtcm_by_type[frame.message_type] = frame;
+      }
       last_1004_ = frame;
       has_1004_ = true;
       break;
     case static_cast<uint16_t>(RtcmMessageType::kStationAntennaArp):
+      if (current_frame_active_) {
+        current_frame_.rtcm_by_type[frame.message_type] = frame;
+      }
       last_1006_ = frame;
       has_1006_ = true;
       break;
     case static_cast<uint16_t>(RtcmMessageType::kReceiverAntennaDescriptors):
+      if (current_frame_active_) {
+        current_frame_.rtcm_by_type[frame.message_type] = frame;
+      }
       last_1033_ = frame;
       has_1033_ = true;
       break;

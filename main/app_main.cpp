@@ -843,10 +843,10 @@ static void GpsLogTask(void*) {
   constexpr TickType_t kInterval = pdMS_TO_TICKS(30 * 1000);
   constexpr int64_t kCollectWindowUs = 35'000'000;
   uint32_t frame_index = 0;
-  bool periodic_output_configured = false;
   vTaskDelay(pdMS_TO_TICKS(5000));
   gps_client.probeReceiver();
   vTaskDelay(pdMS_TO_TICKS(1000));
+  gps_client.configurePeriodicOutput(true);
   while (true) {
     const int64_t cycle_start_us = esp_timer_get_time();
     if (usb_mode == UsbMode::kMsc) {
@@ -855,10 +855,6 @@ static void GpsLogTask(void*) {
     }
 
     gps_client.startFrame(frame_index);
-    if (!periodic_output_configured) {
-      gps_client.configurePeriodicOutput();
-      periodic_output_configured = true;
-    }
     gps_client.pollFrame();
     const int64_t deadline_us = esp_timer_get_time() + kCollectWindowUs;
     while (esp_timer_get_time() < deadline_us) {
