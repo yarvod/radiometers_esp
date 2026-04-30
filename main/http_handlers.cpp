@@ -533,7 +533,7 @@ bool MountLogSd() {
 
   esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
   mount_config.format_if_mount_failed = false;
-  mount_config.max_files = 8;
+  mount_config.max_files = 4;
   mount_config.allocation_unit_size = 0;
 
   esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &log_sd_card);

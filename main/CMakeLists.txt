@@ -11,6 +11,8 @@ idf_component_register(
         "error_manager.cpp"
         "app_utils.cpp"
         "sd_maintenance.cpp"
+        "gps_unicore.cpp"
+       
        
     PRIV_REQUIRES
         esp_wifi

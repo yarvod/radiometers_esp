@@ -55,6 +55,7 @@
 #include "mqtt_bridge.h"
 #include "error_manager.h"
 #include "sd_maintenance.h"
+#include "gps_unicore.h"
 #include "nvs.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
@@ -112,6 +113,10 @@ static esp_netif_t* eth_netif = nullptr;
 static esp_eth_mac_t* eth_mac = nullptr;
 static esp_eth_phy_t* eth_phy = nullptr;
 static spi_device_interface_config_t eth_devcfg = {};
+static GpsUnicoreClient gps_client;
+static TaskHandle_t gps_log_task = nullptr;
+static uint64_t gps_log_file_start_us = 0;
+static std::string current_gnss_log_path;
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
@@ -173,11 +178,9 @@ std::string BuildLogFilename(const std::string& postfix_raw) {
   strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_info);
 
   std::string name = "data_";
-  name += std::to_string(boot);
-  name += "_";
   name += ts;
   if (!postfix.empty()) {
-    const size_t base_len = name.size() + 1 + 4;  // "_" + ".txt"
+    const size_t base_len = name.size() + 1 + 1 + 10 + 4;  // "_" + "_" + boot + ".txt"
     size_t max_postfix = 0;
     if (base_len < 255) {
       max_postfix = 255 - base_len;
@@ -187,6 +190,8 @@ std::string BuildLogFilename(const std::string& postfix_raw) {
       name += postfix.substr(0, max_postfix);
     }
   }
+  name += "_";
+  name += std::to_string(boot);
   name += ".txt";
   return name;
 }
@@ -587,6 +592,11 @@ static bool IsDataLogFilename(const char* name) {
   return std::strncmp(name, "data_", 5) == 0;
 }
 
+static bool IsGpsLogFilename(const char* name) {
+  if (!name) return false;
+  return std::strncmp(name, "gps_", 4) == 0;
+}
+
 static int CountFilesInDir(const char* dir_path, bool only_data_logs) {
   if (!dir_path) return 0;
   DIR* dir = opendir(dir_path);
@@ -672,6 +682,241 @@ bool QueueCurrentLogForUpload() {
   UpdateSdStatsLocked();
   ESP_LOGI(TAG, "Queued log for upload: %s", new_path.c_str());
   return true;
+}
+
+static std::string BuildGnssLogFilename(const GpsDateTime* frame_time) {
+  char ts[32] = {};
+  if (frame_time && frame_time->valid) {
+    const GpsDateTime& dt = *frame_time;
+    std::snprintf(ts, sizeof(ts), "%04d%02d%02d_%02d%02d%02d",
+                  dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+  } else {
+    time_t now = time(nullptr);
+    if (now <= 0) {
+      now = static_cast<time_t>(esp_timer_get_time() / 1000000ULL);
+    }
+    struct tm tm_info {};
+    gmtime_r(&now, &tm_info);
+    strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_info);
+  }
+
+  std::string name = "gps_gnsslog_";
+  name += ts;
+  name += "_";
+  name += std::to_string(GetBootId());
+  name += ".bin";
+  return name;
+}
+
+static int MoveRootGpsFilesToUploadLocked(const std::string& active_path) {
+  if (!EnsureUploadDirs()) return 0;
+  DIR* dir = opendir(CONFIG_MOUNT_POINT);
+  if (!dir) return 0;
+  const std::string active_name = Basename(active_path);
+  int moved = 0;
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr) {
+    if (ent->d_name[0] == '.') continue;
+    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+    if (!IsGpsLogFilename(ent->d_name)) continue;
+    if (!active_name.empty() && active_name == ent->d_name) continue;
+    const std::string src = std::string(CONFIG_MOUNT_POINT) + "/" + ent->d_name;
+    if (MoveFileToDir(src, TO_UPLOAD_DIR, nullptr)) {
+      moved++;
+    }
+  }
+  closedir(dir);
+  return moved;
+}
+
+static bool QueueCurrentGnssLogForUploadLocked() {
+  if (current_gnss_log_path.empty()) {
+    return true;
+  }
+  struct stat st {};
+  if (stat(current_gnss_log_path.c_str(), &st) != 0) {
+    current_gnss_log_path.clear();
+    gps_log_file_start_us = 0;
+    return errno == ENOENT;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    current_gnss_log_path.clear();
+    gps_log_file_start_us = 0;
+    return true;
+  }
+  if (st.st_size <= static_cast<off_t>(sizeof(GnssFileHeader))) {
+    remove(current_gnss_log_path.c_str());
+    current_gnss_log_path.clear();
+    gps_log_file_start_us = 0;
+    return true;
+  }
+  if (!EnsureUploadDirs()) {
+    return false;
+  }
+
+  const std::string queued_name = Basename(current_gnss_log_path);
+  if (!MoveFileToDir(current_gnss_log_path, TO_UPLOAD_DIR, nullptr)) {
+    return false;
+  }
+  current_gnss_log_path.clear();
+  gps_log_file_start_us = 0;
+  ESP_LOGI(TAG, "Queued GNSS binary log for upload: %s", queued_name.c_str());
+  return true;
+}
+
+static bool EnsureGnssFileHeaderLocked(FILE* f, const char* path) {
+  if (!f || !path) return false;
+  struct stat st {};
+  const bool need_header = stat(path, &st) != 0 || st.st_size == 0;
+  if (!need_header) {
+    return true;
+  }
+  GnssFileHeader header{};
+  FillGnssFileHeader(&header);
+  return fwrite(&header, 1, sizeof(header), f) == sizeof(header);
+}
+
+static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
+  constexpr uint64_t kRotateUs = 3'600'000'000ULL;
+
+  const bool first_open = gps_log_file_start_us == 0;
+  const uint64_t now_us = esp_timer_get_time();
+  if (first_open || current_gnss_log_path.empty()) {
+    (void)MoveRootGpsFilesToUploadLocked("");
+    const std::string filename = BuildGnssLogFilename(frame.timestamp.valid ? &frame.timestamp : nullptr);
+    current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
+    gps_log_file_start_us = now_us;
+    ESP_LOGI(TAG, "Starting GNSS binary log: %s", current_gnss_log_path.c_str());
+  } else if (now_us - gps_log_file_start_us >= kRotateUs) {
+    if (!QueueCurrentGnssLogForUploadLocked()) {
+      return false;
+    }
+    const std::string filename = BuildGnssLogFilename(frame.timestamp.valid ? &frame.timestamp : nullptr);
+    current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
+    gps_log_file_start_us = now_us;
+    ESP_LOGI(TAG, "Starting GNSS binary log: %s", current_gnss_log_path.c_str());
+  }
+
+  FILE* f = fopen(current_gnss_log_path.c_str(), "ab");
+  if (!f) {
+    ESP_LOGE(TAG, "Failed to open GNSS binary log %s (errno %d)", current_gnss_log_path.c_str(), errno);
+    return false;
+  }
+  bool ok = EnsureGnssFileHeaderLocked(f, current_gnss_log_path.c_str()) && gps_client.writeFrameToFile(frame, f);
+  fflush(f);
+  const int fd = fileno(f);
+  if (fd >= 0) {
+    fsync(fd);
+  }
+  if (fclose(f) != 0) {
+    ok = false;
+  }
+  if (ok) {
+    UpdateSdStatsLocked();
+    ESP_LOGI(TAG, "GNSS frame %u written to %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
+  } else {
+    ESP_LOGE(TAG, "Failed to write GNSS frame %u", static_cast<unsigned>(frame.frame_index));
+  }
+  return ok;
+}
+
+static void WarnMissingGnssFrameData(const CurrentFrame& frame) {
+  if (!frame.timestamp.valid) {
+    ESP_LOGW(TAG, "GNSS frame %u missing GPZDA time", static_cast<unsigned>(frame.frame_index));
+  }
+  if (frame.rtcm_by_type.count(static_cast<uint16_t>(RtcmMessageType::kStationAntennaArp)) == 0) {
+    ESP_LOGW(TAG, "GNSS frame %u missing RTCM1006", static_cast<unsigned>(frame.frame_index));
+  }
+  if (frame.rtcm_by_type.count(static_cast<uint16_t>(RtcmMessageType::kReceiverAntennaDescriptors)) == 0) {
+    ESP_LOGW(TAG, "GNSS frame %u missing RTCM1033", static_cast<unsigned>(frame.frame_index));
+  }
+  if (frame.rtcm_by_type.count(static_cast<uint16_t>(RtcmMessageType::kGpsL1L2Observables)) == 0) {
+    ESP_LOGW(TAG, "GNSS frame %u missing RTCM1004", static_cast<unsigned>(frame.frame_index));
+  }
+}
+
+static bool HasAnyGnssFrameData(const CurrentFrame& frame) {
+  return frame.timestamp.valid || !frame.gpzda_line.empty() || !frame.rtcm_by_type.empty();
+}
+
+static void GpsLogTask(void*) {
+  constexpr TickType_t kInterval = pdMS_TO_TICKS(30 * 1000);
+  constexpr int64_t kCollectWindowUs = 35'000'000;
+  uint32_t frame_index = 0;
+  bool periodic_output_configured = false;
+  vTaskDelay(pdMS_TO_TICKS(5000));
+  gps_client.probeReceiver();
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  while (true) {
+    const int64_t cycle_start_us = esp_timer_get_time();
+    if (usb_mode == UsbMode::kMsc) {
+      vTaskDelay(kInterval);
+      continue;
+    }
+
+    gps_client.startFrame(frame_index);
+    if (!periodic_output_configured) {
+      gps_client.configurePeriodicOutput();
+      periodic_output_configured = true;
+    }
+    gps_client.pollFrame();
+    const int64_t deadline_us = esp_timer_get_time() + kCollectWindowUs;
+    while (esp_timer_get_time() < deadline_us) {
+      if (gps_client.isCurrentFrameComplete()) {
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    CurrentFrame frame{};
+    if (!gps_client.finishFrame(frame)) {
+      gps_client.stopFrameOutput();
+      ESP_LOGW(TAG, "Failed to finish GNSS frame %u", static_cast<unsigned>(frame_index));
+      frame_index++;
+      continue;
+    }
+    gps_client.stopFrameOutput();
+    WarnMissingGnssFrameData(frame);
+    if (!HasAnyGnssFrameData(frame)) {
+      ESP_LOGW(TAG, "GNSS frame %u is empty, skip SD write", static_cast<unsigned>(frame.frame_index));
+      frame_index++;
+      const int64_t elapsed_us = esp_timer_get_time() - cycle_start_us;
+      const int64_t interval_us = 30'000'000;
+      if (elapsed_us < interval_us) {
+        vTaskDelay(pdMS_TO_TICKS((interval_us - elapsed_us) / 1000));
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+      continue;
+    }
+
+    {
+      SdLockGuard guard(pdMS_TO_TICKS(1000));
+      if (!guard.locked()) {
+        ESP_LOGW(TAG, "SD mutex unavailable, skip GNSS frame write");
+        frame_index++;
+        vTaskDelay(kInterval);
+        continue;
+      }
+
+      const bool already_mounted = log_sd_mounted;
+      if (MountLogSd()) {
+        (void)WriteGnssFrameLocked(frame);
+        if (!already_mounted && !log_file) {
+          UnmountLogSd();
+        }
+      }
+    }
+
+    frame_index++;
+    const int64_t elapsed_us = esp_timer_get_time() - cycle_start_us;
+    const int64_t interval_us = 30'000'000;
+    if (elapsed_us < interval_us) {
+      vTaskDelay(pdMS_TO_TICKS((interval_us - elapsed_us) / 1000));
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+  }
 }
 
 static std::string HexEncode(const uint8_t* data, size_t len) {
@@ -808,9 +1053,14 @@ static bool UploadFileToMinio(const std::string& path) {
     ESP_LOGW(TAG, "MinIO config incomplete, skip upload");
     return false;
   }
-  const std::string device = SanitizeId(app_config.device_id);
   const std::string filename = Basename(path);
-  const std::string object_key = device + "/" + filename;
+  std::string object_prefix = "radiometers";
+  if (IsGpsLogFilename(filename.c_str())) {
+    object_prefix = "gps";
+  } else if (IsDataLogFilename(filename.c_str())) {
+    object_prefix = "radiometers";
+  }
+  const std::string object_key = object_prefix + "/" + filename;
   const std::string endpoint = TrimTrailingSlash(app_config.minio_endpoint);
   const std::string host = ExtractHost(endpoint);
   const bool use_https = endpoint.rfind("https://", 0) == 0;
@@ -833,7 +1083,7 @@ static bool UploadFileToMinio(const std::string& path) {
     app_config.minio_bucket = SanitizeId(app_config.device_id);
   }
 
-  auto put_bucket_if_needed = [&]() {
+  [[maybe_unused]] auto put_bucket_if_needed = [&]() {
     // Sign empty payload
     const std::string payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     time_t now = time(nullptr);
@@ -897,7 +1147,8 @@ static bool UploadFileToMinio(const std::string& path) {
     esp_http_client_cleanup(client);
     return ok;
   };
-  (void)put_bucket_if_needed();
+  // Bucket creation is intentionally not attempted on every file upload. It costs
+  // an extra TLS connection per file and can exhaust RAM when old files are queued.
 
   time_t now = time(nullptr);
   if (now <= 0) now = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
@@ -1020,6 +1271,7 @@ static void CleanupUploadedDirIfNeeded(int max_percent);
 
 static bool UploadPendingOnce() {
   constexpr int kMaxSdUsagePercent = 60;
+  constexpr int kMaxUploadsPerCycle = 1;
   std::vector<std::string> files;
   {
     SdLockGuard guard(pdMS_TO_TICKS(50));
@@ -1050,6 +1302,9 @@ static bool UploadPendingOnce() {
 
   int uploaded = 0;
   for (const auto& f : files) {
+    if (uploaded >= kMaxUploadsPerCycle) {
+      break;
+    }
     if (UploadFileToMinio(f)) {
       SdLockGuard guard(pdMS_TO_TICKS(200));
       if (!guard.locked() || !MountLogSd()) {
@@ -1060,6 +1315,7 @@ static bool UploadPendingOnce() {
         uploaded++;
       }
     }
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
   if (uploaded > 0) {
     ESP_LOGI(TAG, "Uploaded %d file(s) to MinIO", uploaded);
@@ -1133,7 +1389,8 @@ static void SdStatsTask(void*) {
 }
 
 void UploadTask(void*) {
-  const TickType_t interval = pdMS_TO_TICKS(60 * 60 * 1000);  // hourly
+  const TickType_t interval = pdMS_TO_TICKS(10 * 60 * 1000);
+  vTaskDelay(pdMS_TO_TICKS(2 * 60 * 1000));  // let Wi-Fi/MQTT/GNSS settle before TLS uploads
   while (true) {
     UploadPendingOnce();
     vTaskDelay(interval);
@@ -2633,6 +2890,14 @@ extern "C" void app_main(void) {
   }
   StartHttpServer();
 
+  esp_err_t gps_err = gps_client.initUart();
+  if (gps_err == ESP_OK) {
+    gps_err = gps_client.startTasks();
+  }
+  if (gps_err != ESP_OK) {
+    ESP_LOGE(TAG, "GPS init/start failed: %s", esp_err_to_name(gps_err));
+  }
+
   // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
   xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
   xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
@@ -2650,6 +2915,9 @@ extern "C" void app_main(void) {
   if (upload_task == nullptr) {
     // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
     xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
+  }
+  if (gps_log_task == nullptr && usb_mode == UsbMode::kCdc) {
+    xTaskCreatePinnedToCore(&GpsLogTask, "gps_log", 6144, nullptr, 1, &gps_log_task, 0);
   }
   xTaskCreatePinnedToCore(&WifiMonitorTask, "wifi_mon", 2048, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(&SdStatsTask, "sd_stats", 3072, nullptr, 1, nullptr, 0);

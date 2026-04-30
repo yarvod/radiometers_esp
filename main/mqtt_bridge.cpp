@@ -111,10 +111,9 @@ bool ParseMqttUri(const std::string& raw_uri, ParsedMqttUri* out) {
 
 bool MqttPublish(const char* topic, const char* payload, int len, int qos = 0, bool retain = false) {
   if (!mqtt_client || !mqtt_connected || !topic || topic[0] == '\0') return false;
-  const int msg_id =
-      esp_mqtt_client_enqueue(mqtt_client, topic, payload, len, qos, retain ? 1 : 0, true);
+  const int msg_id = esp_mqtt_client_publish(mqtt_client, topic, payload, len, qos, retain ? 1 : 0);
   if (msg_id < 0) {
-    ESP_LOGD(TAG_MQTT, "MQTT enqueue dropped: %s", topic);
+    ESP_LOGW(TAG_MQTT, "MQTT publish dropped: %s", topic);
     return false;
   }
   return true;
@@ -408,7 +407,7 @@ void PublishCurrentState() {
 void MqttStateTask(void*) {
   while (true) {
     PublishCurrentState();
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(10000));
   }
 }
 
