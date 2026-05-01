@@ -59,6 +59,8 @@ bool StartFindZeroTask(std::string* out_message);
 
 void HeaterSetPowerPercent(float percent);
 void FanSetPowerPercent(float percent);
+void SetExternalPower(bool enabled);
+bool CycleExternalPower(uint32_t off_ms);
 
 void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode);
 void ApplyNetworkConfig();

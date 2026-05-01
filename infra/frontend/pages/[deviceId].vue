@@ -129,9 +129,20 @@
           <span class="badge">Управление</span>
         </div>
         <p class="muted">Полная перезагрузка устройства (использовать при зависаниях).</p>
+        <div class="status-row">
+          <span class="chip" :class="{ online: externalPowerOn, subtle: !externalPowerOn }">EXT_PWR_ON: {{ externalPowerOn ? 'ON' : 'OFF' }}</span>
+        </div>
+        <div class="form-group">
+          <label>Пауза перед включением EXT_PWR_ON, мс</label>
+          <input type="number" min="100" max="30000" step="100" v-model.number="externalPowerOffMs" />
+        </div>
         <div class="actions">
+          <button class="btn success" @click="externalPowerSet(true)" :disabled="externalPowerBusy">Питание модулей ON</button>
+          <button class="btn warning ghost" @click="externalPowerSet(false)" :disabled="externalPowerBusy">Питание модулей OFF</button>
+          <button class="btn primary" @click="externalPowerCycle" :disabled="externalPowerBusy">Передернуть питание</button>
           <button class="btn danger" @click="restartDevice" :disabled="restarting">Перезагрузить</button>
         </div>
+        <p class="muted" v-if="externalPowerStatus">{{ externalPowerStatus }}</p>
         <p class="muted" v-if="restartStatus">{{ restartStatus }}</p>
       </div>
 
@@ -690,6 +701,9 @@ const pidApplyStatus = ref('')
 const wifiApplyStatus = ref('')
 const restartStatus = ref('')
 const restarting = ref(false)
+const externalPowerStatus = ref('')
+const externalPowerBusy = ref(false)
+const externalPowerOffMs = ref(1000)
 const pidForm = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
 const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
 const historyFilters = reactive({
@@ -834,6 +848,7 @@ const stepperDirText = computed(() => {
   if (dir === undefined || dir === null) return '--'
   return dir ? 'FWD' : 'REV'
 })
+const externalPowerOn = computed(() => device.value?.state?.externalPowerOn !== false)
 
 const wifiModeDisplay = computed(() => {
   const mode = device.value?.state?.wifiMode
@@ -1314,6 +1329,37 @@ async function restartDevice() {
     restartStatus.value = e?.message || 'Не удалось отправить команду'
   } finally {
     restarting.value = false
+  }
+}
+async function externalPowerSet(enabled: boolean) {
+  if (!deviceId.value) return
+  const confirmed = enabled || window.confirm('Выключить питание внешних модулей?')
+  if (!confirmed) return
+  externalPowerBusy.value = true
+  externalPowerStatus.value = enabled ? 'Включаю EXT_PWR_ON...' : 'Выключаю EXT_PWR_ON...'
+  try {
+    await store.externalPowerSet(nuxtApp.$mqtt, deviceId.value, enabled)
+    externalPowerStatus.value = enabled ? 'Внешнее питание включено' : 'Внешнее питание выключено'
+  } catch (e: any) {
+    externalPowerStatus.value = e?.message || 'Не удалось изменить питание внешних модулей'
+  } finally {
+    externalPowerBusy.value = false
+  }
+}
+async function externalPowerCycle() {
+  if (!deviceId.value) return
+  const offMs = Number(externalPowerOffMs.value) || 1000
+  const confirmed = window.confirm(`Передернуть питание внешних модулей? OFF на ${offMs} мс.`)
+  if (!confirmed) return
+  externalPowerBusy.value = true
+  externalPowerStatus.value = 'Передергиваю EXT_PWR_ON...'
+  try {
+    await store.externalPowerCycle(nuxtApp.$mqtt, deviceId.value, offMs)
+    externalPowerStatus.value = 'Команда передергивания питания отправлена'
+  } catch (e: any) {
+    externalPowerStatus.value = e?.message || 'Не удалось передернуть питание'
+  } finally {
+    externalPowerBusy.value = false
   }
 }
 async function stepperEnable() {

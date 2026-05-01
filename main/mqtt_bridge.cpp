@@ -315,6 +315,7 @@ void BuildMqttState(char* out, size_t out_len) {
                "\"voltage1_cal\":%.6f,\"voltage2_cal\":%.6f,\"voltage3_cal\":%.6f,"
                "\"inaBusVoltage\":%.3f,\"inaCurrent\":%.3f,\"inaPower\":%.3f,"
                "\"heaterPower\":%.1f,\"fanPower\":%.1f,\"fan1Rpm\":%u,\"fan2Rpm\":%u,"
+               "\"externalPowerOn\":%s,"
                "\"tempSensorCount\":%d,\"tempSensors\":{",
                state.voltage1,
                state.voltage2,
@@ -329,6 +330,7 @@ void BuildMqttState(char* out, size_t out_len) {
                state.fan_power,
                static_cast<unsigned>(state.fan1_rpm),
                static_cast<unsigned>(state.fan2_rpm),
+               state.external_power_on ? "true" : "false",
                state.temp_sensor_count);
     const int temp_count = std::min(state.temp_sensor_count, MAX_TEMP_SENSORS);
     for (int i = 0; i < temp_count; ++i) {
@@ -545,6 +547,10 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     res = ActionHeaterSet(get_num("power", 0.0f));
   } else if (type == "fan_set") {
     res = ActionFanSet(get_num("power", 0.0f));
+  } else if (type == "external_power_set") {
+    res = ActionExternalPowerSet(get_bool("enabled", get_bool("on", true)));
+  } else if (type == "external_power_cycle") {
+    res = ActionExternalPowerCycle(static_cast<uint32_t>(get_int("offMs", 1000)));
   } else if (type == "pid_apply") {
     PidApplyRequest req;
     req.kp = get_num("kp", pid_config.kp);

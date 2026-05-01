@@ -47,6 +47,7 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
+  cJSON_AddBoolToObject(root, "externalPowerOn", snapshot.external_power_on);
   cJSON_AddNumberToObject(root, "wifiRssi", snapshot.wifi_rssi_dbm);
   cJSON_AddNumberToObject(root, "wifiQuality", snapshot.wifi_quality);
   cJSON_AddStringToObject(root, "wifiIp", snapshot.wifi_ip.c_str());
@@ -213,6 +214,18 @@ ActionResult ActionHeaterSet(float power_percent) {
 ActionResult ActionFanSet(float power_percent) {
   FanSetPowerPercent(power_percent);
   return {true, "fan_set", {}};
+}
+
+ActionResult ActionExternalPowerSet(bool enabled) {
+  SetExternalPower(enabled);
+  return {true, enabled ? "external_power_on" : "external_power_off", {}};
+}
+
+ActionResult ActionExternalPowerCycle(uint32_t off_ms) {
+  if (!CycleExternalPower(off_ms)) {
+    return {false, "external power cycle already running", {}};
+  }
+  return {true, "external_power_cycle_started", {}};
 }
 
 ActionResult ActionPidApply(const PidApplyRequest& req) {

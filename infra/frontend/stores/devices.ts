@@ -201,6 +201,12 @@ export const useDevicesStore = defineStore('devices', {
     async restartDevice(mqtt: MqttClient, deviceId: string) {
       return this.sendCommand(mqtt, deviceId, { type: 'restart' })
     },
+    async externalPowerSet(mqtt: MqttClient, deviceId: string, enabled: boolean) {
+      return this.sendCommand(mqtt, deviceId, { type: 'external_power_set', enabled })
+    },
+    async externalPowerCycle(mqtt: MqttClient, deviceId: string, offMs = 1000) {
+      return this.sendCommand(mqtt, deviceId, { type: 'external_power_cycle', offMs })
+    },
     async wifiApply(mqtt: MqttClient, deviceId: string, payload: { mode: string; ssid: string; password: string }) {
       return this.sendCommand(mqtt, deviceId, { type: 'wifi_apply', ...payload })
     },

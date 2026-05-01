@@ -158,6 +158,7 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "sdUploadedFiles", snapshot.sd_uploaded_files);
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
+  cJSON_AddBoolToObject(root, "externalPowerOn", snapshot.external_power_on);
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);
   cJSON_AddNumberToObject(root, "fan2Rpm", snapshot.fan2_rpm);
   cJSON_AddNumberToObject(root, "tempSensorCount", snapshot.temp_sensor_count);
@@ -248,6 +249,88 @@ esp_err_t CalibrateHandler(httpd_req_t* req) {
     return ESP_FAIL;
   }
   return httpd_resp_sendstr(req, "{\"status\":\"calibration_started\"}");
+}
+
+esp_err_t RestartHandler(httpd_req_t* req) {
+  ActionResult res = ActionRestart();
+  httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
+  return httpd_resp_sendstr(req, "{\"status\":\"restarting\"}");
+}
+
+esp_err_t ExternalPowerSetHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  cJSON* enabled_item = cJSON_GetObjectItem(root, "enabled");
+  if (!enabled_item) {
+    enabled_item = cJSON_GetObjectItem(root, "on");
+  }
+  if (!enabled_item || (!cJSON_IsBool(enabled_item) && !cJSON_IsNumber(enabled_item))) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing enabled");
+    return ESP_FAIL;
+  }
+  const bool enabled = cJSON_IsBool(enabled_item) ? cJSON_IsTrue(enabled_item) : enabled_item->valueint != 0;
+  cJSON_Delete(root);
+
+  ActionResult res = ActionExternalPowerSet(enabled);
+  httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
+  return httpd_resp_sendstr(req, enabled ? "{\"status\":\"external_power_on\"}" : "{\"status\":\"external_power_off\"}");
+}
+
+esp_err_t ExternalPowerCycleHandler(httpd_req_t* req) {
+  uint32_t off_ms = 1000;
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len > 0) {
+    std::string body(buf_len, '\0');
+    int received = httpd_req_recv(req, body.data(), buf_len);
+    if (received <= 0) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+      return ESP_FAIL;
+    }
+    body.resize(received);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+      return ESP_FAIL;
+    }
+    cJSON* off_item = cJSON_GetObjectItem(root, "offMs");
+    if (off_item && cJSON_IsNumber(off_item) && off_item->valueint > 0) {
+      off_ms = static_cast<uint32_t>(off_item->valueint);
+    }
+    cJSON_Delete(root);
+  }
+
+  ActionResult res = ActionExternalPowerCycle(off_ms);
+  httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
+  return httpd_resp_sendstr(req, "{\"status\":\"external_power_cycle_started\"}");
 }
 
 esp_err_t StepperEnableHandler(httpd_req_t* req) {
@@ -1884,7 +1967,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 31;
+  config.max_uri_handlers = 36;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -1895,6 +1978,9 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t root_uri = {.uri = "/", .method = HTTP_GET, .handler = RootHandler, .user_ctx = nullptr};
   httpd_uri_t data_uri = {.uri = "/data", .method = HTTP_GET, .handler = DataHandler, .user_ctx = nullptr};
   httpd_uri_t calibrate_uri = {.uri = "/calibrate", .method = HTTP_POST, .handler = CalibrateHandler, .user_ctx = nullptr};
+  httpd_uri_t restart_uri = {.uri = "/restart", .method = HTTP_POST, .handler = RestartHandler, .user_ctx = nullptr};
+  httpd_uri_t external_power_set_uri = {.uri = "/external_power/set", .method = HTTP_POST, .handler = ExternalPowerSetHandler, .user_ctx = nullptr};
+  httpd_uri_t external_power_cycle_uri = {.uri = "/external_power/cycle", .method = HTTP_POST, .handler = ExternalPowerCycleHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_enable_uri = {.uri = "/stepper/enable", .method = HTTP_POST, .handler = StepperEnableHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_disable_uri = {.uri = "/stepper/disable", .method = HTTP_POST, .handler = StepperDisableHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_move_uri = {.uri = "/stepper/move", .method = HTTP_POST, .handler = StepperMoveHandler, .user_ctx = nullptr};
@@ -1923,6 +2009,9 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
   httpd_register_uri_handler(http_server, &calibrate_uri);
+  httpd_register_uri_handler(http_server, &restart_uri);
+  httpd_register_uri_handler(http_server, &external_power_set_uri);
+  httpd_register_uri_handler(http_server, &external_power_cycle_uri);
   httpd_register_uri_handler(http_server, &stepper_enable_uri);
   httpd_register_uri_handler(http_server, &stepper_disable_uri);
   httpd_register_uri_handler(http_server, &stepper_move_uri);

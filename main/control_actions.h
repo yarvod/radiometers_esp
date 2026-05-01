@@ -81,6 +81,8 @@ ActionResult ActionStepperZero();
 ActionResult ActionStepperHomeOffset(const StepperHomeOffsetRequest& req);
 ActionResult ActionHeaterSet(float power_percent);
 ActionResult ActionFanSet(float power_percent);
+ActionResult ActionExternalPowerSet(bool enabled);
+ActionResult ActionExternalPowerCycle(uint32_t off_ms);
 ActionResult ActionPidApply(const PidApplyRequest& req);
 ActionResult ActionPidEnable();
 ActionResult ActionPidDisable();

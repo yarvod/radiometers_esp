@@ -132,6 +132,7 @@ const char INDEX_HTML[] = R"rawliteral(
         <button class="tab-button" data-tab="tab-stepper">Stepper</button>
         <button class="tab-button" data-tab="tab-wifi">Wi‑Fi</button>
         <button class="tab-button" data-tab="tab-gps">GPS</button>
+        <button class="tab-button" data-tab="tab-system">System</button>
         <button class="tab-button" data-tab="tab-files">Files</button>
       </div>
 
@@ -353,6 +354,26 @@ const char INDEX_HTML[] = R"rawliteral(
             <button class="btn" onclick="applyGpsConfig()">Save GPS Settings</button>
             <button class="btn" onclick="probeGpsMode()">Refresh Actual Mode</button>
             <div class="note" id="gpsConfigStatus">Settings are saved to config.txt. Reconfigure is queued without restarting the web UI.</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-system" class="tab-content">
+        <div class="controls">
+          <div class="control-panel">
+            <h3>System</h3>
+            <div class="form-group">
+              <div>External modules power: <span id="externalPowerState">--</span></div>
+            </div>
+            <div class="form-group">
+              <label for="externalPowerOffMs">Power cycle off time, ms</label>
+              <input type="number" id="externalPowerOffMs" value="1000" min="100" max="30000" step="100">
+            </div>
+            <button class="btn" onclick="setExternalPower(true)">External Power ON</button>
+            <button class="btn btn-stop" onclick="setExternalPower(false)">External Power OFF</button>
+            <button class="btn" onclick="cycleExternalPower()">Power Cycle</button>
+            <button class="btn btn-stop" onclick="restartDevice()">Restart ESP32</button>
+            <div class="note" id="systemActionStatus">EXT_PWR_ON is GPIO2, active high.</div>
           </div>
         </div>
       </div>
@@ -887,6 +908,8 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('usbModeLabel').textContent = modeLabel;
       const gpsActualModeEl = document.getElementById('gpsActualMode');
       if (gpsActualModeEl) gpsActualModeEl.textContent = data.gpsActualMode || '--';
+      const extPowerEl = document.getElementById('externalPowerState');
+      if (extPowerEl) extPowerEl.textContent = data.externalPowerOn ? 'ON' : 'OFF';
 
       const mask = Number.isFinite(data.pidSensorMask) ? data.pidSensorMask : 0;
       if (!pidEditing) {
@@ -942,6 +965,71 @@ const char INDEX_HTML[] = R"rawliteral(
             refreshData();
           });
       }
+    }
+
+    function setSystemStatus(text) {
+      const el = document.getElementById('systemActionStatus');
+      if (el) el.textContent = text;
+    }
+
+    function restartDevice() {
+      if (!confirm('Restart ESP32 now?')) return;
+      setSystemStatus('Restart command sent...');
+      fetch('/restart', { method: 'POST' })
+        .then(response => {
+          if (!response.ok) throw new Error('Restart failed');
+          setSystemStatus('ESP32 is restarting');
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          setSystemStatus('Restart request failed');
+        });
+    }
+
+    function setExternalPower(enabled) {
+      setSystemStatus(enabled ? 'Switching external power ON...' : 'Switching external power OFF...');
+      fetch('/external_power/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('External power set failed');
+        return response.json();
+      })
+      .then(() => {
+        setSystemStatus(enabled ? 'External power is ON' : 'External power is OFF');
+        refreshData();
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        setSystemStatus('External power request failed');
+        refreshData();
+      });
+    }
+
+    function cycleExternalPower() {
+      const offMs = parseInt(document.getElementById('externalPowerOffMs').value, 10) || 1000;
+      if (!confirm(`Power cycle external modules? OFF for ${offMs} ms.`)) return;
+      setSystemStatus('Power cycle started...');
+      fetch('/external_power/cycle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offMs })
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('External power cycle failed');
+        return response.json();
+      })
+      .then(() => {
+        setSystemStatus('Power cycle command accepted');
+        refreshData();
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        setSystemStatus('Power cycle request failed');
+        refreshData();
+      });
     }
     
     function enableStepper() {

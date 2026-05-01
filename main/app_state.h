@@ -116,6 +116,7 @@ struct SharedState {
   std::string stepper_home_status;
   uint64_t last_update_ms;
   bool calibrating;
+  bool external_power_on;
   bool usb_msc_mode;
   std::string usb_error;
   int wifi_rssi_dbm;
