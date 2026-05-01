@@ -143,22 +143,6 @@ void SetNeedMore(bool* need_more, bool value) {
   }
 }
 
-void AppendBytes(std::vector<uint8_t>* out, const void* data, size_t len) {
-  if (!out || !data || len == 0) return;
-  const auto* p = static_cast<const uint8_t*>(data);
-  out->insert(out->end(), p, p + len);
-}
-
-void AppendRecord(std::vector<uint8_t>* out, uint16_t type, uint16_t flags, const uint8_t* payload, uint32_t payload_size) {
-  GnssRecordHeader header{};
-  std::memcpy(header.magic, "REC1", sizeof(header.magic));
-  header.record_type = type;
-  header.flags = flags;
-  header.payload_size = payload_size;
-  AppendBytes(out, &header, sizeof(header));
-  AppendBytes(out, payload, payload_size);
-}
-
 bool ReadBits(const uint8_t* data, size_t bit_len, size_t* bit_pos, uint8_t count, uint64_t* out) {
   if (!data || !bit_pos || !out || count > 64 || *bit_pos + count > bit_len) {
     return false;
@@ -218,11 +202,6 @@ bool DecodeRtcm1004(const RtcmFrame& frame, Rtcm1004Debug* out) {
   }
   out->valid = true;
   return true;
-}
-
-bool Rtcm1004HasObservations(const RtcmFrame& frame) {
-  Rtcm1004Debug dbg{};
-  return DecodeRtcm1004(frame, &dbg) && dbg.satellite_count > 0;
 }
 
 bool DecodeRtcm1006(const RtcmFrame& frame, Rtcm1006Debug* out) {
@@ -291,23 +270,6 @@ std::string FormatGpsPrns(const std::vector<uint8_t>& prns) {
     out += buf;
   }
   return out;
-}
-
-int DaysFromCivil(int y, unsigned m, unsigned d) {
-  y -= m <= 2;
-  const int era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(y - era * 400);
-  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int>(doe) - 719468;
-}
-
-bool ReadExact(FILE* f, void* data, size_t len) {
-  return f && data && fread(data, 1, len, f) == len;
-}
-
-bool SkipBytes(FILE* f, uint32_t len) {
-  return f && fseek(f, static_cast<long>(len), SEEK_CUR) == 0;
 }
 
 std::string HexPreview(const uint8_t* data, size_t len, size_t max_len) {
@@ -470,7 +432,7 @@ bool parseRtcmFrameFromBuffer(std::vector<uint8_t>& buffer, RtcmFrame& out, bool
 
   std::vector<uint8_t> frame(buffer.begin(), buffer.begin() + frame_len);
   if (!checkRtcmCrc(frame)) {
-    ESP_LOGW(TAG_GPS, "Dropping RTCM type=%u with bad CRC", getRtcmMessageType(frame));
+    ESP_LOGW(TAG_GPS, "bad RTCM CRC, type=%u", getRtcmMessageType(frame));
     buffer.erase(buffer.begin());
     return false;
   }
@@ -488,85 +450,6 @@ bool parseRtcmFrameFromBuffer(std::vector<uint8_t>& buffer, RtcmFrame& out, bool
   out = std::move(parsed);
   buffer.erase(buffer.begin(), buffer.begin() + frame_len);
   return true;
-}
-
-uint64_t GpsDateTimeToUnixUtc(const GpsDateTime& dt) {
-  if (!dt.valid) {
-    return 0;
-  }
-  const int days = DaysFromCivil(dt.year, dt.month, dt.day);
-  if (days < 0) {
-    return 0;
-  }
-  return static_cast<uint64_t>(days) * 86400ULL +
-         static_cast<uint64_t>(dt.hour) * 3600ULL +
-         static_cast<uint64_t>(dt.minute) * 60ULL +
-         static_cast<uint64_t>(dt.second);
-}
-
-void FillGnssFileHeader(GnssFileHeader* header) {
-  if (!header) return;
-  std::memset(header, 0, sizeof(*header));
-  std::memcpy(header->magic, "GNSSLOG1", sizeof(header->magic));
-  header->version = 1;
-  header->header_size = sizeof(GnssFileHeader);
-  header->frame_period_s = 30;
-  header->flags = 0;
-}
-
-bool exportRtcmStream(const char* input_path, const char* output_path) {
-  FILE* in = fopen(input_path, "rb");
-  if (!in) {
-    ESP_LOGE(TAG_GPS, "Cannot open GNSS log %s for RTCM export (errno %d)", input_path, errno);
-    return false;
-  }
-  FILE* out = fopen(output_path, "wb");
-  if (!out) {
-    ESP_LOGE(TAG_GPS, "Cannot open RTCM export %s (errno %d)", output_path, errno);
-    fclose(in);
-    return false;
-  }
-
-  GnssFileHeader file_header{};
-  bool ok = ReadExact(in, &file_header, sizeof(file_header)) &&
-            std::memcmp(file_header.magic, "GNSSLOG1", 8) == 0 &&
-            file_header.version == 1;
-  while (ok) {
-    GnssFrameHeader frame_header{};
-    if (fread(&frame_header, 1, sizeof(frame_header), in) != sizeof(frame_header)) {
-      break;
-    }
-    if (std::memcmp(frame_header.magic, "FRM1", 4) != 0) {
-      ok = false;
-      break;
-    }
-    for (uint16_t i = 0; i < frame_header.record_count; ++i) {
-      GnssRecordHeader rec{};
-      if (!ReadExact(in, &rec, sizeof(rec)) || std::memcmp(rec.magic, "REC1", 4) != 0) {
-        ok = false;
-        break;
-      }
-      if ((rec.flags & REC_FLAG_RTCM_BINARY) != 0) {
-        std::vector<uint8_t> payload(rec.payload_size);
-        if (!payload.empty() && !ReadExact(in, payload.data(), payload.size())) {
-          ok = false;
-          break;
-        }
-        if (!payload.empty() && fwrite(payload.data(), 1, payload.size(), out) != payload.size()) {
-          ok = false;
-          break;
-        }
-      } else if (!SkipBytes(in, rec.payload_size)) {
-        ok = false;
-        break;
-      }
-    }
-  }
-
-  fflush(out);
-  fclose(out);
-  fclose(in);
-  return ok;
 }
 
 esp_err_t GpsUnicoreClient::initUart() {
@@ -651,13 +534,12 @@ void GpsUnicoreClient::configurePeriodicOutput(bool auto_base_config) {
     vTaskDelay(pdMS_TO_TICKS(60 * 1000));
   }
 
-  static constexpr std::array<const char*, 4> kStreamCommands = {
-      "GPZDA COM2 30",
+  static constexpr std::array<const char*, 3> kStreamCommands = {
       "RTCM1006 COM2 30",
       "RTCM1033 COM2 30",
       "RTCM1004 COM2 30",
   };
-  ESP_LOGI(TAG_GPS, "Configuring UM982 periodic GNSS output on COM2 every 30 seconds");
+  ESP_LOGI(TAG_GPS, "Configuring UM982 periodic RTCM3 output on COM2 every 30 seconds");
   for (const char* cmd : kStreamCommands) {
     sendCommand(cmd);
     vTaskDelay(kCommandDelay);
@@ -689,7 +571,6 @@ bool GpsUnicoreClient::isCurrentFrameComplete() {
     return false;
   }
   const bool ok = current_frame_active_ &&
-                  current_frame_.timestamp.valid &&
                   current_frame_.rtcm_by_type.count(1004) > 0 &&
                   current_frame_.rtcm_by_type.count(1006) > 0 &&
                   current_frame_.rtcm_by_type.count(1033) > 0;
@@ -714,63 +595,54 @@ bool GpsUnicoreClient::finishFrame(CurrentFrame& out) {
   return true;
 }
 
-bool GpsUnicoreClient::writeFrameToFile(const CurrentFrame& frame, FILE* file) {
+bool GpsUnicoreClient::writeRtcmFramesToFile(const CurrentFrame& frame, FILE* file) {
   if (!file) return false;
 
-  std::vector<uint8_t> records;
-  uint16_t record_count = 0;
-  uint32_t flags = 0;
-  if (frame.timestamp.valid) {
-    flags |= FRAME_FLAG_TIME_VALID;
-  }
-
-  if (!frame.gpzda_line.empty()) {
-    std::string line = frame.gpzda_line;
-    if (line.size() < 2 || line.substr(line.size() - 2) != "\r\n") {
-      line += "\r\n";
-    }
-    AppendRecord(&records, REC_GPZDA_TEXT, REC_FLAG_TEXT,
-                 reinterpret_cast<const uint8_t*>(line.data()), static_cast<uint32_t>(line.size()));
-    record_count++;
-  }
-
+  bool ok = true;
   static constexpr std::array<uint16_t, 3> kRtcmOrder = {1006, 1033, 1004};
   for (uint16_t type : kRtcmOrder) {
-    auto it = frame.rtcm_by_type.find(type);
-    if (it == frame.rtcm_by_type.end() || !it->second.crc_ok || it->second.raw.empty()) {
+    const auto it = frame.rtcm_by_type.find(type);
+    if (it == frame.rtcm_by_type.end()) {
       continue;
     }
-    uint32_t rec_flags = REC_FLAG_RTCM_BINARY | REC_FLAG_CRC_OK;
-    AppendRecord(&records, type, static_cast<uint16_t>(rec_flags),
-                 it->second.raw.data(), static_cast<uint32_t>(it->second.raw.size()));
-    record_count++;
-    if (type == 1004) flags |= FRAME_FLAG_HAS_1004;
-    if (type == 1006) flags |= FRAME_FLAG_HAS_1006;
-    if (type == 1033) flags |= FRAME_FLAG_HAS_1033;
-  }
+    const RtcmFrame& rtcm = it->second;
+    if (!rtcm.crc_ok || rtcm.raw.empty()) {
+      ESP_LOGW(TAG_GPS, "skip RTCM type %u for .rtcm3: bad CRC or empty frame", type);
+      continue;
+    }
+    if (fwrite(rtcm.raw.data(), 1, rtcm.raw.size(), file) != rtcm.raw.size()) {
+      ESP_LOGE(TAG_GPS, "Failed to write RTCM%u raw frame", type);
+      ok = false;
+      break;
+    }
+    fflush(file);
 
-  GnssFrameHeader header{};
-  std::memcpy(header.magic, "FRM1", sizeof(header.magic));
-  header.frame_index = frame.frame_index;
-  header.unix_time = GpsDateTimeToUnixUtc(frame.timestamp);
-  header.year = frame.timestamp.year;
-  header.month = frame.timestamp.month;
-  header.day = frame.timestamp.day;
-  header.hour = frame.timestamp.hour;
-  header.minute = frame.timestamp.minute;
-  header.second = frame.timestamp.second;
-  header.millisecond = frame.timestamp.millisecond;
-  header.record_count = record_count;
-  header.frame_payload_size = static_cast<uint32_t>(records.size());
-  header.flags = flags;
-
-  if (fwrite(&header, 1, sizeof(header), file) != sizeof(header)) {
-    return false;
+    if (type == 1004) {
+      Rtcm1004Debug dbg{};
+      if (DecodeRtcm1004(rtcm, &dbg)) {
+        ESP_LOGI(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=%u",
+                 static_cast<unsigned>(rtcm.raw.size()), static_cast<unsigned>(dbg.satellite_count));
+      } else {
+        ESP_LOGI(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=unknown",
+                 static_cast<unsigned>(rtcm.raw.size()));
+      }
+    } else if (type == 1006) {
+      Rtcm1006Debug dbg{};
+      if (DecodeRtcm1006(rtcm, &dbg)) {
+        ESP_LOGI(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
+                 static_cast<unsigned>(rtcm.raw.size()));
+        ESP_LOGI(TAG_GPS, "RTCM1006 XYZ: X=%.4f, Y=%.4f, Z=%.4f, H=%.4f",
+                 dbg.ecef_x_m, dbg.ecef_y_m, dbg.ecef_z_m, dbg.antenna_height_m);
+      } else {
+        ESP_LOGI(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
+                 static_cast<unsigned>(rtcm.raw.size()));
+      }
+    } else if (type == 1033) {
+      ESP_LOGI(TAG_GPS, "RTCM1033 written, size=%u, receiver/antenna metadata",
+               static_cast<unsigned>(rtcm.raw.size()));
+    }
   }
-  if (!records.empty() && fwrite(records.data(), 1, records.size(), file) != records.size()) {
-    return false;
-  }
-  return true;
+  return ok;
 }
 
 void GpsUnicoreClient::uartReadTask() {
@@ -914,7 +786,7 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
   } else if (line.rfind("#VERSION", 0) == 0 || line.rfind("#MODE", 0) == 0) {
     ESP_LOGI(TAG_GPS, "Receiver response: %s", line.c_str());
   } else {
-    ESP_LOGD(TAG_GPS, "Text RX ignored: %s", line.c_str());
+    ESP_LOGD(TAG_GPS, "skip text line: %s", line.c_str());
   }
 }
 
@@ -924,7 +796,7 @@ void GpsUnicoreClient::handleRtcmFrame(const RtcmFrame& frame) {
     return;
   }
   if (!IsExpectedRtcmType(frame.message_type)) {
-    ESP_LOGD(TAG_GPS, "RTCM type=%u len=%u ignored", frame.message_type, static_cast<unsigned>(frame.raw.size()));
+    ESP_LOGD(TAG_GPS, "skip RTCM type %u size=%u", frame.message_type, static_cast<unsigned>(frame.raw.size()));
     return;
   }
 
@@ -972,9 +844,16 @@ void GpsUnicoreClient::handleRtcmFrame(const RtcmFrame& frame) {
 void GpsUnicoreClient::storeRtcmLocked(const RtcmFrame& frame) {
   switch (frame.message_type) {
     case static_cast<uint16_t>(RtcmMessageType::kGpsL1L2Observables):
-      if (!Rtcm1004HasObservations(frame)) {
-        ESP_LOGW(TAG_GPS, "RTCM1004 has no decoded observations, not storing in GNSS frame");
-        return;
+      {
+        Rtcm1004Debug dbg{};
+        if (!DecodeRtcm1004(frame, &dbg)) {
+          ESP_LOGW(TAG_GPS, "RTCM1004 header decode failed, not writing to .rtcm3");
+          return;
+        }
+        if (dbg.satellite_count == 0) {
+          ESP_LOGW(TAG_GPS, "RTCM1004 empty: satellite_count=0");
+          return;
+        }
       }
       if (current_frame_active_) {
         current_frame_.rtcm_by_type[frame.message_type] = frame;

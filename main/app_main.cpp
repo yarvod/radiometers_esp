@@ -692,19 +692,21 @@ static std::string BuildGnssLogFilename(const GpsDateTime* frame_time) {
                   dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
   } else {
     time_t now = time(nullptr);
-    if (now <= 0) {
-      now = static_cast<time_t>(esp_timer_get_time() / 1000000ULL);
+    if (now < 946684800) {
+      char fallback[32] = {};
+      std::snprintf(fallback, sizeof(fallback), "gps_log_%06u.rtcm3", static_cast<unsigned>(GetBootId()));
+      return fallback;
     }
     struct tm tm_info {};
     gmtime_r(&now, &tm_info);
     strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_info);
   }
 
-  std::string name = "gps_gnsslog_";
+  std::string name = "gps_rtcm3_";
   name += ts;
   name += "_";
   name += std::to_string(GetBootId());
-  name += ".bin";
+  name += ".rtcm3";
   return name;
 }
 
@@ -744,7 +746,7 @@ static bool QueueCurrentGnssLogForUploadLocked() {
     gps_log_file_start_us = 0;
     return true;
   }
-  if (st.st_size <= static_cast<off_t>(sizeof(GnssFileHeader))) {
+  if (st.st_size <= 0) {
     remove(current_gnss_log_path.c_str());
     current_gnss_log_path.clear();
     gps_log_file_start_us = 0;
@@ -760,20 +762,26 @@ static bool QueueCurrentGnssLogForUploadLocked() {
   }
   current_gnss_log_path.clear();
   gps_log_file_start_us = 0;
-  ESP_LOGI(TAG, "Queued GNSS binary log for upload: %s", queued_name.c_str());
+  ESP_LOGI(TAG, "Queued RTCM3 log for upload: %s", queued_name.c_str());
   return true;
 }
 
-static bool EnsureGnssFileHeaderLocked(FILE* f, const char* path) {
-  if (!f || !path) return false;
-  struct stat st {};
-  const bool need_header = stat(path, &st) != 0 || st.st_size == 0;
-  if (!need_header) {
-    return true;
+static bool EnsureRtcmLogFileLocked() {
+  if (current_gnss_log_path.empty() || gps_log_file_start_us == 0) {
+    (void)MoveRootGpsFilesToUploadLocked("");
+    const std::string filename = BuildGnssLogFilename(nullptr);
+    current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
+    gps_log_file_start_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
   }
-  GnssFileHeader header{};
-  FillGnssFileHeader(&header);
-  return fwrite(&header, 1, sizeof(header), f) == sizeof(header);
+
+  FILE* f = fopen(current_gnss_log_path.c_str(), "ab");
+  if (!f) {
+    ESP_LOGE(TAG, "Failed to create RTCM3 log %s (errno %d)", current_gnss_log_path.c_str(), errno);
+    return false;
+  }
+  const bool ok = fclose(f) == 0;
+  return ok;
 }
 
 static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
@@ -782,11 +790,9 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
   const bool first_open = gps_log_file_start_us == 0;
   const uint64_t now_us = esp_timer_get_time();
   if (first_open || current_gnss_log_path.empty()) {
-    (void)MoveRootGpsFilesToUploadLocked("");
-    const std::string filename = BuildGnssLogFilename(frame.timestamp.valid ? &frame.timestamp : nullptr);
-    current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
-    gps_log_file_start_us = now_us;
-    ESP_LOGI(TAG, "Starting GNSS binary log: %s", current_gnss_log_path.c_str());
+    if (!EnsureRtcmLogFileLocked()) {
+      return false;
+    }
   } else if (now_us - gps_log_file_start_us >= kRotateUs) {
     if (!QueueCurrentGnssLogForUploadLocked()) {
       return false;
@@ -794,15 +800,15 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
     const std::string filename = BuildGnssLogFilename(frame.timestamp.valid ? &frame.timestamp : nullptr);
     current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
     gps_log_file_start_us = now_us;
-    ESP_LOGI(TAG, "Starting GNSS binary log: %s", current_gnss_log_path.c_str());
+    ESP_LOGI(TAG, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
   }
 
   FILE* f = fopen(current_gnss_log_path.c_str(), "ab");
   if (!f) {
-    ESP_LOGE(TAG, "Failed to open GNSS binary log %s (errno %d)", current_gnss_log_path.c_str(), errno);
+    ESP_LOGE(TAG, "Failed to open RTCM3 log %s (errno %d)", current_gnss_log_path.c_str(), errno);
     return false;
   }
-  bool ok = EnsureGnssFileHeaderLocked(f, current_gnss_log_path.c_str()) && gps_client.writeFrameToFile(frame, f);
+  bool ok = gps_client.writeRtcmFramesToFile(frame, f);
   fflush(f);
   const int fd = fileno(f);
   if (fd >= 0) {
@@ -813,17 +819,14 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
   }
   if (ok) {
     UpdateSdStatsLocked();
-    ESP_LOGI(TAG, "GNSS frame %u written to %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
+    ESP_LOGI(TAG, "GNSS frame %u appended to RTCM3 log %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
   } else {
-    ESP_LOGE(TAG, "Failed to write GNSS frame %u", static_cast<unsigned>(frame.frame_index));
+    ESP_LOGE(TAG, "Failed to append GNSS frame %u to RTCM3 log", static_cast<unsigned>(frame.frame_index));
   }
   return ok;
 }
 
 static void WarnMissingGnssFrameData(const CurrentFrame& frame) {
-  if (!frame.timestamp.valid) {
-    ESP_LOGW(TAG, "GNSS frame %u missing GPZDA time", static_cast<unsigned>(frame.frame_index));
-  }
   if (frame.rtcm_by_type.count(static_cast<uint16_t>(RtcmMessageType::kStationAntennaArp)) == 0) {
     ESP_LOGW(TAG, "GNSS frame %u missing RTCM1006", static_cast<unsigned>(frame.frame_index));
   }
@@ -836,7 +839,7 @@ static void WarnMissingGnssFrameData(const CurrentFrame& frame) {
 }
 
 static bool HasAnyGnssFrameData(const CurrentFrame& frame) {
-  return frame.timestamp.valid || !frame.gpzda_line.empty() || !frame.rtcm_by_type.empty();
+  return !frame.rtcm_by_type.empty();
 }
 
 static void GpsLogTask(void*) {
@@ -847,6 +850,17 @@ static void GpsLogTask(void*) {
   gps_client.probeReceiver();
   vTaskDelay(pdMS_TO_TICKS(1000));
   gps_client.configurePeriodicOutput(true);
+  {
+    SdLockGuard guard(pdMS_TO_TICKS(1000));
+    if (guard.locked() && MountLogSd()) {
+      (void)EnsureRtcmLogFileLocked();
+      if (!log_file) {
+        UnmountLogSd();
+      }
+    } else {
+      ESP_LOGW(TAG, "SD unavailable, RTCM3 log file will be created on first write");
+    }
+  }
   while (true) {
     const int64_t cycle_start_us = esp_timer_get_time();
     if (usb_mode == UsbMode::kMsc) {
