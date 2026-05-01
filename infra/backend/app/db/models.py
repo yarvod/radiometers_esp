@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,7 +64,7 @@ class MeasurementModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id"), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    timestamp_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timestamp_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     adc1: Mapped[float] = mapped_column(Float)
     adc2: Mapped[float] = mapped_column(Float)
     adc3: Mapped[float] = mapped_column(Float)
@@ -88,7 +88,7 @@ class ErrorEventModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id"), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    timestamp_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timestamp_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     code: Mapped[str] = mapped_column(String(64))
     severity: Mapped[str] = mapped_column(String(16))
     message: Mapped[str] = mapped_column(Text)

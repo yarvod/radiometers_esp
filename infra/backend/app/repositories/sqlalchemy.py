@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import delete, func, or_, select, update
@@ -71,6 +71,28 @@ def to_device_gps_config(model: DeviceGpsConfigModel) -> DeviceGpsConfig:
         actual_mode=model.actual_mode,
         updated_at=model.updated_at,
         created_at=model.created_at,
+    )
+
+
+def to_device_gps_config_values(
+    *,
+    device_id: str,
+    has_gps: bool,
+    rtcm_types: list[int] | None,
+    mode: str | None,
+    actual_mode: str | None,
+    updated_at: datetime | None,
+    created_at: datetime | None,
+) -> DeviceGpsConfig:
+    created = created_at or updated_at or datetime.now(timezone.utc)
+    return DeviceGpsConfig(
+        device_id=device_id,
+        has_gps=bool(has_gps),
+        rtcm_types=[int(v) for v in (rtcm_types or [1004, 1006, 1033])],
+        mode=mode or "base_time_60",
+        actual_mode=actual_mode,
+        updated_at=updated_at,
+        created_at=created,
     )
 
 
@@ -308,6 +330,7 @@ class SqlDeviceRepository(DeviceRepository):
             self._session.add(DeviceModel(id=device_id, temp_labels=[], temp_addresses=[], adc_labels={}))
         result = await self._session.execute(select(DeviceGpsConfigModel).where(DeviceGpsConfigModel.device_id == device_id))
         model = result.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
         if not model:
             model = DeviceGpsConfigModel(
                 device_id=device_id,
@@ -315,6 +338,8 @@ class SqlDeviceRepository(DeviceRepository):
                 rtcm_types=rtcm_types or [1004, 1006, 1033],
                 mode=mode or "base_time_60",
                 actual_mode=actual_mode,
+                created_at=now,
+                updated_at=now,
             )
             self._session.add(model)
         else:
@@ -326,8 +351,17 @@ class SqlDeviceRepository(DeviceRepository):
                 model.mode = mode
             if actual_mode is not None:
                 model.actual_mode = actual_mode
+            model.updated_at = now
         await self._session.flush()
-        return to_device_gps_config(model)
+        return to_device_gps_config_values(
+            device_id=model.device_id,
+            has_gps=model.has_gps,
+            rtcm_types=model.rtcm_types,
+            mode=model.mode,
+            actual_mode=model.actual_mode,
+            updated_at=model.updated_at,
+            created_at=model.created_at,
+        )
 
 
 class SqlMeasurementRepository(MeasurementRepository):
