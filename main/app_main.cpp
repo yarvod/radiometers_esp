@@ -12,6 +12,7 @@
 #include <ctime>
 #include <cstdint>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <cerrno>
 #include <dirent.h>
 #include <memory>
@@ -118,6 +119,8 @@ static TaskHandle_t gps_log_task = nullptr;
 static uint64_t gps_log_file_start_us = 0;
 static std::string current_gnss_log_path;
 static volatile bool gps_reconfigure_requested = false;
+static bool sntp_time_available = false;
+static int64_t last_sntp_sync_us = 0;
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
@@ -163,16 +166,15 @@ void StartSntp();
 bool EnsureTimeSynced(int timeout_ms);
 esp_err_t InitSpiBus();
 static void StopWifiRecoverTask();
+static void ReadNetworkUpFlags(bool* wifi_up, bool* eth_up);
 
 std::string BuildLogFilename(const std::string& postfix_raw) {
   const std::string postfix = SanitizePostfix(postfix_raw);
   const uint32_t boot = GetBootId();
 
   EnsureTimeSynced(1000);
-  time_t now = time(nullptr);
-  if (now <= 0) {
-    now = static_cast<time_t>(esp_timer_get_time() / 1000000ULL);  // fallback if SNTP not yet synced
-  }
+  const UtcTimeSnapshot now_snapshot = GetBestUtcTimeForData();
+  time_t now = now_snapshot.unix_time;
   struct tm tm_info;
   gmtime_r(&now, &tm_info);
   char ts[32];
@@ -233,6 +235,181 @@ void RequestGpsReconfigure() {
 
 void ProbeGpsMode() {
   gps_client.sendCommand("MODE");
+}
+
+namespace {
+
+constexpr time_t kValidUtcThreshold = 1'700'000'000;  // ~2023-11-14
+
+int64_t DaysFromCivil(int year, unsigned month, unsigned day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+bool GpsDateTimeToUnix(const GpsDateTime& dt, time_t* out) {
+  if (!out || !dt.valid) return false;
+  if (dt.year < 2020 || dt.month < 1 || dt.month > 12 || dt.day < 1 || dt.day > 31 ||
+      dt.hour > 23 || dt.minute > 59 || dt.second > 60) {
+    return false;
+  }
+  const int64_t days = DaysFromCivil(dt.year, dt.month, dt.day);
+  const int64_t seconds = days * 86400LL + static_cast<int64_t>(dt.hour) * 3600LL +
+                          static_cast<int64_t>(dt.minute) * 60LL + dt.second;
+  if (seconds <= kValidUtcThreshold) return false;
+  *out = static_cast<time_t>(seconds);
+  return true;
+}
+
+bool SystemUtcNow(time_t* out) {
+  if (!out) return false;
+  time_t now = time(nullptr);
+  if (now <= kValidUtcThreshold) return false;
+  *out = now;
+  return true;
+}
+
+bool AnyNetworkHasIp() {
+  bool wifi_up = false;
+  bool eth_up = false;
+  ReadNetworkUpFlags(&wifi_up, &eth_up);
+  return wifi_up || eth_up;
+}
+
+void MarkSntpSynced() {
+  time_synced = true;
+  sntp_time_available = true;
+  last_sntp_sync_us = esp_timer_get_time();
+}
+
+void MarkSntpUnavailableIfNoNetwork() {
+  if (!AnyNetworkHasIp()) {
+    sntp_time_available = false;
+  }
+}
+
+bool IsSntpUsable() {
+  time_t now = 0;
+  if (!SystemUtcNow(&now)) return false;
+  if (!sntp_time_available) return false;
+  if (!AnyNetworkHasIp()) return false;
+  return true;
+}
+
+bool GpsUtcNow(UtcTimeSnapshot* out) {
+  if (!out) return false;
+  GpsDateTime dt{};
+  int64_t received_us = 0;
+  if (!gps_client.getLastDateTime(dt, &received_us)) {
+    return false;
+  }
+  time_t gps_unix = 0;
+  if (!GpsDateTimeToUnix(dt, &gps_unix)) {
+    return false;
+  }
+  int64_t elapsed_us = received_us > 0 ? esp_timer_get_time() - received_us : 0;
+  if (elapsed_us < 0) elapsed_us = 0;
+  const time_t add_s = static_cast<time_t>(elapsed_us / 1'000'000LL);
+  const uint16_t add_ms = static_cast<uint16_t>((elapsed_us % 1'000'000LL) / 1000LL);
+  uint32_t ms = static_cast<uint32_t>(dt.millisecond) + add_ms;
+  out->unix_time = gps_unix + add_s + static_cast<time_t>(ms / 1000U);
+  out->millisecond = static_cast<uint16_t>(ms % 1000U);
+  out->source = UtcTimeSource::kGps;
+  out->valid = true;
+  return true;
+}
+
+void MaybeDisciplineSystemTimeFromGps(const UtcTimeSnapshot& gps_time) {
+  if (!gps_time.valid || gps_time.source != UtcTimeSource::kGps || IsSntpUsable()) {
+    return;
+  }
+  time_t system_now = 0;
+  const bool system_ok = SystemUtcNow(&system_now);
+  if (system_ok && std::llabs(static_cast<long long>(system_now - gps_time.unix_time)) < 2) {
+    return;
+  }
+  timeval tv {};
+  tv.tv_sec = gps_time.unix_time;
+  tv.tv_usec = static_cast<suseconds_t>(gps_time.millisecond) * 1000;
+  if (settimeofday(&tv, nullptr) == 0) {
+    ESP_LOGI(TAG, "System time disciplined from GPZDA (%lld.%03u)",
+             static_cast<long long>(gps_time.unix_time), static_cast<unsigned>(gps_time.millisecond));
+  }
+}
+
+UtcTimeSnapshot MakeSystemTimeSnapshot(UtcTimeSource source, bool valid) {
+  UtcTimeSnapshot out{};
+  time_t now = 0;
+  if (SystemUtcNow(&now)) {
+    out.unix_time = now;
+    out.source = source;
+    out.valid = valid;
+    return out;
+  }
+  out.unix_time = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
+  out.source = UtcTimeSource::kMonotonic;
+  out.valid = false;
+  return out;
+}
+
+}  // namespace
+
+const char* UtcTimeSourceName(UtcTimeSource source) {
+  switch (source) {
+    case UtcTimeSource::kSntp:
+      return "sntp";
+    case UtcTimeSource::kGps:
+      return "gps";
+    case UtcTimeSource::kSystemCached:
+      return "system_cached";
+    case UtcTimeSource::kMonotonic:
+      return "monotonic";
+    case UtcTimeSource::kNone:
+    default:
+      return "none";
+  }
+}
+
+uint64_t UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot) {
+  if (snapshot.unix_time <= 0) {
+    return esp_timer_get_time() / 1000ULL;
+  }
+  return static_cast<uint64_t>(snapshot.unix_time) * 1000ULL + snapshot.millisecond;
+}
+
+UtcTimeSnapshot GetBestUtcTimeForData() {
+  if (IsSntpUsable()) {
+    return MakeSystemTimeSnapshot(UtcTimeSource::kSntp, true);
+  }
+  UtcTimeSnapshot gps{};
+  if (GpsUtcNow(&gps)) {
+    MaybeDisciplineSystemTimeFromGps(gps);
+    return gps;
+  }
+  time_t system_now = 0;
+  if (SystemUtcNow(&system_now)) {
+    return MakeSystemTimeSnapshot(UtcTimeSource::kSystemCached, true);
+  }
+  return MakeSystemTimeSnapshot(UtcTimeSource::kMonotonic, false);
+}
+
+UtcTimeSnapshot GetBestUtcTimeForGps() {
+  UtcTimeSnapshot gps{};
+  if (GpsUtcNow(&gps)) {
+    MaybeDisciplineSystemTimeFromGps(gps);
+    return gps;
+  }
+  if (IsSntpUsable()) {
+    return MakeSystemTimeSnapshot(UtcTimeSource::kSntp, true);
+  }
+  time_t system_now = 0;
+  if (SystemUtcNow(&system_now)) {
+    return MakeSystemTimeSnapshot(UtcTimeSource::kSystemCached, true);
+  }
+  return MakeSystemTimeSnapshot(UtcTimeSource::kMonotonic, false);
 }
 
 static std::string FormatIp4(const esp_ip4_addr_t& ip) {
@@ -335,15 +512,10 @@ static bool TrySyncTimeOnNetif(esp_netif_t* netif, int timeout_ms) {
   const int max_steps = std::max(1, timeout_ms / step_ms);
   bool ok = false;
   for (int i = 0; i < max_steps; ++i) {
-    time_t now = 0;
-    time(&now);
-    if (now > 1'700'000'000) {
-      ok = true;
-      break;
-    }
     if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+      time_t now = 0;
       time(&now);
-      if (now > 1'700'000'000) {
+      if (now > kValidUtcThreshold) {
         ok = true;
         break;
       }
@@ -351,7 +523,9 @@ static bool TrySyncTimeOnNetif(esp_netif_t* netif, int timeout_ms) {
     vTaskDelay(pdMS_TO_TICKS(step_ms));
   }
   if (ok) {
-    time_synced = true;
+    MarkSntpSynced();
+  } else {
+    sntp_time_available = false;
   }
   if (prev && prev != netif) {
     esp_netif_set_default_netif(prev);
@@ -386,10 +560,30 @@ static void NetworkMonitorTask(void*) {
       } else if (other_ok && other) {
         esp_netif_set_default_netif(other);
       } else {
+        sntp_time_available = false;
         UpdateDefaultNetif();
       }
     } else {
       UpdateDefaultNetif();
+      bool wifi_up = false;
+      bool eth_up = false;
+      ReadNetworkUpFlags(&wifi_up, &eth_up);
+      esp_netif_t* netif = nullptr;
+      bool has_ip = false;
+      if (app_config.net_mode == NetMode::kWifiOnly) {
+        netif = wifi_netif_sta;
+        has_ip = wifi_up;
+      } else if (app_config.net_mode == NetMode::kEthOnly) {
+        netif = eth_netif;
+        has_ip = eth_up;
+      }
+      if (netif && has_ip) {
+        if (!TrySyncTimeOnNetif(netif, check_timeout_ms)) {
+          sntp_time_available = false;
+        }
+      } else {
+        sntp_time_available = false;
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(interval_ms));
   }
@@ -730,14 +924,14 @@ static std::string BuildGnssLogFilename(const GpsDateTime* frame_time) {
     std::snprintf(ts, sizeof(ts), "%04d%02d%02d_%02d%02d%02d",
                   dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
   } else {
-    time_t now = time(nullptr);
-    if (now < 946684800) {
+    const UtcTimeSnapshot best = GetBestUtcTimeForGps();
+    if (!best.valid) {
       char fallback[32] = {};
       std::snprintf(fallback, sizeof(fallback), "gps_log_%06u.rtcm3", static_cast<unsigned>(GetBootId()));
       return fallback;
     }
     struct tm tm_info {};
-    gmtime_r(&now, &tm_info);
+    gmtime_r(&best.unix_time, &tm_info);
     strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_info);
   }
 
@@ -1135,8 +1329,8 @@ static bool UploadFileToMinio(const std::string& path) {
   [[maybe_unused]] auto put_bucket_if_needed = [&]() {
     // Sign empty payload
     const std::string payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    time_t now = time(nullptr);
-    if (now <= 0) now = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
+    const UtcTimeSnapshot now_snapshot = GetBestUtcTimeForData();
+    time_t now = now_snapshot.unix_time;
     struct tm tm_utc {};
     gmtime_r(&now, &tm_utc);
     char date_buf[9];
@@ -1199,8 +1393,8 @@ static bool UploadFileToMinio(const std::string& path) {
   // Bucket creation is intentionally not attempted on every file upload. It costs
   // an extra TLS connection per file and can exhaust RAM when old files are queued.
 
-  time_t now = time(nullptr);
-  if (now <= 0) now = static_cast<time_t>(esp_timer_get_time() / 1'000'000ULL);
+  const UtcTimeSnapshot now_snapshot = GetBestUtcTimeForData();
+  time_t now = now_snapshot.unix_time;
   struct tm tm_utc {};
   gmtime_r(&now, &tm_utc);
   char date_buf[9];
@@ -2140,21 +2334,17 @@ void StartSntp() {
 bool WaitForTimeSyncMs(int timeout_ms) {
   const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
   while (esp_timer_get_time() < deadline_us) {
-    time_t now = 0;
-    time(&now);
-    if (now > 1'700'000'000) {  // ~2023-11-14
-      time_synced = true;
-      return true;
-    }
     if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+      time_t now = 0;
       time(&now);
-      if (now > 1'700'000'000) {
-        time_synced = true;
+      if (now > kValidUtcThreshold) {
+        MarkSntpSynced();
         return true;
       }
     }
     vTaskDelay(pdMS_TO_TICKS(200));
   }
+  MarkSntpUnavailableIfNoNetwork();
   return false;
 }
 

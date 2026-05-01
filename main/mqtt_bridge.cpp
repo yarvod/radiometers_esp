@@ -434,7 +434,14 @@ void BuildMqttState(char* out, size_t out_len) {
   JsonAppendEscaped(&b, app_config.mqtt_uri.c_str());
   JsonAppend(&b, ",\"mqttUser\":");
   JsonAppendEscaped(&b, app_config.mqtt_user.c_str());
-  JsonAppend(&b, ",\"mqttEnabled\":%s}", app_config.mqtt_enabled ? "true" : "false");
+  const UtcTimeSnapshot now = GetBestUtcTimeForData();
+  JsonAppend(&b, ",\"mqttEnabled\":%s,\"timestampIso\":", app_config.mqtt_enabled ? "true" : "false");
+  const std::string iso = FormatUtcIso(now);
+  JsonAppendEscaped(&b, iso.c_str());
+  JsonAppend(&b, ",\"timestampMs\":%llu,\"timeSource\":",
+             static_cast<unsigned long long>(UtcTimeToUnixMs(now)));
+  JsonAppendEscaped(&b, UtcTimeSourceName(now.source));
+  JsonAppend(&b, "}");
 }
 
 void PublishCurrentState() {

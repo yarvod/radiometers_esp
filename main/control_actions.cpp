@@ -79,8 +79,11 @@ std::string BuildStateJsonInternal() {
     cJSON_AddItemToObject(temp_obj, key.c_str(), entry);
   }
   cJSON_AddItemToObject(root, "tempSensors", temp_obj);
-  const std::string iso = IsoUtcNow();
+  const UtcTimeSnapshot now = GetBestUtcTimeForData();
+  const std::string iso = FormatUtcIso(now);
   cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
+  cJSON_AddNumberToObject(root, "timestampMs", static_cast<double>(UtcTimeToUnixMs(now)));
+  cJSON_AddStringToObject(root, "timeSource", UtcTimeSourceName(now.source));
   const char* json = cJSON_PrintUnformatted(root);
   std::string result = json ? json : "{}";
   cJSON_free((void*)json);

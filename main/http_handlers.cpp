@@ -84,10 +84,11 @@ static std::vector<uint16_t> ParseRtcmTypesText(const std::string& text) {
 }
 
 static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const SharedState& base,
-                                  const SharedState* cal) {
+                                  const SharedState* cal, UtcTimeSource time_source) {
   cJSON* root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
   cJSON_AddNumberToObject(root, "timestampMs", static_cast<double>(ts_ms));
+  cJSON_AddStringToObject(root, "timeSource", UtcTimeSourceName(time_source));
   cJSON_AddNumberToObject(root, "adc1", base.voltage1);
   cJSON_AddNumberToObject(root, "adc2", base.voltage2);
   cJSON_AddNumberToObject(root, "adc3", base.voltage3);
@@ -208,8 +209,10 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "pidOutput", snapshot.pid_output);
   cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddNumberToObject(root, "timestamp", snapshot.last_update_ms);
-  const std::string iso = IsoUtcNow();
+  const UtcTimeSnapshot now = GetBestUtcTimeForData();
+  const std::string iso = FormatUtcIso(now);
   cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
+  cJSON_AddStringToObject(root, "timeSource", UtcTimeSourceName(now.source));
   cJSON_AddBoolToObject(root, "stepperEnabled", snapshot.stepper_enabled);
   cJSON_AddBoolToObject(root, "stepperHoming", snapshot.homing);
   cJSON_AddBoolToObject(root, "stepperDirForward", snapshot.stepper_direction_forward);
@@ -904,8 +907,9 @@ void LoggingTask(void*) {
           vTaskDelay(pdMS_TO_TICKS(200));
           continue;
         }
-        uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
-        const std::string iso = IsoUtcNow();
+        const UtcTimeSnapshot row_time = GetBestUtcTimeForData();
+        const uint64_t ts_ms = UtcTimeToUnixMs(row_time);
+        const std::string iso = FormatUtcIso(row_time);
         fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms,
                 pending_base.voltage1, pending_base.voltage2, pending_base.voltage3);
         for (int i = 0; i < pending_base.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
@@ -916,7 +920,7 @@ void LoggingTask(void*) {
         fprintf(log_file, "\n");
         FlushLogFile();
         ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
-        PublishLogMeasurement(iso, ts_ms, pending_base, &avg);
+        PublishLogMeasurement(iso, ts_ms, pending_base, &avg, row_time.source);
         UpdateState([&](SharedState& s) {
           s.voltage1_cal = avg.voltage1;
           s.voltage2_cal = avg.voltage2;
@@ -951,8 +955,9 @@ void LoggingTask(void*) {
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
-    uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
-    const std::string iso = IsoUtcNow();
+    const UtcTimeSnapshot row_time = GetBestUtcTimeForData();
+    const uint64_t ts_ms = UtcTimeToUnixMs(row_time);
+    const std::string iso = FormatUtcIso(row_time);
     fprintf(log_file, "%s,%llu,%.6f,%.6f,%.6f", iso.c_str(), (unsigned long long)ts_ms,
             avg1.voltage1, avg1.voltage2, avg1.voltage3);
     for (int i = 0; i < avg1.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
@@ -965,7 +970,7 @@ void LoggingTask(void*) {
     fprintf(log_file, "\n");
     FlushLogFile();
     ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
-    PublishLogMeasurement(iso, ts_ms, avg1, nullptr);
+    PublishLogMeasurement(iso, ts_ms, avg1, nullptr, row_time.source);
     UpdateState([&](SharedState& s) {
       s.voltage1_cal = avg1.voltage1;
       s.voltage2_cal = avg1.voltage2;

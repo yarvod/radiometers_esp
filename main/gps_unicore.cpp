@@ -10,6 +10,7 @@
 #include "driver/uart.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hw_pins.h"
@@ -727,12 +728,19 @@ void GpsUnicoreClient::uartReadTask() {
 }
 
 bool GpsUnicoreClient::getLastDateTime(GpsDateTime& out) {
+  return getLastDateTime(out, nullptr);
+}
+
+bool GpsUnicoreClient::getLastDateTime(GpsDateTime& out, int64_t* received_us) {
   if (!data_mutex_ || xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) != pdTRUE) {
     return false;
   }
   const bool ok = has_datetime_;
   if (ok) {
     out = last_datetime_;
+    if (received_us) {
+      *received_us = last_datetime_received_us_;
+    }
   }
   xSemaphoreGive(data_mutex_);
   return ok;
@@ -844,6 +852,7 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
     bool active = false;
     if (data_mutex_ && xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
       last_datetime_ = parsed;
+      last_datetime_received_us_ = esp_timer_get_time();
       has_datetime_ = true;
       if (current_frame_active_) {
         current_frame_.timestamp = parsed;

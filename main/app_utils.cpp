@@ -178,16 +178,18 @@ std::string SanitizePostfix(const std::string& raw) {
   return out;
 }
 
-std::string IsoUtcNow() {
-  time_t now = time(nullptr);
-  if (now <= 0) {
-    now = static_cast<time_t>(0);
-  }
+std::string FormatUtcIso(const UtcTimeSnapshot& snapshot) {
+  time_t now = snapshot.unix_time;
+  if (now <= 0) now = static_cast<time_t>(0);
   struct tm tm_utc {};
   gmtime_r(&now, &tm_utc);
   char buf[32];
   strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
   return std::string(buf);
+}
+
+std::string IsoUtcNow() {
+  return FormatUtcIso(GetBestUtcTimeForData());
 }
 
 uint16_t ClampSensorMask(uint16_t mask, int count) {

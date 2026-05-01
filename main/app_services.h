@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <ctime>
 #include <string>
 #include <vector>
 #include <cctype>
@@ -11,6 +13,26 @@ bool SanitizeFilename(const std::string& name, std::string* out_full);
 bool SanitizePath(const std::string& rel_path, std::string* out_full);
 std::string SanitizePostfix(const std::string& raw);
 std::string IsoUtcNow();
+enum class UtcTimeSource : uint8_t {
+  kNone = 0,
+  kSntp = 1,
+  kGps = 2,
+  kSystemCached = 3,
+  kMonotonic = 4,
+};
+
+struct UtcTimeSnapshot {
+  time_t unix_time = 0;
+  uint16_t millisecond = 0;
+  UtcTimeSource source = UtcTimeSource::kNone;
+  bool valid = false;
+};
+
+UtcTimeSnapshot GetBestUtcTimeForData();
+UtcTimeSnapshot GetBestUtcTimeForGps();
+const char* UtcTimeSourceName(UtcTimeSource source);
+uint64_t UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot);
+std::string FormatUtcIso(const UtcTimeSnapshot& snapshot);
 bool FlushLogFile();
 inline std::string SanitizeId(const std::string& raw) {
   std::string out;

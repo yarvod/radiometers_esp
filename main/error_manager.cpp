@@ -79,8 +79,9 @@ void PublishEvent(ErrorCode code, ErrorSeverity severity, const std::string& mes
   if (!publish_fn) {
     return;
   }
-  const std::string iso = IsoUtcNow();
-  const uint64_t ts_ms = esp_timer_get_time() / 1000ULL;
+  const UtcTimeSnapshot ts = GetBestUtcTimeForData();
+  const std::string iso = FormatUtcIso(ts);
+  const uint64_t ts_ms = UtcTimeToUnixMs(ts);
 
   cJSON* root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "code", ErrorCodeToString(code));
@@ -89,6 +90,7 @@ void PublishEvent(ErrorCode code, ErrorSeverity severity, const std::string& mes
   cJSON_AddBoolToObject(root, "active", active);
   cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
   cJSON_AddNumberToObject(root, "timestampMs", static_cast<double>(ts_ms));
+  cJSON_AddStringToObject(root, "timeSource", UtcTimeSourceName(ts.source));
   const char* json = cJSON_PrintUnformatted(root);
   if (json) {
     publish_fn(json);

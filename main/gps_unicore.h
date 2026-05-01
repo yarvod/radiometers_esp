@@ -67,6 +67,7 @@ class GpsUnicoreClient {
   void uartReadTask();
 
   bool getLastDateTime(GpsDateTime& out);
+  bool getLastDateTime(GpsDateTime& out, int64_t* received_us);
   bool getLastRtcm(uint16_t type, RtcmFrame& out);
   bool getCurrentMode(std::string& out);
 
@@ -89,6 +90,7 @@ class GpsUnicoreClient {
   CurrentFrame current_frame_{};
 
   GpsDateTime last_datetime_{};
+  int64_t last_datetime_received_us_ = 0;
   bool has_datetime_ = false;
 
   RtcmFrame last_1004_{};
