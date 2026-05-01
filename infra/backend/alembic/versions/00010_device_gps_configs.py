@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "00010_device_gps_configs"
-down_revision = "00009_sounding_exports"
+revision = "00010"
+down_revision = "00009"
 branch_labels = None
 depends_on = None
 
