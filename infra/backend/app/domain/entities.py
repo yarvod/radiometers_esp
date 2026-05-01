@@ -17,6 +17,17 @@ class Device:
 
 
 @dataclass
+class DeviceGpsConfig:
+    device_id: str
+    has_gps: bool
+    rtcm_types: list[int]
+    mode: str
+    actual_mode: Optional[str]
+    updated_at: Optional[datetime]
+    created_at: datetime
+
+
+@dataclass
 class Measurement:
     id: str
     device_id: str

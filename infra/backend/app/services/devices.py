@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Sequence
 
-from app.domain.entities import Device
+from app.domain.entities import Device, DeviceGpsConfig
 from app.repositories.interfaces import DeviceRepository
 
 
@@ -38,3 +38,22 @@ class DeviceService:
 
     async def get_device(self, device_id: str) -> Device | None:
         return await self._devices.get(device_id=device_id)
+
+    async def get_gps_config(self, device_id: str) -> DeviceGpsConfig | None:
+        return await self._devices.get_gps_config(device_id=device_id)
+
+    async def upsert_gps_config(
+        self,
+        device_id: str,
+        has_gps: bool | None = True,
+        rtcm_types: list[int] | None = None,
+        mode: str | None = None,
+        actual_mode: str | None = None,
+    ) -> DeviceGpsConfig:
+        return await self._devices.upsert_gps_config(
+            device_id=device_id,
+            has_gps=has_gps,
+            rtcm_types=rtcm_types,
+            mode=mode,
+            actual_mode=actual_mode,
+        )

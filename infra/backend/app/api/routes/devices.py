@@ -7,6 +7,8 @@ from app.api.deps import get_current_user
 from app.api.schemas import (
     DeviceConfigOut,
     DeviceCreateRequest,
+    DeviceGpsConfigOut,
+    DeviceGpsConfigUpdateRequest,
     DeviceOut,
     DeviceUpdateRequest,
     ErrorEventOut,
@@ -17,6 +19,20 @@ from app.services.devices import DeviceService
 from app.services.errors import ErrorService
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+
+
+def sanitize_rtcm_types(values: list[int] | None) -> list[int] | None:
+    if values is None:
+        return None
+    out: list[int] = []
+    for value in values:
+        try:
+            type_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 < type_id <= 4095 and type_id not in out:
+            out.append(type_id)
+    return out
 
 
 @router.get("", response_model=list[DeviceOut])
@@ -69,6 +85,49 @@ async def get_device(
     if not device:
         device = await devices.create_device(device_id)
     return DeviceConfigOut.model_validate(device, from_attributes=True)
+
+
+@router.get("/{device_id}/gps", response_model=DeviceGpsConfigOut)
+@inject
+async def get_device_gps(
+    device_id: str,
+    devices: FromDishka[DeviceService],
+    current_user: User = Depends(get_current_user),
+):
+    config = await devices.get_gps_config(device_id)
+    if not config:
+        config = await devices.upsert_gps_config(
+            device_id=device_id,
+            has_gps=False,
+            rtcm_types=[1004, 1006, 1033],
+            mode="base_time_60",
+            actual_mode=None,
+        )
+    return DeviceGpsConfigOut.model_validate(config, from_attributes=True)
+
+
+@router.patch("/{device_id}/gps", response_model=DeviceGpsConfigOut)
+@inject
+async def update_device_gps(
+    device_id: str,
+    payload: DeviceGpsConfigUpdateRequest,
+    devices: FromDishka[DeviceService],
+    current_user: User = Depends(get_current_user),
+):
+    rtcm_types = sanitize_rtcm_types(payload.rtcm_types)
+    if payload.rtcm_types is not None and not rtcm_types:
+        rtcm_types = [1004, 1006, 1033]
+    mode = payload.mode
+    if mode is not None and mode not in {"keep", "base_time_60", "base", "rover_uav", "rover"}:
+        mode = "base_time_60"
+    config = await devices.upsert_gps_config(
+        device_id=device_id,
+        has_gps=payload.has_gps,
+        rtcm_types=rtcm_types,
+        mode=mode,
+        actual_mode=payload.actual_mode,
+    )
+    return DeviceGpsConfigOut.model_validate(config, from_attributes=True)
 
 
 @router.get("/{device_id}/errors", response_model=ErrorEventsResponse)

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.entities import (
     AccessToken,
     Device,
+    DeviceGpsConfig,
     ErrorEvent,
     Measurement,
     MeasurementPoint,
@@ -23,6 +24,7 @@ from app.domain.entities import (
 from app.db.models import (
     AccessTokenModel,
     DeviceModel,
+    DeviceGpsConfigModel,
     ErrorEventModel,
     MeasurementModel,
     SoundingExportJobModel,
@@ -57,6 +59,18 @@ def to_device(model: DeviceModel) -> Device:
         temp_labels=list(model.temp_labels or []),
         temp_addresses=list(model.temp_addresses or []),
         adc_labels=dict(model.adc_labels or {}),
+    )
+
+
+def to_device_gps_config(model: DeviceGpsConfigModel) -> DeviceGpsConfig:
+    return DeviceGpsConfig(
+        device_id=model.device_id,
+        has_gps=bool(model.has_gps),
+        rtcm_types=[int(v) for v in (model.rtcm_types or [])],
+        mode=model.mode or "base_time_60",
+        actual_mode=model.actual_mode,
+        updated_at=model.updated_at,
+        created_at=model.created_at,
     )
 
 
@@ -274,6 +288,46 @@ class SqlDeviceRepository(DeviceRepository):
                 model.adc_labels = adc_labels
         await self._session.flush()
         return to_device(model)
+
+    async def get_gps_config(self, device_id: str) -> DeviceGpsConfig | None:
+        result = await self._session.execute(select(DeviceGpsConfigModel).where(DeviceGpsConfigModel.device_id == device_id))
+        model = result.scalar_one_or_none()
+        return to_device_gps_config(model) if model else None
+
+    async def upsert_gps_config(
+        self,
+        device_id: str,
+        has_gps: bool | None,
+        rtcm_types: list[int] | None,
+        mode: str | None,
+        actual_mode: str | None,
+    ) -> DeviceGpsConfig:
+        device_result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
+        device = device_result.scalar_one_or_none()
+        if not device:
+            self._session.add(DeviceModel(id=device_id, temp_labels=[], temp_addresses=[], adc_labels={}))
+        result = await self._session.execute(select(DeviceGpsConfigModel).where(DeviceGpsConfigModel.device_id == device_id))
+        model = result.scalar_one_or_none()
+        if not model:
+            model = DeviceGpsConfigModel(
+                device_id=device_id,
+                has_gps=bool(has_gps) if has_gps is not None else True,
+                rtcm_types=rtcm_types or [1004, 1006, 1033],
+                mode=mode or "base_time_60",
+                actual_mode=actual_mode,
+            )
+            self._session.add(model)
+        else:
+            if has_gps is not None:
+                model.has_gps = has_gps
+            if rtcm_types is not None:
+                model.rtcm_types = rtcm_types
+            if mode is not None:
+                model.mode = mode
+            if actual_mode is not None:
+                model.actual_mode = actual_mode
+        await self._session.flush()
+        return to_device_gps_config(model)
 
 
 class SqlMeasurementRepository(MeasurementRepository):

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "control_actions.h"
 #include "app_services.h"
@@ -50,6 +51,44 @@ bool IsAllDigits(const std::string& value) {
     return false;
   }
   return std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c); });
+}
+
+std::vector<uint16_t> ParseRtcmTypes(cJSON* item) {
+  std::vector<uint16_t> out;
+  auto add_type = [&](int type) {
+    if (type <= 0 || type > 4095) return;
+    const auto value = static_cast<uint16_t>(type);
+    if (std::find(out.begin(), out.end(), value) == out.end()) {
+      out.push_back(value);
+    }
+  };
+  if (item && cJSON_IsArray(item)) {
+    const int len = cJSON_GetArraySize(item);
+    for (int i = 0; i < len; ++i) {
+      cJSON* entry = cJSON_GetArrayItem(item, i);
+      if (entry && cJSON_IsNumber(entry)) {
+        add_type(entry->valueint);
+      } else if (entry && cJSON_IsString(entry) && entry->valuestring) {
+        add_type(std::atoi(entry->valuestring));
+      }
+    }
+  } else if (item && cJSON_IsString(item) && item->valuestring) {
+    const std::string raw = item->valuestring;
+    size_t start = 0;
+    while (start < raw.size()) {
+      while (start < raw.size() && (raw[start] == ',' || raw[start] == ';' || std::isspace(static_cast<unsigned char>(raw[start])))) {
+        start++;
+      }
+      if (start >= raw.size()) break;
+      size_t end = start;
+      while (end < raw.size() && raw[end] != ',' && raw[end] != ';' && !std::isspace(static_cast<unsigned char>(raw[end]))) {
+        end++;
+      }
+      add_type(std::atoi(raw.substr(start, end - start).c_str()));
+      start = end;
+    }
+  }
+  return out;
 }
 
 bool ParseMqttUri(const std::string& raw_uri, ParsedMqttUri* out) {
@@ -376,6 +415,15 @@ void BuildMqttState(char* out, size_t out_len) {
   JsonAppendEscaped(&b, NetModeName(app_config.net_mode));
   JsonAppend(&b, ",\"netPriority\":");
   JsonAppendEscaped(&b, NetPriorityName(app_config.net_priority));
+  JsonAppend(&b, ",\"gpsRtcmTypes\":[");
+  for (size_t i = 0; i < app_config.gps_rtcm_types.size(); ++i) {
+    JsonAppend(&b, "%s%u", i == 0 ? "" : ",", static_cast<unsigned>(app_config.gps_rtcm_types[i]));
+  }
+  JsonAppend(&b, "],\"gpsMode\":");
+  JsonAppendEscaped(&b, app_config.gps_mode.c_str());
+  JsonAppend(&b, ",\"gpsActualMode\":");
+  const std::string gps_actual_mode = GetGpsCurrentMode();
+  JsonAppendEscaped(&b, gps_actual_mode.c_str());
   JsonAppend(&b, ",\"deviceId\":");
   JsonAppendEscaped(&b, app_config.device_id.c_str());
   JsonAppend(&b, ",\"minioEndpoint\":");
@@ -539,6 +587,14 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     req.mqtt_password = get_str("mqttPassword");
     req.mqtt_enabled = get_bool("mqttEnabled", app_config.mqtt_enabled);
     res = ActionCloudApply(req);
+  } else if (type == "gps_apply") {
+    GpsApplyRequest req;
+    cJSON* types_item = cJSON_GetObjectItem(root, "rtcmTypes");
+    req.rtcm_types = ParseRtcmTypes(types_item);
+    req.mode = get_str("mode");
+    res = ActionGpsApply(req);
+  } else if (type == "gps_probe") {
+    res = ActionGpsProbe();
   } else if (type == "usb_mode_get") {
     res = ActionUsbModeGet();
   } else if (type == "usb_mode_set") {

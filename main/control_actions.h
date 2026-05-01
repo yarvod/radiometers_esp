@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "app_state.h"
 
@@ -57,6 +58,11 @@ struct CloudApplyRequest {
   bool mqtt_enabled = false;
 };
 
+struct GpsApplyRequest {
+  std::vector<uint16_t> rtcm_types;
+  std::string mode;
+};
+
 struct ActionResult {
   bool ok = false;
   std::string message;
@@ -81,6 +87,8 @@ ActionResult ActionPidDisable();
 ActionResult ActionWifiApply(const WifiApplyRequest& req);
 ActionResult ActionNetApply(const NetApplyRequest& req);
 ActionResult ActionCloudApply(const CloudApplyRequest& req);
+ActionResult ActionGpsApply(const GpsApplyRequest& req);
+ActionResult ActionGpsProbe();
 ActionResult ActionUsbModeSet(UsbMode requested);
 ActionResult ActionUsbModeGet();
 ActionResult ActionCalibrate();

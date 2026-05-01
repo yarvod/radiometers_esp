@@ -69,6 +69,23 @@ class DeviceConfigOut(BaseModel):
     adc_labels: dict[str, str] = Field(default_factory=dict)
 
 
+class DeviceGpsConfigOut(BaseModel):
+    device_id: str
+    has_gps: bool = False
+    rtcm_types: list[int] = Field(default_factory=lambda: [1004, 1006, 1033])
+    mode: str = "base_time_60"
+    actual_mode: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class DeviceGpsConfigUpdateRequest(BaseModel):
+    has_gps: Optional[bool] = None
+    rtcm_types: Optional[list[int]] = None
+    mode: Optional[str] = None
+    actual_mode: Optional[str] = None
+
+
 class StationOut(BaseModel):
     id: str
     station_id: str

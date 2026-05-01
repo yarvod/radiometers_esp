@@ -76,6 +76,29 @@ def parse_temp_sensors(data: dict) -> tuple[list[float], list[str]]:
     return temps, temp_addresses
 
 
+def parse_rtcm_types(value) -> list[int] | None:
+    if value is None:
+        return None
+    raw_values = value if isinstance(value, list) else str(value).replace(";", ",").split(",")
+    out: list[int] = []
+    for raw in raw_values:
+        try:
+            type_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0 < type_id <= 4095 and type_id not in out:
+            out.append(type_id)
+    return out or None
+
+
+def extract_gps_config(data: dict) -> tuple[bool, list[int] | None, str | None, str | None]:
+    has_keys = any(key in data for key in ("gpsRtcmTypes", "gpsMode", "gpsActualMode"))
+    rtcm_types = parse_rtcm_types(data.get("gpsRtcmTypes"))
+    mode = data.get("gpsMode") if isinstance(data.get("gpsMode"), str) else None
+    actual_mode = data.get("gpsActualMode") if isinstance(data.get("gpsActualMode"), str) else None
+    return has_keys, rtcm_types, mode, actual_mode
+
+
 async def handle_measurement(topic: str, payload: bytes, container) -> None:
     device_id = device_from_topic(topic)
     if not device_id:
@@ -124,11 +147,23 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
                 temp_addresses=temp_addresses,
                 adc_labels=None,
             )
+        has_gps, rtcm_types, gps_mode, gps_actual_mode = extract_gps_config(data)
+        if has_gps:
+            await devices.upsert_gps_config(
+                device_id=device_id,
+                has_gps=True,
+                rtcm_types=rtcm_types,
+                mode=gps_mode,
+                actual_mode=gps_actual_mode,
+            )
         await devices.touch_device(device_id, timestamp)
         await measurements.add(measurement)
 
 
-async def handle_state(topic: str, payload: bytes, container) -> None:
+async def handle_state(topic: str, payload: bytes | object, container=None) -> None:
+    if container is None:
+        container = payload
+        payload = b"{}"
     device_id = device_from_topic(topic)
     if not device_id:
         return
@@ -137,6 +172,7 @@ async def handle_state(topic: str, payload: bytes, container) -> None:
         data = json.loads(payload.decode("utf-8"))
         _, temp_addresses = parse_temp_sensors(data)
     except json.JSONDecodeError:
+        data = {}
         temp_addresses = []
     async with container() as request_container:
         devices = await request_container.get(DeviceService)
@@ -147,6 +183,15 @@ async def handle_state(topic: str, payload: bytes, container) -> None:
                 temp_labels=None,
                 temp_addresses=temp_addresses,
                 adc_labels=None,
+            )
+        has_gps, rtcm_types, gps_mode, gps_actual_mode = extract_gps_config(data)
+        if has_gps:
+            await devices.upsert_gps_config(
+                device_id=device_id,
+                has_gps=True,
+                rtcm_types=rtcm_types,
+                mode=gps_mode,
+                actual_mode=gps_actual_mode,
             )
         await devices.touch_device(device_id, datetime.now(timezone.utc))
 

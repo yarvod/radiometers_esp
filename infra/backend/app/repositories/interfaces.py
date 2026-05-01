@@ -7,6 +7,7 @@ from typing import Iterable, Sequence
 from app.domain.entities import (
     AccessToken,
     Device,
+    DeviceGpsConfig,
     ErrorEvent,
     Measurement,
     MeasurementPoint,
@@ -46,6 +47,21 @@ class DeviceRepository(ABC):
         temp_addresses: list[str] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_gps_config(self, device_id: str) -> DeviceGpsConfig | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert_gps_config(
+        self,
+        device_id: str,
+        has_gps: bool | None,
+        rtcm_types: list[int] | None,
+        mode: str | None,
+        actual_mode: str | None,
+    ) -> DeviceGpsConfig:
         raise NotImplementedError
 
 

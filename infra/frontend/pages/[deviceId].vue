@@ -13,10 +13,11 @@
     </div>
 
     <div class="tabs">
-      <button class="tab-btn" :class="{ active: activeTab === 'data' }" @click="activeTab = 'data'">Данные</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="activeTab = 'control'">Мониторинг и управление</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">Настройки</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'errors' }" @click="activeTab = 'errors'">Ошибки</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'data' }" @click="setActiveTab('data')">Данные</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="setActiveTab('control')">Мониторинг и управление</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'gps' }" @click="setActiveTab('gps')">GPS</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="setActiveTab('settings')">Настройки</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'errors' }" @click="setActiveTab('errors')">Ошибки</button>
     </div>
 
     <div class="card metrics" v-show="activeTab === 'control'">
@@ -421,6 +422,19 @@
       </div>
     </div>
 
+    <DeviceGpsPanel
+      v-show="activeTab === 'gps'"
+      :has-gps="hasGps"
+      :actual-mode="gpsActualMode"
+      :form="gpsForm"
+      :saving="gpsSaving"
+      :status="gpsStatus"
+      @save="saveGpsConfig"
+      @probe="probeGpsMode"
+      @update:mode="updateGpsMode"
+      @update:rtcm-text="updateGpsRtcmText"
+    />
+
     <div class="card" v-show="activeTab === 'errors'">
       <div class="card-head">
         <h3>Ошибки устройства</h3>
@@ -542,11 +556,23 @@ type DeviceConfig = {
   adc_labels: Record<string, string>
 }
 
+type DeviceGpsConfig = {
+  device_id: string
+  has_gps: boolean
+  rtcm_types: number[]
+  mode: string
+  actual_mode: string | null
+  updated_at: string | null
+  created_at: string | null
+}
+
 type TempConfigRow = {
   index: number | null
   address: string | null
   label: string
 }
+
+type DeviceTab = 'data' | 'control' | 'gps' | 'settings' | 'errors'
 
 const { apiFetch } = useApi()
 const route = useRoute()
@@ -557,7 +583,12 @@ store.init(nuxtApp.$mqtt)
 
 const device = computed(() => (deviceId.value ? store.devices.get(deviceId.value) : undefined))
 const deviceConfig = ref<DeviceConfig | null>(null)
-const activeTab = ref<'data' | 'control' | 'settings' | 'errors'>('control')
+const validTabs = new Set<DeviceTab>(['data', 'control', 'gps', 'settings', 'errors'])
+const tabFromQuery = (): DeviceTab => {
+  const raw = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
+  return raw && validTabs.has(raw as DeviceTab) ? (raw as DeviceTab) : 'control'
+}
+const activeTab = ref<DeviceTab>(tabFromQuery())
 const configDirty = ref(false)
 const configStatus = ref('')
 const configSaving = ref(false)
@@ -572,6 +603,14 @@ const configForm = reactive({
     adc2_cal: '',
     adc3_cal: '',
   },
+})
+const gpsConfig = ref<DeviceGpsConfig | null>(null)
+const gpsDirty = ref(false)
+const gpsSaving = ref(false)
+const gpsStatus = ref('')
+const gpsForm = reactive({
+  mode: 'base_time_60',
+  rtcmText: '1004,1006,1033',
 })
 const tempEntries = computed(() => {
   const sensors = device.value?.state?.tempSensors
@@ -618,6 +657,16 @@ useHead(() => ({
   title: deviceTitle.value ? `Устройство ${deviceTitle.value}` : 'Устройство',
 }))
 const adcLabelMap = computed(() => deviceConfig.value?.adc_labels || {})
+const gpsLiveTypes = computed(() => {
+  const raw = device.value?.state?.gpsRtcmTypes
+  if (!Array.isArray(raw)) return []
+  return raw.map((value: any) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
+})
+const gpsActualMode = computed(() => String(device.value?.state?.gpsActualMode || gpsConfig.value?.actual_mode || ''))
+const hasGps = computed(() => {
+  const state = device.value?.state || {}
+  return !!gpsConfig.value?.has_gps || gpsLiveTypes.value.length > 0 || !!state.gpsMode || !!state.gpsActualMode
+})
 const adcLabelDefaults: Record<string, string> = {
   adc1: 'ADC1',
   adc2: 'ADC2',
@@ -1067,6 +1116,98 @@ const renderCharts = () => {
   }
 }
 
+const setActiveTab = (tab: DeviceTab) => {
+  activeTab.value = tab
+}
+
+const updateGpsMode = (value: string) => {
+  gpsForm.mode = value
+  gpsDirty.value = true
+}
+
+const updateGpsRtcmText = (value: string) => {
+  gpsForm.rtcmText = value
+  gpsDirty.value = true
+}
+
+const seedGpsForm = () => {
+  const liveTypes = gpsLiveTypes.value
+  const types = liveTypes.length ? liveTypes : gpsConfig.value?.rtcm_types?.length ? gpsConfig.value.rtcm_types : [1004, 1006, 1033]
+  gpsForm.rtcmText = types.join(',')
+  gpsForm.mode = String(device.value?.state?.gpsMode || gpsConfig.value?.mode || 'base_time_60')
+  gpsDirty.value = false
+}
+
+const parseGpsRtcmTypes = (text: string) => {
+  const unique = new Set<number>()
+  text
+    .split(/[,\s;]+/)
+    .map((part) => Number(part.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0 && value <= 4095)
+    .forEach((value) => unique.add(value))
+  return Array.from(unique).sort((a, b) => a - b)
+}
+
+const loadDeviceGpsConfig = async () => {
+  if (!deviceId.value) return
+  try {
+    const res = await apiFetch<DeviceGpsConfig>(`/api/devices/${deviceId.value}/gps`)
+    gpsConfig.value = res
+    gpsStatus.value = ''
+    if (!gpsDirty.value) {
+      seedGpsForm()
+    }
+  } catch (e: any) {
+    gpsStatus.value = e?.message || 'Не удалось загрузить GPS config'
+  }
+}
+
+const saveGpsConfig = async () => {
+  if (!deviceId.value) return
+  const rtcmTypes = parseGpsRtcmTypes(gpsForm.rtcmText)
+  if (rtcmTypes.length === 0) {
+    gpsStatus.value = 'Укажи хотя бы один RTCM код'
+    return
+  }
+  gpsSaving.value = true
+  gpsStatus.value = 'Сохраняю GPS config...'
+  try {
+    const saved = await apiFetch<DeviceGpsConfig>(`/api/devices/${deviceId.value}/gps`, {
+      method: 'PATCH',
+      body: {
+        has_gps: true,
+        rtcm_types: rtcmTypes,
+        mode: gpsForm.mode,
+      },
+    })
+    gpsConfig.value = saved
+    await store.gpsApply(nuxtApp.$mqtt, deviceId.value, {
+      mode: gpsForm.mode,
+      rtcmTypes,
+    })
+    gpsDirty.value = false
+    gpsStatus.value = 'GPS config сохранен, команда отправлена'
+  } catch (e: any) {
+    gpsStatus.value = e?.message || 'Не удалось применить GPS config'
+  } finally {
+    gpsSaving.value = false
+  }
+}
+
+const probeGpsMode = async () => {
+  if (!deviceId.value) return
+  gpsSaving.value = true
+  gpsStatus.value = 'Запрашиваю MODE...'
+  try {
+    await store.gpsProbe(nuxtApp.$mqtt, deviceId.value)
+    gpsStatus.value = 'Команда MODE отправлена'
+  } catch (e: any) {
+    gpsStatus.value = e?.message || 'Не удалось запросить MODE'
+  } finally {
+    gpsSaving.value = false
+  }
+}
+
 watch(
   () => device.value?.state,
   (state) => {
@@ -1089,6 +1230,9 @@ watch(
     }
     if (!heaterEditing.value && Number.isFinite(state.heaterPower)) {
       heaterPower.value = Number(state.heaterPower)
+    }
+    if (!gpsDirty.value) {
+      seedGpsForm()
     }
   },
   { immediate: true }
@@ -1579,6 +1723,7 @@ const saveConfig = async () => {
 onMounted(() => {
   refreshState()
   loadDeviceConfig()
+  loadDeviceGpsConfig()
   loadLatestWindow().then(loadHistory)
   if (process.client) {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local'
@@ -1612,8 +1757,22 @@ onBeforeUnmount(() => {
 watch(
   () => activeTab.value,
   (value) => {
+    const current = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
+    if (current !== value) {
+      navigateTo({ path: route.path, query: { ...route.query, tab: value } }, { replace: true })
+    }
     if (value === 'errors') {
       loadErrors()
+    }
+  }
+)
+
+watch(
+  () => route.query.tab,
+  () => {
+    const next = tabFromQuery()
+    if (next !== activeTab.value) {
+      activeTab.value = next
     }
   }
 )
@@ -1642,6 +1801,11 @@ watch(
   () => {
     errorEvents.value = []
     errorStatus.value = ''
+    gpsConfig.value = null
+    gpsStatus.value = ''
+    gpsDirty.value = false
+    loadDeviceConfig()
+    loadDeviceGpsConfig()
     if (activeTab.value === 'errors') {
       loadErrors()
     }

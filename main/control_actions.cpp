@@ -60,6 +60,14 @@ std::string BuildStateJsonInternal() {
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
   cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
+  cJSON* gps_types = cJSON_CreateArray();
+  for (uint16_t type : app_config.gps_rtcm_types) {
+    cJSON_AddItemToArray(gps_types, cJSON_CreateNumber(type));
+  }
+  cJSON_AddItemToObject(root, "gpsRtcmTypes", gps_types);
+  cJSON_AddStringToObject(root, "gpsMode", app_config.gps_mode.c_str());
+  const std::string gps_actual_mode = GetGpsCurrentMode();
+  cJSON_AddStringToObject(root, "gpsActualMode", gps_actual_mode.c_str());
   cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     const std::string key = "t" + std::to_string(i + 1);
@@ -308,6 +316,36 @@ ActionResult ActionCloudApply(const CloudApplyRequest& req) {
   app_config.mqtt_enabled = req.mqtt_enabled;
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
   return {true, "cloud_applied", {}};
+}
+
+ActionResult ActionGpsApply(const GpsApplyRequest& req) {
+  if (req.rtcm_types.empty()) {
+    return {false, "empty rtcm types", {}};
+  }
+  std::vector<uint16_t> types;
+  types.reserve(req.rtcm_types.size());
+  for (uint16_t type : req.rtcm_types) {
+    if (type == 0 || type > 4095) {
+      return {false, "invalid rtcm type", {}};
+    }
+    if (std::find(types.begin(), types.end(), type) == types.end()) {
+      types.push_back(type);
+    }
+  }
+  const std::string mode = req.mode.empty() ? "base_time_60" : req.mode;
+  if (!(mode == "keep" || mode == "base_time_60" || mode == "base" || mode == "rover_uav" || mode == "rover")) {
+    return {false, "invalid gps mode", {}};
+  }
+  app_config.gps_rtcm_types = types;
+  app_config.gps_mode = mode;
+  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  RequestGpsReconfigure();
+  return {true, "gps_applied", {}};
+}
+
+ActionResult ActionGpsProbe() {
+  ProbeGpsMode();
+  return {true, "gps_probe_sent", {}};
 }
 
 ActionResult ActionUsbModeSet(UsbMode requested) {

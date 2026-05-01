@@ -26,6 +26,23 @@ class DeviceModel(Base):
     adc_labels: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")
+    gps_config: Mapped[DeviceGpsConfigModel | None] = relationship(
+        "DeviceGpsConfigModel", back_populates="device", uselist=False
+    )
+
+
+class DeviceGpsConfigModel(Base):
+    __tablename__ = "device_gps_configs"
+
+    device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id"), primary_key=True)
+    has_gps: Mapped[bool] = mapped_column(Boolean, default=False)
+    rtcm_types: Mapped[list[int]] = mapped_column(JSONB, default=lambda: [1004, 1006, 1033])
+    mode: Mapped[str] = mapped_column(String(32), default="base_time_60")
+    actual_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="gps_config")
 
 
 class StationModel(Base):
