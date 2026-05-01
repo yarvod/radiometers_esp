@@ -56,7 +56,7 @@ class GpsUnicoreClient {
 
   void sendCommand(const std::string& cmd);
   void probeReceiver();
-  void configurePeriodicOutput(bool auto_base_config = true);
+  void configurePeriodicOutput(const std::vector<uint16_t>& rtcm_types, const std::string& mode);
   void startFrame(uint32_t frame_index);
   void pollFrame();
   void stopFrameOutput();
@@ -68,6 +68,7 @@ class GpsUnicoreClient {
 
   bool getLastDateTime(GpsDateTime& out);
   bool getLastRtcm(uint16_t type, RtcmFrame& out);
+  bool getCurrentMode(std::string& out);
 
  private:
   static void ReadTaskThunk(void* arg);
@@ -77,6 +78,7 @@ class GpsUnicoreClient {
   void handleRtcmFrame(const RtcmFrame& frame);
   void storeRtcmLocked(const RtcmFrame& frame);
   bool copyRtcmLocked(uint16_t type, RtcmFrame& out) const;
+  bool isRtcmTypeEnabledLocked(uint16_t type) const;
 
   SemaphoreHandle_t data_mutex_ = nullptr;
   TaskHandle_t read_task_ = nullptr;
@@ -95,4 +97,8 @@ class GpsUnicoreClient {
   bool has_1004_ = false;
   bool has_1006_ = false;
   bool has_1033_ = false;
+
+  std::vector<uint16_t> enabled_rtcm_types_{1004, 1006, 1033};
+  std::string current_mode_;
+  bool has_current_mode_ = false;
 };

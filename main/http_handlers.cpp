@@ -61,6 +61,28 @@ static bool UrlDecode(const char* src, std::string* out) {
   return true;
 }
 
+static std::vector<uint16_t> ParseRtcmTypesText(const std::string& text) {
+  std::vector<uint16_t> out;
+  size_t start = 0;
+  while (start < text.size()) {
+    while (start < text.size() && (text[start] == ',' || text[start] == ';' || std::isspace(static_cast<unsigned char>(text[start])))) {
+      start++;
+    }
+    if (start >= text.size()) break;
+    size_t end = start;
+    while (end < text.size() && text[end] != ',' && text[end] != ';' && !std::isspace(static_cast<unsigned char>(text[end]))) {
+      end++;
+    }
+    const int type = std::atoi(text.substr(start, end - start).c_str());
+    if (type > 0 && type <= 4095 &&
+        std::find(out.begin(), out.end(), static_cast<uint16_t>(type)) == out.end()) {
+      out.push_back(static_cast<uint16_t>(type));
+    }
+    start = end;
+  }
+  return out;
+}
+
 static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const SharedState& base,
                                   const SharedState* cal) {
   cJSON* root = cJSON_CreateObject();
@@ -158,6 +180,14 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "wifiPassword", app_config.wifi_password.c_str());
   cJSON_AddStringToObject(root, "netMode", NetModeToString(app_config.net_mode).c_str());
   cJSON_AddStringToObject(root, "netPriority", NetPriorityToString(app_config.net_priority).c_str());
+  cJSON* gps_types = cJSON_CreateArray();
+  for (uint16_t type : app_config.gps_rtcm_types) {
+    cJSON_AddItemToArray(gps_types, cJSON_CreateNumber(type));
+  }
+  cJSON_AddItemToObject(root, "gpsRtcmTypes", gps_types);
+  cJSON_AddStringToObject(root, "gpsMode", app_config.gps_mode.c_str());
+  const std::string gps_actual_mode = GetGpsCurrentMode();
+  cJSON_AddStringToObject(root, "gpsActualMode", gps_actual_mode.c_str());
   cJSON_AddStringToObject(root, "deviceId", app_config.device_id.c_str());
   cJSON_AddStringToObject(root, "minioEndpoint", app_config.minio_endpoint.c_str());
   cJSON_AddStringToObject(root, "minioAccessKey", app_config.minio_access_key.c_str());
@@ -586,6 +616,16 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   fprintf(f, "wifi_ap_mode = %s\n", (cfg.wifi_ap_mode ? "true" : "false"));
   fprintf(f, "net_mode = %s\n", NetModeToString(cfg.net_mode).c_str());
   fprintf(f, "net_priority = %s\n", NetPriorityToString(cfg.net_priority).c_str());
+  fprintf(f, "gps_rtcm_types = ");
+  for (size_t i = 0; i < cfg.gps_rtcm_types.size(); ++i) {
+    if (i > 0) fprintf(f, ",");
+    fprintf(f, "%u", static_cast<unsigned>(cfg.gps_rtcm_types[i]));
+  }
+  if (cfg.gps_rtcm_types.empty()) {
+    fprintf(f, "1004,1006,1033");
+  }
+  fprintf(f, "\n");
+  fprintf(f, "gps_mode = %s\n", cfg.gps_mode.empty() ? "base_time_60" : cfg.gps_mode.c_str());
   fprintf(f, "usb_mass_storage = %s\n", (current_usb_mode == UsbMode::kMsc) ? "true" : "false");
   fprintf(f, "logging_active = %s\n", (cfg.logging_active ? "true" : "false"));
   if (!cfg.logging_postfix.empty()) {
@@ -1758,11 +1798,88 @@ esp_err_t CloudApplyHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"cloud_applied\"}");
 }
 
+esp_err_t GpsApplyHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 512);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  std::vector<uint16_t> rtcm_types;
+  cJSON* types_item = cJSON_GetObjectItem(root, "rtcmTypes");
+  if (types_item && cJSON_IsArray(types_item)) {
+    const int len = cJSON_GetArraySize(types_item);
+    for (int i = 0; i < len; ++i) {
+      cJSON* item = cJSON_GetArrayItem(types_item, i);
+      if (!item) continue;
+      int type = 0;
+      if (cJSON_IsNumber(item)) {
+        type = item->valueint;
+      } else if (cJSON_IsString(item) && item->valuestring) {
+        type = std::atoi(item->valuestring);
+      }
+      if (type > 0 && type <= 4095 &&
+          std::find(rtcm_types.begin(), rtcm_types.end(), static_cast<uint16_t>(type)) == rtcm_types.end()) {
+        rtcm_types.push_back(static_cast<uint16_t>(type));
+      }
+    }
+  } else if (types_item && cJSON_IsString(types_item) && types_item->valuestring) {
+    rtcm_types = ParseRtcmTypesText(types_item->valuestring);
+  }
+  if (rtcm_types.empty()) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "RTCM type list is empty");
+    return ESP_FAIL;
+  }
+
+  std::string mode = app_config.gps_mode.empty() ? "base_time_60" : app_config.gps_mode;
+  cJSON* mode_item = cJSON_GetObjectItem(root, "mode");
+  if (mode_item && cJSON_IsString(mode_item) && mode_item->valuestring) {
+    mode = mode_item->valuestring;
+  }
+  cJSON_Delete(root);
+
+  if (!(mode == "keep" || mode == "base_time_60" || mode == "base" || mode == "rover_uav" || mode == "rover")) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid GPS mode");
+    return ESP_FAIL;
+  }
+  app_config.gps_rtcm_types = rtcm_types;
+  app_config.gps_mode = mode;
+  if (!SaveConfigToSdCard(app_config, pid_config, usb_mode)) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save config.txt");
+    return ESP_FAIL;
+  }
+  RequestGpsReconfigure();
+  ProbeGpsMode();
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"gps_saved\",\"reconfigure\":\"queued\"}");
+}
+
+esp_err_t GpsProbeHandler(httpd_req_t* req) {
+  ProbeGpsMode();
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"status\":\"gps_mode_probe_sent\"}");
+}
+
 httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 29;
+  config.max_uri_handlers = 31;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -1785,6 +1902,8 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t wifi_apply_uri = {.uri = "/wifi/apply", .method = HTTP_POST, .handler = WifiApplyHandler, .user_ctx = nullptr};
   httpd_uri_t net_apply_uri = {.uri = "/net/apply", .method = HTTP_POST, .handler = NetApplyHandler, .user_ctx = nullptr};
   httpd_uri_t cloud_apply_uri = {.uri = "/cloud/apply", .method = HTTP_POST, .handler = CloudApplyHandler, .user_ctx = nullptr};
+  httpd_uri_t gps_apply_uri = {.uri = "/gps/apply", .method = HTTP_POST, .handler = GpsApplyHandler, .user_ctx = nullptr};
+  httpd_uri_t gps_probe_uri = {.uri = "/gps/probe", .method = HTTP_POST, .handler = GpsProbeHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
   httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
   httpd_uri_t log_start_uri = {.uri = "/log/start", .method = HTTP_POST, .handler = LogStartHandler, .user_ctx = nullptr};
@@ -1811,6 +1930,8 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &wifi_apply_uri);
   httpd_register_uri_handler(http_server, &net_apply_uri);
   httpd_register_uri_handler(http_server, &cloud_apply_uri);
+  httpd_register_uri_handler(http_server, &gps_apply_uri);
+  httpd_register_uri_handler(http_server, &gps_probe_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
   httpd_register_uri_handler(http_server, &fan_set_uri);
   httpd_register_uri_handler(http_server, &log_start_uri);

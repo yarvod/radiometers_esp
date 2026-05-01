@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
@@ -53,6 +54,8 @@ struct AppConfig {
   bool mqtt_enabled;
   NetMode net_mode;
   NetPriority net_priority;
+  std::vector<uint16_t> gps_rtcm_types;
+  std::string gps_mode;
 };
 
 struct PidConfig {

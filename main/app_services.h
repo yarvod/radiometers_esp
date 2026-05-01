@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <cctype>
 
 #include <app_state.h>
@@ -52,3 +53,7 @@ bool OpenLogFileWithPostfix(const std::string& postfix);
 bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode);
 void StopLogging();
 void UploadTask(void*);
+
+std::string GetGpsCurrentMode();
+void RequestGpsReconfigure();
+void ProbeGpsMode();

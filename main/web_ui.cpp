@@ -131,6 +131,7 @@ const char INDEX_HTML[] = R"rawliteral(
         <button class="tab-button" data-tab="tab-heat">Heat</button>
         <button class="tab-button" data-tab="tab-stepper">Stepper</button>
         <button class="tab-button" data-tab="tab-wifi">Wi‑Fi</button>
+        <button class="tab-button" data-tab="tab-gps">GPS</button>
         <button class="tab-button" data-tab="tab-files">Files</button>
       </div>
 
@@ -322,6 +323,36 @@ const char INDEX_HTML[] = R"rawliteral(
               </select>
             </div>
             <button class="btn" onclick="applyNetwork()">Apply Network</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-gps" class="tab-content">
+        <div class="controls">
+          <div class="control-panel">
+            <h3>GPS / GNSS Station</h3>
+            <div class="form-group">
+              <div>Physical Unicore port: <strong>COM2</strong></div>
+              <div>Actual receiver mode: <span id="gpsActualMode">--</span></div>
+            </div>
+            <div class="form-group">
+              <label for="gpsMode">Configured mode</label>
+              <select id="gpsMode">
+                <option value="base_time_60">BASE TIME 60</option>
+                <option value="base">BASE</option>
+                <option value="rover_uav">ROVER UAV</option>
+                <option value="keep">Keep current mode</option>
+              </select>
+              <div class="note">BASE TIME 60 sends UNLOG, MODE BASE TIME 60, waits 60 seconds, then enables RTCM on COM2.</div>
+            </div>
+            <div class="form-group">
+              <label for="gpsRtcmTypes">RTCM message types</label>
+              <input type="text" id="gpsRtcmTypes" value="1004,1006,1033" placeholder="1004,1006,1033">
+              <div class="note">Comma or space separated. Default: 1004, 1006, 1033. Output period is 30 seconds.</div>
+            </div>
+            <button class="btn" onclick="applyGpsConfig()">Save GPS Settings</button>
+            <button class="btn" onclick="probeGpsMode()">Refresh Actual Mode</button>
+            <div class="note" id="gpsConfigStatus">Settings are saved to config.txt. Reconfigure is queued without restarting the web UI.</div>
           </div>
         </div>
       </div>
@@ -806,6 +837,10 @@ const char INDEX_HTML[] = R"rawliteral(
         if (netModeEl) netModeEl.value = data.netMode || 'wifi';
         const netPriorityEl = document.getElementById('netPriority');
         if (netPriorityEl) netPriorityEl.value = data.netPriority || 'wifi';
+        const gpsModeEl = document.getElementById('gpsMode');
+        if (gpsModeEl) gpsModeEl.value = data.gpsMode || 'base_time_60';
+        const gpsTypes = Array.isArray(data.gpsRtcmTypes) ? data.gpsRtcmTypes.join(',') : '1004,1006,1033';
+        setValueIfIdle('gpsRtcmTypes', gpsTypes);
         setValueIfIdle('deviceId', data.deviceId || '');
         setValueIfIdle('minioEndpoint', data.minioEndpoint || '');
         setValueIfIdle('minioBucket', data.minioBucket || '');
@@ -850,6 +885,8 @@ const char INDEX_HTML[] = R"rawliteral(
       }
       const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
       document.getElementById('usbModeLabel').textContent = modeLabel;
+      const gpsActualModeEl = document.getElementById('gpsActualMode');
+      if (gpsActualModeEl) gpsActualModeEl.textContent = data.gpsActualMode || '--';
 
       const mask = Number.isFinite(data.pidSensorMask) ? data.pidSensorMask : 0;
       if (!pidEditing) {
@@ -1112,6 +1149,44 @@ const char INDEX_HTML[] = R"rawliteral(
       }).then(() => {
         alert('Облачные настройки сохранены');
       }).catch(err => alert(err.message || 'Ошибка сохранения'));
+    }
+
+    function parseGpsRtcmTypes(text) {
+      return String(text || '')
+        .split(/[,\s;]+/)
+        .map(v => parseInt(v, 10))
+        .filter((v, idx, arr) => Number.isFinite(v) && v > 0 && v <= 4095 && arr.indexOf(v) === idx);
+    }
+
+    function applyGpsConfig() {
+      const status = document.getElementById('gpsConfigStatus');
+      const rtcmTypes = parseGpsRtcmTypes(document.getElementById('gpsRtcmTypes').value);
+      const mode = document.getElementById('gpsMode').value;
+      if (!rtcmTypes.length) {
+        alert('Укажи хотя бы один RTCM код');
+        return;
+      }
+      if (status) status.textContent = 'Saving GPS settings...';
+      fetch('/gps/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, rtcmTypes }),
+      }).then(res => {
+        if (!res.ok) throw new Error('Не удалось сохранить GPS настройки');
+        return res.json();
+      }).then(() => {
+        if (status) status.textContent = 'GPS settings saved. Reconfigure queued.';
+        refreshData();
+      }).catch(err => {
+        if (status) status.textContent = err.message || 'GPS settings save failed';
+        alert(err.message || 'Ошибка сохранения GPS настроек');
+      });
+    }
+
+    function probeGpsMode() {
+      fetch('/gps/probe', { method: 'POST' })
+        .then(() => setTimeout(refreshData, 500))
+        .catch(() => refreshData());
     }
 
     function applyPid() {

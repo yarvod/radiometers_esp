@@ -91,6 +91,27 @@ std::string TrimLine(const std::string& raw) {
   return raw.substr(begin, end - begin);
 }
 
+std::string ToLower(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return s;
+}
+
+std::string ExtractModeFromLine(const std::string& line) {
+  const size_t semi = line.find(';');
+  if (semi == std::string::npos || semi + 1 >= line.size()) {
+    return {};
+  }
+  size_t end = line.find('*', semi + 1);
+  if (end == std::string::npos) {
+    end = line.size();
+  }
+  std::string mode = line.substr(semi + 1, end - semi - 1);
+  while (!mode.empty() && (mode.back() == ',' || mode.back() == ' ' || mode.back() == '\t')) {
+    mode.pop_back();
+  }
+  return mode;
+}
+
 std::vector<std::string> SplitCsv(const std::string& input) {
   std::vector<std::string> out;
   size_t start = 0;
@@ -524,26 +545,58 @@ void GpsUnicoreClient::probeReceiver() {
   }
 }
 
-void GpsUnicoreClient::configurePeriodicOutput(bool auto_base_config) {
-  if (auto_base_config) {
+void GpsUnicoreClient::configurePeriodicOutput(const std::vector<uint16_t>& rtcm_types, const std::string& mode) {
+  std::vector<uint16_t> sanitized;
+  sanitized.reserve(rtcm_types.size());
+  for (uint16_t type : rtcm_types) {
+    if (type == 0 || type > 4095) {
+      continue;
+    }
+    if (std::find(sanitized.begin(), sanitized.end(), type) == sanitized.end()) {
+      sanitized.push_back(type);
+    }
+  }
+  if (sanitized.empty()) {
+    sanitized = {1004, 1006, 1033};
+  }
+  if (data_mutex_ && xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    enabled_rtcm_types_ = sanitized;
+    xSemaphoreGive(data_mutex_);
+  }
+
+  const std::string mode_lower = ToLower(mode);
+  if (mode_lower == "base_time_60") {
     ESP_LOGI(TAG_GPS, "Configuring UM982 BASE mode before RTCM stream");
     sendCommand("UNLOG");
     vTaskDelay(pdMS_TO_TICKS(1000));
     sendCommand("MODE BASE TIME 60");
     ESP_LOGI(TAG_GPS, "Waiting 60 seconds for UM982 BASE TIME initialization");
     vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+  } else if (mode_lower == "base") {
+    ESP_LOGI(TAG_GPS, "Configuring UM982 BASE mode");
+    sendCommand("UNLOG");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    sendCommand("MODE BASE");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  } else if (mode_lower == "rover_uav" || mode_lower == "rover") {
+    ESP_LOGI(TAG_GPS, "Configuring UM982 ROVER UAV mode");
+    sendCommand("UNLOG");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    sendCommand("MODE ROVER UAV");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  } else {
+    ESP_LOGI(TAG_GPS, "Keeping current UM982 mode");
   }
 
-  static constexpr std::array<const char*, 3> kStreamCommands = {
-      "RTCM1006 COM2 30",
-      "RTCM1033 COM2 30",
-      "RTCM1004 COM2 30",
-  };
   ESP_LOGI(TAG_GPS, "Configuring UM982 periodic RTCM3 output on COM2 every 30 seconds");
-  for (const char* cmd : kStreamCommands) {
+  for (uint16_t type : sanitized) {
+    std::string cmd = "RTCM";
+    cmd += std::to_string(type);
+    cmd += " COM2 30";
     sendCommand(cmd);
     vTaskDelay(kCommandDelay);
   }
+  sendCommand("MODE");
 }
 
 void GpsUnicoreClient::startFrame(uint32_t frame_index) {
@@ -570,10 +623,13 @@ bool GpsUnicoreClient::isCurrentFrameComplete() {
   if (!data_mutex_ || xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(20)) != pdTRUE) {
     return false;
   }
-  const bool ok = current_frame_active_ &&
-                  current_frame_.rtcm_by_type.count(1004) > 0 &&
-                  current_frame_.rtcm_by_type.count(1006) > 0 &&
-                  current_frame_.rtcm_by_type.count(1033) > 0;
+  bool ok = current_frame_active_;
+  for (uint16_t type : enabled_rtcm_types_) {
+    if (current_frame_.rtcm_by_type.count(type) == 0) {
+      ok = false;
+      break;
+    }
+  }
   xSemaphoreGive(data_mutex_);
   return ok;
 }
@@ -599,21 +655,20 @@ bool GpsUnicoreClient::writeRtcmFramesToFile(const CurrentFrame& frame, FILE* fi
   if (!file) return false;
 
   bool ok = true;
-  static constexpr std::array<uint16_t, 3> kRtcmOrder = {1006, 1033, 1004};
-  for (uint16_t type : kRtcmOrder) {
+  auto write_one = [&](uint16_t type) {
     const auto it = frame.rtcm_by_type.find(type);
     if (it == frame.rtcm_by_type.end()) {
-      continue;
+      return;
     }
     const RtcmFrame& rtcm = it->second;
     if (!rtcm.crc_ok || rtcm.raw.empty()) {
       ESP_LOGW(TAG_GPS, "skip RTCM type %u for .rtcm3: bad CRC or empty frame", type);
-      continue;
+      return;
     }
     if (fwrite(rtcm.raw.data(), 1, rtcm.raw.size(), file) != rtcm.raw.size()) {
       ESP_LOGE(TAG_GPS, "Failed to write RTCM%u raw frame", type);
       ok = false;
-      break;
+      return;
     }
     fflush(file);
 
@@ -640,7 +695,23 @@ bool GpsUnicoreClient::writeRtcmFramesToFile(const CurrentFrame& frame, FILE* fi
     } else if (type == 1033) {
       ESP_LOGI(TAG_GPS, "RTCM1033 written, size=%u, receiver/antenna metadata",
                static_cast<unsigned>(rtcm.raw.size()));
+    } else {
+      ESP_LOGI(TAG_GPS, "RTCM%u written, size=%u", type, static_cast<unsigned>(rtcm.raw.size()));
     }
+  };
+
+  static constexpr std::array<uint16_t, 3> kPriorityOrder = {1006, 1033, 1004};
+  for (uint16_t type : kPriorityOrder) {
+    if (!ok) break;
+    write_one(type);
+  }
+  for (const auto& entry : frame.rtcm_by_type) {
+    if (!ok) break;
+    const uint16_t type = entry.first;
+    if (type == 1004 || type == 1006 || type == 1033) {
+      continue;
+    }
+    write_one(type);
   }
   return ok;
 }
@@ -672,6 +743,18 @@ bool GpsUnicoreClient::getLastRtcm(uint16_t type, RtcmFrame& out) {
     return false;
   }
   const bool ok = copyRtcmLocked(type, out);
+  xSemaphoreGive(data_mutex_);
+  return ok;
+}
+
+bool GpsUnicoreClient::getCurrentMode(std::string& out) {
+  if (!data_mutex_ || xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) != pdTRUE) {
+    return false;
+  }
+  const bool ok = has_current_mode_;
+  if (ok) {
+    out = current_mode_;
+  }
   xSemaphoreGive(data_mutex_);
   return ok;
 }
@@ -785,6 +868,14 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
     ESP_LOGI(TAG_GPS, "Command response: %s", line.c_str());
   } else if (line.rfind("#VERSION", 0) == 0 || line.rfind("#MODE", 0) == 0) {
     ESP_LOGI(TAG_GPS, "Receiver response: %s", line.c_str());
+    if (line.rfind("#MODE", 0) == 0) {
+      const std::string mode = ExtractModeFromLine(line);
+      if (!mode.empty() && data_mutex_ && xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+        current_mode_ = mode;
+        has_current_mode_ = true;
+        xSemaphoreGive(data_mutex_);
+      }
+    }
   } else {
     ESP_LOGD(TAG_GPS, "skip text line: %s", line.c_str());
   }
@@ -795,7 +886,12 @@ void GpsUnicoreClient::handleRtcmFrame(const RtcmFrame& frame) {
     ESP_LOGW(TAG_GPS, "RTCM frame type=%u failed CRC", frame.message_type);
     return;
   }
-  if (!IsExpectedRtcmType(frame.message_type)) {
+  bool enabled = false;
+  if (data_mutex_ && xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+    enabled = isRtcmTypeEnabledLocked(frame.message_type);
+    xSemaphoreGive(data_mutex_);
+  }
+  if (!enabled) {
     ESP_LOGD(TAG_GPS, "skip RTCM type %u size=%u", frame.message_type, static_cast<unsigned>(frame.raw.size()));
     return;
   }
@@ -876,8 +972,15 @@ void GpsUnicoreClient::storeRtcmLocked(const RtcmFrame& frame) {
       has_1033_ = true;
       break;
     default:
+      if (current_frame_active_) {
+        current_frame_.rtcm_by_type[frame.message_type] = frame;
+      }
       break;
   }
+}
+
+bool GpsUnicoreClient::isRtcmTypeEnabledLocked(uint16_t type) const {
+  return std::find(enabled_rtcm_types_.begin(), enabled_rtcm_types_.end(), type) != enabled_rtcm_types_.end();
 }
 
 bool GpsUnicoreClient::copyRtcmLocked(uint16_t type, RtcmFrame& out) const {

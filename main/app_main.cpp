@@ -117,6 +117,7 @@ static GpsUnicoreClient gps_client;
 static TaskHandle_t gps_log_task = nullptr;
 static uint64_t gps_log_file_start_us = 0;
 static std::string current_gnss_log_path;
+static volatile bool gps_reconfigure_requested = false;
 
 volatile uint32_t fan1_pulse_count = 0;
 volatile uint32_t fan2_pulse_count = 0;
@@ -194,6 +195,44 @@ std::string BuildLogFilename(const std::string& postfix_raw) {
   name += std::to_string(boot);
   name += ".txt";
   return name;
+}
+
+static std::vector<uint16_t> ParseRtcmTypesString(const std::string& value) {
+  std::vector<uint16_t> out;
+  size_t start = 0;
+  while (start < value.size()) {
+    while (start < value.size() && (value[start] == ',' || value[start] == ' ' || value[start] == ';' || value[start] == '\t')) {
+      start++;
+    }
+    if (start >= value.size()) break;
+    size_t end = start;
+    while (end < value.size() && value[end] != ',' && value[end] != ';' && !std::isspace(static_cast<unsigned char>(value[end]))) {
+      end++;
+    }
+    const int type = std::atoi(value.substr(start, end - start).c_str());
+    if (type > 0 && type <= 4095 &&
+        std::find(out.begin(), out.end(), static_cast<uint16_t>(type)) == out.end()) {
+      out.push_back(static_cast<uint16_t>(type));
+    }
+    start = end;
+  }
+  if (out.empty()) {
+    out = {1004, 1006, 1033};
+  }
+  return out;
+}
+
+std::string GetGpsCurrentMode() {
+  std::string mode;
+  return gps_client.getCurrentMode(mode) ? mode : "";
+}
+
+void RequestGpsReconfigure() {
+  gps_reconfigure_requested = true;
+}
+
+void ProbeGpsMode() {
+  gps_client.sendCommand("MODE");
 }
 
 static std::string FormatIp4(const esp_ip4_addr_t& ip) {
@@ -827,14 +866,10 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
 }
 
 static void WarnMissingGnssFrameData(const CurrentFrame& frame) {
-  if (frame.rtcm_by_type.count(static_cast<uint16_t>(RtcmMessageType::kStationAntennaArp)) == 0) {
-    ESP_LOGW(TAG, "GNSS frame %u missing RTCM1006", static_cast<unsigned>(frame.frame_index));
-  }
-  if (frame.rtcm_by_type.count(static_cast<uint16_t>(RtcmMessageType::kReceiverAntennaDescriptors)) == 0) {
-    ESP_LOGW(TAG, "GNSS frame %u missing RTCM1033", static_cast<unsigned>(frame.frame_index));
-  }
-  if (frame.rtcm_by_type.count(static_cast<uint16_t>(RtcmMessageType::kGpsL1L2Observables)) == 0) {
-    ESP_LOGW(TAG, "GNSS frame %u missing RTCM1004", static_cast<unsigned>(frame.frame_index));
+  for (uint16_t type : app_config.gps_rtcm_types) {
+    if (frame.rtcm_by_type.count(type) == 0) {
+      ESP_LOGW(TAG, "GNSS frame %u missing RTCM%u", static_cast<unsigned>(frame.frame_index), static_cast<unsigned>(type));
+    }
   }
 }
 
@@ -849,7 +884,7 @@ static void GpsLogTask(void*) {
   vTaskDelay(pdMS_TO_TICKS(5000));
   gps_client.probeReceiver();
   vTaskDelay(pdMS_TO_TICKS(1000));
-  gps_client.configurePeriodicOutput(true);
+  gps_client.configurePeriodicOutput(app_config.gps_rtcm_types, app_config.gps_mode);
   {
     SdLockGuard guard(pdMS_TO_TICKS(1000));
     if (guard.locked() && MountLogSd()) {
@@ -866,6 +901,10 @@ static void GpsLogTask(void*) {
     if (usb_mode == UsbMode::kMsc) {
       vTaskDelay(kInterval);
       continue;
+    }
+    if (gps_reconfigure_requested) {
+      gps_reconfigure_requested = false;
+      gps_client.configurePeriodicOutput(app_config.gps_rtcm_types, app_config.gps_mode);
     }
 
     gps_client.startFrame(frame_index);
@@ -1586,6 +1625,10 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   NetMode net_mode_val = config->net_mode;
   bool net_priority_set = false;
   NetPriority net_priority_val = config->net_priority;
+  bool gps_rtcm_types_set = false;
+  std::vector<uint16_t> gps_rtcm_types_val = config->gps_rtcm_types;
+  bool gps_mode_set = false;
+  std::string gps_mode_val = config->gps_mode;
 
   while (fgets(line, sizeof(line), file)) {
     std::string raw(line);
@@ -1721,6 +1764,17 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
       } else {
         ESP_LOGW(TAG, "Invalid net_priority in config.txt");
       }
+    } else if (key == "gps_rtcm_types") {
+      gps_rtcm_types_val = ParseRtcmTypesString(value);
+      gps_rtcm_types_set = true;
+    } else if (key == "gps_mode") {
+      const std::string mode = Trim(value);
+      if (mode == "keep" || mode == "base_time_60" || mode == "base" || mode == "rover_uav" || mode == "rover") {
+        gps_mode_val = mode;
+        gps_mode_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid gps_mode in config.txt");
+      }
     }
   }
 
@@ -1799,6 +1853,12 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   if (net_priority_set) {
     config->net_priority = net_priority_val;
   }
+  if (gps_rtcm_types_set) {
+    config->gps_rtcm_types = gps_rtcm_types_val;
+  }
+  if (gps_mode_set) {
+    config->gps_mode = gps_mode_val;
+  }
   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set || pid_mask_set) {
     pid_config.kp = pid_kp;
     pid_config.ki = pid_ki;
@@ -1824,7 +1884,7 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || log_use_motor_set ||
          log_duration_set || stepper_speed_set || stepper_home_offset_set || motor_hall_active_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
          minio_bucket_set || minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || mqtt_enabled_set ||
-         net_mode_set || net_priority_set || pid_config.from_file;
+         net_mode_set || net_priority_set || gps_rtcm_types_set || gps_mode_set || pid_config.from_file;
 }
 
 void LoadConfigFromSdCard(AppConfig* config) {

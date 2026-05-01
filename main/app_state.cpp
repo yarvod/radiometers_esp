@@ -33,6 +33,8 @@ AppConfig app_config{
     false,              // mqtt_enabled
     NetMode::kWifiOnly, // net_mode
     NetPriority::kWifi, // net_priority
+    {1004, 1006, 1033}, // gps_rtcm_types
+    "base_time_60",     // gps_mode
 };
 
 PidConfig pid_config{
