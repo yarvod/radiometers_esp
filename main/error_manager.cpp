@@ -61,6 +61,8 @@ bool current_green = false;
 int current_blink_ms = 0;
 ErrorCode current_code = ErrorCode::kMax;
 
+void UpdateLedPattern();
+
 void ApplyLed(bool red, bool green) {
   gpio_set_level(STATUS_LED_RED, red ? 1 : 0);
   gpio_set_level(STATUS_LED_GREEN, green ? 1 : 0);
@@ -97,6 +99,50 @@ void PublishEvent(ErrorCode code, ErrorSeverity severity, const std::string& mes
   }
   cJSON_free((void*)json);
   cJSON_Delete(root);
+}
+
+void SetErrorState(ErrorCode code, ErrorSeverity severity, const std::string& message, bool publish) {
+  const size_t idx = static_cast<size_t>(code);
+  if (idx >= entries.size()) {
+    return;
+  }
+  bool changed = false;
+  if (error_mutex && xSemaphoreTake(error_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    ErrorEntry& entry = entries[idx];
+    changed = !entry.active || entry.severity != severity || entry.message != message;
+    entry.active = true;
+    entry.severity = severity;
+    entry.message = message;
+    entry.changed_ms = esp_timer_get_time() / 1000ULL;
+    xSemaphoreGive(error_mutex);
+  }
+  if (changed && publish) {
+    PublishEvent(code, severity, message, true);
+  }
+  UpdateLedPattern();
+}
+
+void ClearErrorState(ErrorCode code, bool publish) {
+  const size_t idx = static_cast<size_t>(code);
+  if (idx >= entries.size()) {
+    return;
+  }
+  bool was_active = false;
+  ErrorSeverity severity = ErrorSeverity::kInfo;
+  std::string message;
+  if (error_mutex && xSemaphoreTake(error_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    ErrorEntry& entry = entries[idx];
+    was_active = entry.active;
+    severity = entry.severity;
+    message = entry.message;
+    entry.active = false;
+    entry.changed_ms = esp_timer_get_time() / 1000ULL;
+    xSemaphoreGive(error_mutex);
+  }
+  if (was_active && publish) {
+    PublishEvent(code, severity, message, false);
+  }
+  UpdateLedPattern();
 }
 
 void UpdateLedPattern() {
@@ -159,47 +205,19 @@ void ErrorManagerSetPublisher(ErrorPublishFn publisher) {
 }
 
 void ErrorManagerSet(ErrorCode code, ErrorSeverity severity, const std::string& message) {
-  const size_t idx = static_cast<size_t>(code);
-  if (idx >= entries.size()) {
-    return;
-  }
-  bool changed = false;
-  if (error_mutex && xSemaphoreTake(error_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    ErrorEntry& entry = entries[idx];
-    changed = !entry.active || entry.severity != severity || entry.message != message;
-    entry.active = true;
-    entry.severity = severity;
-    entry.message = message;
-    entry.changed_ms = esp_timer_get_time() / 1000ULL;
-    xSemaphoreGive(error_mutex);
-  }
-  if (changed) {
-    PublishEvent(code, severity, message, true);
-  }
-  UpdateLedPattern();
+  SetErrorState(code, severity, message, true);
 }
 
 void ErrorManagerClear(ErrorCode code) {
-  const size_t idx = static_cast<size_t>(code);
-  if (idx >= entries.size()) {
-    return;
-  }
-  bool was_active = false;
-  ErrorSeverity severity = ErrorSeverity::kInfo;
-  std::string message;
-  if (error_mutex && xSemaphoreTake(error_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    ErrorEntry& entry = entries[idx];
-    was_active = entry.active;
-    severity = entry.severity;
-    message = entry.message;
-    entry.active = false;
-    entry.changed_ms = esp_timer_get_time() / 1000ULL;
-    xSemaphoreGive(error_mutex);
-  }
-  if (was_active) {
-    PublishEvent(code, severity, message, false);
-  }
-  UpdateLedPattern();
+  ClearErrorState(code, true);
+}
+
+void ErrorManagerSetLocal(ErrorCode code, ErrorSeverity severity, const std::string& message) {
+  SetErrorState(code, severity, message, false);
+}
+
+void ErrorManagerClearLocal(ErrorCode code) {
+  ClearErrorState(code, false);
 }
 
 const char* ErrorCodeToString(ErrorCode code) {

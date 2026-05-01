@@ -2156,7 +2156,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       auto* info = static_cast<wifi_event_sta_disconnected_t*>(event_data);
       reason_msg += " reason=" + std::to_string(info->reason);
     }
-    ErrorManagerSet(ErrorCode::kWifiDisconnected, ErrorSeverity::kWarning, reason_msg);
+    ErrorManagerSetLocal(ErrorCode::kWifiDisconnected, ErrorSeverity::kWarning, reason_msg);
     UpdateState([&](SharedState& s) {
       s.wifi_ip.clear();
       s.wifi_ip_sta.clear();
@@ -2171,7 +2171,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       if (!app_config.wifi_ap_mode && !fallback_ap_active) {
         ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
         fallback_ap_active = true;
-        ErrorManagerSet(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
+        ErrorManagerSetLocal(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
         wifi_config_t ap_config = {};
         const char* ap_ssid = "esp";
         const char* ap_pass = "12345678";
@@ -2189,7 +2189,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     retry_count = 0;
-    ErrorManagerClear(ErrorCode::kWifiDisconnected);
+    ErrorManagerClearLocal(ErrorCode::kWifiDisconnected);
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     const std::string sta_ip = FormatIp4(event->ip_info.ip);
@@ -2207,7 +2207,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     if (fallback_ap_active && !app_config.wifi_ap_mode) {
       ESP_LOGI(TAG, "Disabling fallback AP after reconnect");
       fallback_ap_active = false;
-      ErrorManagerClear(ErrorCode::kWifiFallback);
+      ErrorManagerClearLocal(ErrorCode::kWifiFallback);
       esp_wifi_set_mode(WIFI_MODE_STA);
       esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached);
     }

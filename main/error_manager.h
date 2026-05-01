@@ -34,5 +34,7 @@ void ErrorManagerInit();
 void ErrorManagerSetPublisher(ErrorPublishFn publisher);
 void ErrorManagerSet(ErrorCode code, ErrorSeverity severity, const std::string& message);
 void ErrorManagerClear(ErrorCode code);
+void ErrorManagerSetLocal(ErrorCode code, ErrorSeverity severity, const std::string& message);
+void ErrorManagerClearLocal(ErrorCode code);
 const char* ErrorCodeToString(ErrorCode code);
 const char* ErrorSeverityToString(ErrorSeverity severity);

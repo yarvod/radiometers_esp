@@ -656,14 +656,14 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED: {
       mqtt_connected = true;
-      ErrorManagerClear(ErrorCode::kMqttDisconnected);
-      ErrorManagerClear(ErrorCode::kMqttTransport);
+      ErrorManagerClearLocal(ErrorCode::kMqttDisconnected);
+      ErrorManagerClearLocal(ErrorCode::kMqttTransport);
       const std::string device = SanitizeId(app_config.device_id);
       std::string topic = device + "/cmd";
       const int msg_id = esp_mqtt_client_subscribe(event->client, topic.c_str(), 0);
       ESP_LOGI(TAG_MQTT, "MQTT connected to %s, subscribe %s msg_id=%d", app_config.mqtt_uri.c_str(), topic.c_str(), msg_id);
       if (msg_id < 0) {
-        ErrorManagerSet(ErrorCode::kMqttTransport, ErrorSeverity::kWarning, "MQTT cmd subscribe failed");
+        ErrorManagerSetLocal(ErrorCode::kMqttTransport, ErrorSeverity::kWarning, "MQTT cmd subscribe failed");
       }
       break;
     }
@@ -685,7 +685,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
           msg += " sock=" + std::to_string(err->esp_transport_sock_errno);
         }
       }
-      ErrorManagerSet(ErrorCode::kMqttTransport, ErrorSeverity::kWarning, msg);
+      ErrorManagerSetLocal(ErrorCode::kMqttTransport, ErrorSeverity::kWarning, msg);
       break;
     }
     case MQTT_EVENT_DATA: {
@@ -694,7 +694,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
     }
     case MQTT_EVENT_DISCONNECTED: {
       mqtt_connected = false;
-      ErrorManagerSet(ErrorCode::kMqttDisconnected, ErrorSeverity::kWarning, "MQTT disconnected");
+      ErrorManagerSetLocal(ErrorCode::kMqttDisconnected, ErrorSeverity::kWarning, "MQTT disconnected");
       ESP_LOGW(TAG_MQTT, "MQTT disconnected");
       break;
     }
