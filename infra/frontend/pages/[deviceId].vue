@@ -252,10 +252,35 @@
           <span class="chip" :class="{ online: wifiModeDisplay === 'sta', cool: wifiModeDisplay === 'ap' }">Mode: {{ wifiModeDisplay.toUpperCase() }}</span>
         </div>
         <div class="status-row">
+          <span class="chip" :class="{ online: ethLinkUp, subtle: !ethLinkUp }">ETH link: {{ ethLinkUp ? 'UP' : 'DOWN' }}</span>
+          <span class="chip" :class="{ online: ethIpUp, subtle: !ethIpUp }">ETH IP: {{ ethIpDisplay }}</span>
+          <span class="chip subtle">Net: {{ netModeDisplay.toUpperCase() }}</span>
+          <span class="chip subtle">Priority: {{ netPriorityDisplay.toUpperCase() }}</span>
+        </div>
+        <div class="status-row">
           <span class="chip subtle">RSSI: {{ device?.state?.wifiRssi ?? '--' }} dBm</span>
           <span class="chip subtle">Качество: {{ device?.state?.wifiQuality ?? '--' }}%</span>
           <span class="chip subtle">SSID: {{ wifiSsidDisplay }}</span>
         </div>
+        <div class="divider"></div>
+        <div class="form-group">
+          <label>Сетевой режим</label>
+          <select v-model="netForm.mode" @change="netDirty = true">
+            <option value="wifi">Только Wi‑Fi</option>
+            <option value="eth">Только Ethernet</option>
+            <option value="both">Wi‑Fi + Ethernet</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Приоритет выхода в сеть</label>
+          <select v-model="netForm.priority" @change="netDirty = true">
+            <option value="wifi">Wi‑Fi</option>
+            <option value="eth">Ethernet</option>
+          </select>
+        </div>
+        <button class="btn primary" @click="applyNetwork">Применить сеть</button>
+        <p class="muted" v-if="netApplyStatus">{{ netApplyStatus }}</p>
+        <div class="divider"></div>
         <div class="form-group">
           <label>Режим</label>
           <select v-model="wifiForm.mode" @change="wifiDirty = true">
@@ -699,8 +724,10 @@ const heaterPower = ref(0)
 const heaterEditing = ref(false)
 const pidDirty = ref(false)
 const wifiDirty = ref(false)
+const netDirty = ref(false)
 const pidApplyStatus = ref('')
 const wifiApplyStatus = ref('')
+const netApplyStatus = ref('')
 const restartStatus = ref('')
 const restarting = ref(false)
 const externalPowerStatus = ref('')
@@ -710,6 +737,7 @@ const configSyncStatus = ref('')
 const configSyncBusy = ref(false)
 const pidForm = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
 const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
+const netForm = reactive({ mode: 'wifi', priority: 'wifi' })
 const historyFilters = reactive({
   from: '',
   to: '',
@@ -863,6 +891,14 @@ const wifiIpDisplay = computed(() => device.value?.state?.wifiIp || '--')
 const wifiStaIpDisplay = computed(() => device.value?.state?.wifiStaIp || '--')
 const wifiApIpDisplay = computed(() => device.value?.state?.wifiApIp || '--')
 const wifiSsidDisplay = computed(() => device.value?.state?.wifiSsid || '--')
+const ethIpDisplay = computed(() => device.value?.state?.ethIp || '--')
+const ethLinkUp = computed(() => !!device.value?.state?.ethLink)
+const ethIpUp = computed(() => !!device.value?.state?.ethIpUp)
+const netModeDisplay = computed(() => {
+  const mode = device.value?.state?.netMode
+  return mode === 'eth' || mode === 'both' || mode === 'wifi' ? mode : 'wifi'
+})
+const netPriorityDisplay = computed(() => (device.value?.state?.netPriority === 'eth' ? 'eth' : 'wifi'))
 
 const formatBytes = (value: number) => {
   if (!Number.isFinite(value) || value <= 0) return '--'
@@ -1247,6 +1283,10 @@ watch(
       wifiForm.mode = state.wifiMode || (state.wifiApMode ? 'ap' : 'sta')
       wifiForm.ssid = state.wifiSsid || ''
     }
+    if (!netDirty.value) {
+      netForm.mode = state.netMode === 'eth' || state.netMode === 'both' || state.netMode === 'wifi' ? state.netMode : 'wifi'
+      netForm.priority = state.netPriority === 'eth' ? 'eth' : 'wifi'
+    }
     if (!heaterEditing.value && Number.isFinite(state.heaterPower)) {
       heaterPower.value = Number(state.heaterPower)
     }
@@ -1509,6 +1549,20 @@ async function applyWifi() {
     wifiApplyStatus.value = 'Wi‑Fi обновлен (устройство может переподключиться)'
   } catch (e: any) {
     wifiApplyStatus.value = e?.message || 'Ошибка применения Wi‑Fi'
+  }
+}
+async function applyNetwork() {
+  if (!deviceId.value) return
+  netApplyStatus.value = 'Применяю сетевой режим...'
+  try {
+    await store.netApply(nuxtApp.$mqtt, deviceId.value, {
+      mode: netForm.mode,
+      priority: netForm.priority,
+    })
+    netDirty.value = false
+    netApplyStatus.value = 'Сетевой режим обновлен (соединение может переподключиться)'
+  } catch (e: any) {
+    netApplyStatus.value = e?.message || 'Ошибка применения сетевого режима'
   }
 }
 
