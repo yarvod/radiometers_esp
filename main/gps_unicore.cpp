@@ -589,6 +589,9 @@ void GpsUnicoreClient::configurePeriodicOutput(const std::vector<uint16_t>& rtcm
     ESP_LOGI(TAG_GPS, "Keeping current UM982 mode");
   }
 
+  sendCommand("GPZDA COM2 30");
+  vTaskDelay(kCommandDelay);
+
   ESP_LOGI(TAG_GPS, "Configuring UM982 periodic RTCM3 output on COM2 every 30 seconds");
   for (uint16_t type : sanitized) {
     std::string cmd = "RTCM";

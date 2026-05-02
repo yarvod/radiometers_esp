@@ -262,6 +262,17 @@ void ProbeGpsMode() {
   gps_client.sendCommand("MODE");
 }
 
+static esp_err_t StartGpsClient() {
+  esp_err_t gps_err = gps_client.initUart();
+  if (gps_err == ESP_OK) {
+    gps_err = gps_client.startTasks();
+  }
+  if (gps_err != ESP_OK) {
+    ESP_LOGE(TAG, "GPS init/start failed: %s", esp_err_to_name(gps_err));
+  }
+  return gps_err;
+}
+
 namespace {
 
 constexpr time_t kValidUtcThreshold = 1'700'000'000;  // ~2023-11-14
@@ -345,6 +356,33 @@ bool GpsUtcNow(UtcTimeSnapshot* out) {
   out->source = UtcTimeSource::kGps;
   out->valid = true;
   return true;
+}
+
+void MaybeDisciplineSystemTimeFromGps(const UtcTimeSnapshot& gps_time);
+
+bool RequestGpsUtcTimeOnce(int timeout_ms, UtcTimeSnapshot* out) {
+  int64_t previous_received_us = 0;
+  GpsDateTime previous_dt{};
+  (void)gps_client.getLastDateTime(previous_dt, &previous_received_us);
+
+  gps_client.sendCommand("GPZDA COM2");
+  const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
+  while (esp_timer_get_time() < deadline_us) {
+    GpsDateTime dt{};
+    int64_t received_us = 0;
+    if (gps_client.getLastDateTime(dt, &received_us) && received_us > previous_received_us) {
+      UtcTimeSnapshot gps_time{};
+      if (GpsUtcNow(&gps_time)) {
+        MaybeDisciplineSystemTimeFromGps(gps_time);
+        if (out) {
+          *out = gps_time;
+        }
+        return true;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  return false;
 }
 
 void MaybeDisciplineSystemTimeFromGps(const UtcTimeSnapshot& gps_time) {
@@ -3164,24 +3202,32 @@ extern "C" void app_main(void) {
       s.stepper_home_status = "idle";
     }
   });
+  const esp_err_t gps_err = StartGpsClient();
   ApplyNetworkConfig();
   StartSntp();
   if (WaitForTimeSyncMs(8000)) {
     ESP_LOGI(TAG, "Time synced via NTP");
     ErrorManagerClear(ErrorCode::kTimeSync);
   } else {
-    ESP_LOGW(TAG, "NTP sync timed out, using monotonic timestamp fallback");
-    ErrorManagerSet(ErrorCode::kTimeSync, ErrorSeverity::kWarning, "NTP sync timed out");
+    UtcTimeSnapshot fallback_time{};
+    if (gps_err == ESP_OK) {
+      (void)RequestGpsUtcTimeOnce(2500, &fallback_time);
+    }
+    if (!fallback_time.valid) {
+      fallback_time = GetBestUtcTimeForData();
+    }
+    if (fallback_time.source == UtcTimeSource::kGps && fallback_time.valid) {
+      ESP_LOGW(TAG, "NTP sync timed out, using GPZDA UTC time");
+      ErrorManagerClear(ErrorCode::kTimeSync);
+    } else if (fallback_time.source == UtcTimeSource::kSystemCached && fallback_time.valid) {
+      ESP_LOGW(TAG, "NTP sync timed out, using cached system UTC time");
+      ErrorManagerClear(ErrorCode::kTimeSync);
+    } else {
+      ESP_LOGW(TAG, "NTP sync timed out, using monotonic timestamp fallback");
+      ErrorManagerSet(ErrorCode::kTimeSync, ErrorSeverity::kWarning, "NTP sync timed out");
+    }
   }
   StartHttpServer();
-
-  esp_err_t gps_err = gps_client.initUart();
-  if (gps_err == ESP_OK) {
-    gps_err = gps_client.startTasks();
-  }
-  if (gps_err != ESP_OK) {
-    ESP_LOGE(TAG, "GPS init/start failed: %s", esp_err_to_name(gps_err));
-  }
 
   // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
   xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
