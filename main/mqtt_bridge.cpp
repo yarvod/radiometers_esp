@@ -608,6 +608,8 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     res = ActionGpsApply(req);
   } else if (type == "gps_probe") {
     res = ActionGpsProbe();
+  } else if (type == "config_sync_internal_flash") {
+    res = ActionConfigSyncInternalFlash();
   } else if (type == "usb_mode_get") {
     res = ActionUsbModeGet();
   } else if (type == "usb_mode_set") {

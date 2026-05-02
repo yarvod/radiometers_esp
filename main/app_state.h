@@ -16,6 +16,8 @@
 constexpr int MAX_TEMP_SENSORS = 16;
 inline constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
 inline constexpr char CONFIG_FILE_PATH[] = "/sdcard/config.txt";
+inline constexpr char CONFIG_NVS_NAMESPACE[] = "cfg";
+inline constexpr char CONFIG_NVS_KEY[] = "config_txt";
 inline constexpr char DEFAULT_WIFI_SSID[] = "Altai INASAN";
 inline constexpr char DEFAULT_WIFI_PASS[] = "89852936257";
 inline constexpr size_t WIFI_SSID_MAX_LEN = 32;

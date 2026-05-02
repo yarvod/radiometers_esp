@@ -140,9 +140,11 @@
           <button class="btn success" @click="externalPowerSet(true)" :disabled="externalPowerBusy">Питание модулей ON</button>
           <button class="btn warning ghost" @click="externalPowerSet(false)" :disabled="externalPowerBusy">Питание модулей OFF</button>
           <button class="btn primary" @click="externalPowerCycle" :disabled="externalPowerBusy">Передернуть питание</button>
+          <button class="btn ghost" @click="syncConfigInternalFlash" :disabled="configSyncBusy">Синхр. config во flash ESP</button>
           <button class="btn danger" @click="restartDevice" :disabled="restarting">Перезагрузить</button>
         </div>
         <p class="muted" v-if="externalPowerStatus">{{ externalPowerStatus }}</p>
+        <p class="muted" v-if="configSyncStatus">{{ configSyncStatus }}</p>
         <p class="muted" v-if="restartStatus">{{ restartStatus }}</p>
       </div>
 
@@ -704,6 +706,8 @@ const restarting = ref(false)
 const externalPowerStatus = ref('')
 const externalPowerBusy = ref(false)
 const externalPowerOffMs = ref(1000)
+const configSyncStatus = ref('')
+const configSyncBusy = ref(false)
 const pidForm = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
 const wifiForm = reactive({ mode: 'sta', ssid: '', password: '' })
 const historyFilters = reactive({
@@ -1360,6 +1364,19 @@ async function externalPowerCycle() {
     externalPowerStatus.value = e?.message || 'Не удалось передернуть питание'
   } finally {
     externalPowerBusy.value = false
+  }
+}
+async function syncConfigInternalFlash() {
+  if (!deviceId.value) return
+  configSyncBusy.value = true
+  configSyncStatus.value = 'Синхронизирую config.txt во внутреннюю flash ESP...'
+  try {
+    await store.configSyncInternalFlash(nuxtApp.$mqtt, deviceId.value)
+    configSyncStatus.value = 'Конфиг сохранен во внутреннюю flash ESP'
+  } catch (e: any) {
+    configSyncStatus.value = e?.message || 'Не удалось синхронизировать конфиг во flash ESP'
+  } finally {
+    configSyncBusy.value = false
   }
 }
 async function stepperEnable() {

@@ -71,6 +71,8 @@ bool MountLogSd();
 void UnmountLogSd();
 bool EnsureUploadDirs();
 bool QueueCurrentLogForUpload();
+bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
+bool SyncConfigToInternalFlash();
 bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
 bool OpenLogFileWithPostfix(const std::string& postfix);
 

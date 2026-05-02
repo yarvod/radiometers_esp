@@ -380,6 +380,13 @@ ActionResult ActionGpsProbe() {
   return {true, "gps_probe_sent", {}};
 }
 
+ActionResult ActionConfigSyncInternalFlash() {
+  if (!SyncConfigToInternalFlash()) {
+    return {false, "config_internal_flash_sync_failed", {}};
+  }
+  return {true, "config_synced_to_internal_flash", {}};
+}
+
 ActionResult ActionUsbModeSet(UsbMode requested) {
 #if !CONFIG_TINYUSB_MSC_ENABLED
   if (requested == UsbMode::kMsc) {

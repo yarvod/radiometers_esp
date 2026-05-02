@@ -1822,12 +1822,11 @@ const tusb_desc_device_qualifier_t kDeviceQualifier = {
 #endif
 
 // HTML UI (kept close to original Arduino page)
-bool ParseConfigFile(FILE* file, AppConfig* config) {
-  if (!file || !config) {
+bool ParseConfigText(const std::string& text, AppConfig* config) {
+  if (!config) {
     return false;
   }
 
-  char line[256];
   bool ssid_set = false;
   bool pass_set = false;
   bool usb_set = false;
@@ -1889,8 +1888,14 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   bool gps_mode_set = false;
   std::string gps_mode_val = config->gps_mode;
 
-  while (fgets(line, sizeof(line), file)) {
-    std::string raw(line);
+  size_t line_start = 0;
+  while (line_start <= text.size()) {
+    size_t line_end = text.find('\n', line_start);
+    if (line_end == std::string::npos) {
+      line_end = text.size();
+    }
+    std::string raw = text.substr(line_start, line_end - line_start);
+    line_start = line_end + 1;
     std::string trimmed = Trim(raw);
     if (trimmed.empty() || trimmed[0] == '#') {
       continue;
@@ -2146,6 +2151,61 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
          net_mode_set || net_priority_set || gps_rtcm_types_set || gps_mode_set || pid_config.from_file;
 }
 
+bool ParseConfigFile(FILE* file, AppConfig* config) {
+  if (!file || !config) {
+    return false;
+  }
+  std::string text;
+  std::array<char, 256> buf{};
+  while (fgets(buf.data(), buf.size(), file)) {
+    text += buf.data();
+    if (text.size() > 8192) {
+      ESP_LOGW(TAG, "config.txt too large, ignoring tail");
+      break;
+    }
+  }
+  return ParseConfigText(text, config);
+}
+
+bool LoadConfigTextFromInternalFlash(std::string* out) {
+  if (!out) return false;
+  out->clear();
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(CONFIG_NVS_NAMESPACE, NVS_READONLY, &handle);
+  if (err != ESP_OK) {
+    return false;
+  }
+  size_t size = 0;
+  err = nvs_get_blob(handle, CONFIG_NVS_KEY, nullptr, &size);
+  if (err != ESP_OK || size == 0 || size > 8192) {
+    nvs_close(handle);
+    return false;
+  }
+  std::vector<char> buf(size + 1, '\0');
+  err = nvs_get_blob(handle, CONFIG_NVS_KEY, buf.data(), &size);
+  nvs_close(handle);
+  if (err != ESP_OK || size == 0) {
+    return false;
+  }
+  buf[size] = '\0';
+  out->assign(buf.data(), strnlen(buf.data(), size));
+  return !out->empty();
+}
+
+bool LoadConfigFromInternalFlash(AppConfig* config) {
+  std::string text;
+  if (!config || !LoadConfigTextFromInternalFlash(&text)) {
+    return false;
+  }
+  const bool parsed = ParseConfigText(text, config);
+  if (parsed) {
+    ESP_LOGI(TAG, "Config loaded from ESP internal flash NVS");
+  } else {
+    ESP_LOGW(TAG, "ESP internal flash config is present but invalid");
+  }
+  return parsed;
+}
+
 void LoadConfigFromSdCard(AppConfig* config) {
   if (!config) {
     return;
@@ -2153,7 +2213,8 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
   SdLockGuard guard;
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "SD mutex unavailable, skip config load");
+    ESP_LOGW(TAG, "SD mutex unavailable, trying ESP internal flash config");
+    (void)LoadConfigFromInternalFlash(config);
     return;
   }
 
@@ -2175,7 +2236,8 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
   esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
   if (ret != ESP_OK) {
-    ESP_LOGW(TAG, "SD mount failed for config.txt: %s", esp_err_to_name(ret));
+    ESP_LOGW(TAG, "SD mount failed for config.txt: %s, trying ESP internal flash config", esp_err_to_name(ret));
+    (void)LoadConfigFromInternalFlash(config);
     return;
   }
 
@@ -2183,8 +2245,9 @@ void LoadConfigFromSdCard(AppConfig* config) {
   if (!file) {
     file = fopen("/sdcard/config.bak", "r");
     if (!file) {
-      ESP_LOGW(TAG, "Config file not found at %s", CONFIG_FILE_PATH);
+      ESP_LOGW(TAG, "Config file not found at %s, trying ESP internal flash config", CONFIG_FILE_PATH);
       esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, card);
+      (void)LoadConfigFromInternalFlash(config);
       return;
     }
     ESP_LOGW(TAG, "Using backup config at /sdcard/config.bak");
@@ -2206,9 +2269,11 @@ void LoadConfigFromSdCard(AppConfig* config) {
       ESP_LOGI(TAG, "usb_mass_storage=%s (config.txt)", config->usb_mass_storage ? "true" : "false");
     }
   } else {
-    ESP_LOGW(TAG, "config.txt present but values are missing/invalid, using defaults");
-    config->wifi_ssid = DEFAULT_WIFI_SSID;
-    config->wifi_password = DEFAULT_WIFI_PASS;
+    ESP_LOGW(TAG, "config.txt present but values are missing/invalid, trying ESP internal flash config");
+    if (!LoadConfigFromInternalFlash(config)) {
+      config->wifi_ssid = DEFAULT_WIFI_SSID;
+      config->wifi_password = DEFAULT_WIFI_PASS;
+    }
   }
 }
 

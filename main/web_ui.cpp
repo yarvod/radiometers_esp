@@ -372,8 +372,9 @@ const char INDEX_HTML[] = R"rawliteral(
             <button class="btn" onclick="setExternalPower(true)">External Power ON</button>
             <button class="btn btn-stop" onclick="setExternalPower(false)">External Power OFF</button>
             <button class="btn" onclick="cycleExternalPower()">Power Cycle</button>
+            <button class="btn" onclick="syncConfigInternalFlash()">Sync config to ESP flash</button>
             <button class="btn btn-stop" onclick="restartDevice()">Restart ESP32</button>
-            <div class="note" id="systemActionStatus">EXT_PWR_ON is GPIO2, active high.</div>
+            <div class="note" id="systemActionStatus">Config is normally saved to SD and ESP internal flash. Use sync if SD config was edited manually.</div>
           </div>
         </div>
       </div>
@@ -1030,6 +1031,22 @@ const char INDEX_HTML[] = R"rawliteral(
         setSystemStatus('Power cycle request failed');
         refreshData();
       });
+    }
+
+    function syncConfigInternalFlash() {
+      setSystemStatus('Syncing config to ESP internal flash...');
+      fetch('/config/sync_internal_flash', { method: 'POST' })
+        .then(response => {
+          if (!response.ok) throw new Error('Config sync failed');
+          return response.json();
+        })
+        .then(() => {
+          setSystemStatus('Config synced to ESP internal flash');
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          setSystemStatus('Config sync to ESP flash failed');
+        });
     }
     
     function enableStepper() {

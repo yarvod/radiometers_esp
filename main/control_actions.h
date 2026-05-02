@@ -91,6 +91,7 @@ ActionResult ActionNetApply(const NetApplyRequest& req);
 ActionResult ActionCloudApply(const CloudApplyRequest& req);
 ActionResult ActionGpsApply(const GpsApplyRequest& req);
 ActionResult ActionGpsProbe();
+ActionResult ActionConfigSyncInternalFlash();
 ActionResult ActionUsbModeSet(UsbMode requested);
 ActionResult ActionUsbModeGet();
 ActionResult ActionCalibrate();

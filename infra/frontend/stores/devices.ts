@@ -207,6 +207,9 @@ export const useDevicesStore = defineStore('devices', {
     async externalPowerCycle(mqtt: MqttClient, deviceId: string, offMs = 1000) {
       return this.sendCommand(mqtt, deviceId, { type: 'external_power_cycle', offMs })
     },
+    async configSyncInternalFlash(mqtt: MqttClient, deviceId: string) {
+      return this.sendCommand(mqtt, deviceId, { type: 'config_sync_internal_flash' })
+    },
     async wifiApply(mqtt: MqttClient, deviceId: string, payload: { mode: string; ssid: string; password: string }) {
       return this.sendCommand(mqtt, deviceId, { type: 'wifi_apply', ...payload })
     },
