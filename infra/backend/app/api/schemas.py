@@ -49,6 +49,7 @@ class DeviceCreateRequest(BaseModel):
 class DeviceUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     temp_labels: Optional[list[str]] = None
+    temp_addresses: Optional[list[str]] = None
     adc_labels: Optional[dict[str, str]] = None
 
 
@@ -320,6 +321,9 @@ class MeasurementPointOut(BaseModel):
     adc1_cal: Optional[float]
     adc2_cal: Optional[float]
     adc3_cal: Optional[float]
+    brightness_temp1: Optional[float] = None
+    brightness_temp2: Optional[float] = None
+    brightness_temp3: Optional[float] = None
 
 
 class MeasurementsResponse(BaseModel):
@@ -332,6 +336,7 @@ class MeasurementsResponse(BaseModel):
     temp_labels: list[str] = Field(default_factory=list)
     adc_labels: dict[str, str] = Field(default_factory=dict)
     temp_addresses: list[str] = Field(default_factory=list)
+    brightness_temp_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class MeasurementLatestResponse(BaseModel):

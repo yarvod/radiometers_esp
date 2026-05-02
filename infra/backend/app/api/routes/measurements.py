@@ -5,7 +5,8 @@ from dishka.integrations.fastapi import FromDishka, inject
 
 from app.api.deps import get_current_user
 from app.api.schemas import MeasurementLatestResponse, MeasurementPointOut, MeasurementsResponse
-from app.domain.entities import User
+from app.domain.entities import MeasurementPoint, RadiometerCalibration, User
+from app.services.calibrations import RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.measurements import MeasurementService
 
@@ -21,11 +22,36 @@ def parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(raw)
 
 
+def normalize_dt(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=None)
+    return value.replace(tzinfo=None)
+
+
+def apply_brightness_temperatures(
+    points: list[MeasurementPoint],
+    calibrations: list[RadiometerCalibration],
+) -> None:
+    if not points or not calibrations:
+        return
+    ordered = sorted(calibrations, key=lambda item: normalize_dt(item.created_at))
+    cal_idx = 0
+    for point in points:
+        ts = normalize_dt(point.timestamp)
+        while cal_idx + 1 < len(ordered) and normalize_dt(ordered[cal_idx + 1].created_at) <= ts:
+            cal_idx += 1
+        cal = ordered[cal_idx]
+        point.brightness_temp1 = cal.adc1_slope * point.adc1 + cal.adc1_intercept
+        point.brightness_temp2 = cal.adc2_slope * point.adc2 + cal.adc2_intercept
+        point.brightness_temp3 = cal.adc3_slope * point.adc3 + cal.adc3_intercept
+
+
 @router.get("", response_model=MeasurementsResponse)
 @inject
 async def list_measurements(
     measurements: FromDishka[MeasurementService],
     devices: FromDishka[DeviceService],
+    calibrations: FromDishka[RadiometerCalibrationService],
     device_id: str = Query(..., min_length=1),
     start: str | None = Query(None, alias="from"),
     end: str | None = Query(None, alias="to"),
@@ -35,13 +61,16 @@ async def list_measurements(
 ):
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)
-    points, raw_count, bucket_seconds, bucket_label, aggregated = await measurements.list_series(
+    points_seq, raw_count, bucket_seconds, bucket_label, aggregated = await measurements.list_series(
         device_id=device_id,
         start=start_dt,
         end=end_dt,
         limit=limit,
         bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
     )
+    points = list(points_seq)
+    calibration_items, _ = await calibrations.list(device_id=device_id, limit=10000, offset=0)
+    apply_brightness_temperatures(points, list(calibration_items))
     device = await devices.get_device(device_id)
     config_temp_labels = list(device.temp_labels) if device else []
     config_temp_addresses = list(device.temp_addresses) if device else []
@@ -56,6 +85,11 @@ async def list_measurements(
     if len(config_temp_addresses) < max_temp:
         config_temp_addresses.extend([""] * (max_temp - len(config_temp_addresses)))
     adc_labels = dict(device.adc_labels) if device else {}
+    brightness_temp_labels = {
+        "brightness_temp1": f"{adc_labels.get('adc1') or 'ADC1'} Tk",
+        "brightness_temp2": f"{adc_labels.get('adc2') or 'ADC2'} Tk",
+        "brightness_temp3": f"{adc_labels.get('adc3') or 'ADC3'} Tk",
+    }
     return MeasurementsResponse(
         points=[MeasurementPointOut.model_validate(item, from_attributes=True) for item in points],
         raw_count=raw_count,
@@ -66,6 +100,7 @@ async def list_measurements(
         temp_labels=temp_labels,
         adc_labels=adc_labels,
         temp_addresses=config_temp_addresses,
+        brightness_temp_labels=brightness_temp_labels,
     )
 
 

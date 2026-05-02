@@ -25,6 +25,24 @@ class DeviceService:
         temp_addresses: list[str] | None = None,
         adc_labels: dict[str, str] | None = None,
     ) -> Device:
+        if temp_addresses is not None and temp_labels is None:
+            existing = await self._devices.get(device_id=device_id)
+            if existing:
+                labels_by_address = {
+                    address: label
+                    for address, label in zip(existing.temp_addresses, existing.temp_labels)
+                    if address and label
+                }
+                had_addresses = any(existing.temp_addresses)
+                aligned_labels: list[str] = []
+                for idx, address in enumerate(temp_addresses):
+                    if address and address in labels_by_address:
+                        aligned_labels.append(labels_by_address[address])
+                    elif not had_addresses and idx < len(existing.temp_labels) and existing.temp_labels[idx]:
+                        aligned_labels.append(existing.temp_labels[idx])
+                    else:
+                        aligned_labels.append(f"t{idx + 1}")
+                temp_labels = aligned_labels
         return await self._devices.update(
             device_id=device_id,
             display_name=display_name,

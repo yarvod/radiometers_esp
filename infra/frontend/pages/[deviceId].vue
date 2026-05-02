@@ -413,6 +413,12 @@
             <canvas ref="adcChartEl"></canvas>
           </div>
         </div>
+        <div class="chart-box">
+          <h4>Яркостная температура Tk</h4>
+          <div class="chart-body">
+            <canvas ref="brightnessChartEl"></canvas>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -559,6 +565,9 @@ type MeasurementPoint = {
   adc1_cal: number | null
   adc2_cal: number | null
   adc3_cal: number | null
+  brightness_temp1: number | null
+  brightness_temp2: number | null
+  brightness_temp3: number | null
 }
 
 type MeasurementsResponse = {
@@ -571,6 +580,7 @@ type MeasurementsResponse = {
   temp_labels: string[]
   adc_labels: Record<string, string>
   temp_addresses: string[]
+  brightness_temp_labels: Record<string, string>
 }
 
 type ErrorEvent = {
@@ -660,8 +670,13 @@ const gpsForm = reactive({
 })
 const tempEntries = computed(() => {
   const sensors = device.value?.state?.tempSensors
+  const byIndex = deviceConfig.value?.temp_labels || []
+  const addresses = deviceConfig.value?.temp_addresses || []
+  const labelByAddress = new Map<string, string>()
+  addresses.forEach((address, idx) => {
+    if (address) labelByAddress.set(address, byIndex[idx] || `t${idx + 1}`)
+  })
   if (Array.isArray(sensors)) {
-    const byIndex = deviceConfig.value?.temp_labels || []
     return sensors.map((value, idx) => ({
       key: `t${idx + 1}`,
       label: byIndex[idx] || `t${idx + 1}`,
@@ -670,7 +685,6 @@ const tempEntries = computed(() => {
     }))
   }
   if (!sensors || typeof sensors !== 'object') return []
-  const byIndex = deviceConfig.value?.temp_labels || []
   const entries = Object.entries(sensors as Record<string, any>)
   entries.sort(([a], [b]) => {
     const ai = a.startsWith('t') ? Number(a.slice(1)) : Number.NaN
@@ -683,7 +697,7 @@ const tempEntries = computed(() => {
   return entries.map(([label, entry], idx) => {
     if (entry && typeof entry === 'object') {
       const address = entry.address || ''
-      const renamed = byIndex[idx] || label
+      const renamed = (address && labelByAddress.get(address)) || byIndex[idx] || label
       return { key: label, label: renamed, value: entry.value, address }
     }
     const renamed = byIndex[idx] || label
@@ -760,6 +774,7 @@ const historySelection = reactive({
 })
 const historyData = ref<MeasurementPoint[]>([])
 const historyTempLabels = ref<string[]>([])
+const historyBrightnessLabels = ref<Record<string, string>>({})
 const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
@@ -790,8 +805,10 @@ const errorRangeLabel = computed(() => {
 })
 const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
+const brightnessChartEl = ref<HTMLCanvasElement | null>(null)
 let tempChart: any = null
 let adcChart: any = null
+let brightnessChart: any = null
 let ChartCtor: any = null
 
 const maskToIndices = (mask: number, count: number) => {
@@ -1096,15 +1113,43 @@ const buildAdcDatasets = () => {
     .map((series) => buildDataset(series.label, historyData.value.map((row) => series.extract(row)), series.color))
 }
 
+const buildBrightnessDatasets = () => {
+  const options: AdcSeriesOption[] = [
+    {
+      key: 'brightness_temp1',
+      label: historyBrightnessLabels.value.brightness_temp1 || `${adcLabelMap.value.adc1 || 'ADC1'} Tk`,
+      color: '#16a085',
+      extract: (row) => row.brightness_temp1 ?? null,
+    },
+    {
+      key: 'brightness_temp2',
+      label: historyBrightnessLabels.value.brightness_temp2 || `${adcLabelMap.value.adc2 || 'ADC2'} Tk`,
+      color: '#c0392b',
+      extract: (row) => row.brightness_temp2 ?? null,
+    },
+    {
+      key: 'brightness_temp3',
+      label: historyBrightnessLabels.value.brightness_temp3 || `${adcLabelMap.value.adc3 || 'ADC3'} Tk`,
+      color: '#8e44ad',
+      extract: (row) => row.brightness_temp3 ?? null,
+    },
+  ]
+  return options
+    .map((series) => buildDataset(series.label, historyData.value.map((row) => series.extract(row)), series.color))
+    .filter((dataset) => dataset.data.some((value) => Number.isFinite(value)))
+}
+
 const renderCharts = () => {
   if (!ChartCtor) return
-  if (!tempChartEl.value || !adcChartEl.value) return
+  if (!tempChartEl.value || !adcChartEl.value || !brightnessChartEl.value) return
 
   const labels = historyLabels.value
   const tempDatasets = buildTempDatasets()
   const adcDatasets = buildAdcDatasets()
+  const brightnessDatasets = buildBrightnessDatasets()
   const tempHidden = new Map<string, boolean>()
   const adcHidden = new Map<string, boolean>()
+  const brightnessHidden = new Map<string, boolean>()
   if (tempChart?.data?.datasets) {
     tempChart.data.datasets.forEach((dataset: any) => {
       if (dataset?.label) tempHidden.set(dataset.label, !!dataset.hidden)
@@ -1115,11 +1160,19 @@ const renderCharts = () => {
       if (dataset?.label) adcHidden.set(dataset.label, !!dataset.hidden)
     })
   }
+  if (brightnessChart?.data?.datasets) {
+    brightnessChart.data.datasets.forEach((dataset: any) => {
+      if (dataset?.label) brightnessHidden.set(dataset.label, !!dataset.hidden)
+    })
+  }
   tempDatasets.forEach((dataset) => {
     if (tempHidden.has(dataset.label)) dataset.hidden = tempHidden.get(dataset.label)
   })
   adcDatasets.forEach((dataset) => {
     if (adcHidden.has(dataset.label)) dataset.hidden = adcHidden.get(dataset.label)
+  })
+  brightnessDatasets.forEach((dataset) => {
+    if (brightnessHidden.has(dataset.label)) dataset.hidden = brightnessHidden.get(dataset.label)
   })
 
   if (!tempChart) {
@@ -1176,6 +1229,34 @@ const renderCharts = () => {
     adcChart.data.labels = labels
     adcChart.data.datasets = adcDatasets
     adcChart.update('none')
+  }
+
+  if (!brightnessChart) {
+    brightnessChart = new ChartCtor(brightnessChartEl.value, {
+      type: 'line',
+      data: { labels, datasets: brightnessDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            position: 'top',
+            align: 'start',
+            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
+          },
+        },
+        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
+          y: { ticks: { maxTicksLimit: 6 } },
+        },
+      },
+    })
+  } else {
+    brightnessChart.data.labels = labels
+    brightnessChart.data.datasets = brightnessDatasets
+    brightnessChart.update('none')
   }
 }
 
@@ -1331,6 +1412,7 @@ watch(
     historySelection.adcSeries,
     historyTempOptions.value.map((item) => item.label),
     adcSeriesOptions.value.map((item) => item.label),
+    historyBrightnessLabels.value,
   ],
   () => {
     renderCharts()
@@ -1701,7 +1783,9 @@ async function loadHistory() {
     const response = await apiFetch<MeasurementsResponse>(`/api/measurements?${params.toString()}`)
     historyData.value = response.points
     historyTempLabels.value = response.temp_labels || []
-    if (response.temp_addresses?.length && deviceConfig.value && deviceConfig.value.temp_addresses.length === 0) {
+    historyBrightnessLabels.value = response.brightness_temp_labels || {}
+    const hasKnownTempAddresses = !!deviceConfig.value?.temp_addresses?.some(Boolean)
+    if (response.temp_addresses?.some(Boolean) && deviceConfig.value && !hasKnownTempAddresses) {
       deviceConfig.value = { ...deviceConfig.value, temp_addresses: response.temp_addresses }
       if (!configDirty.value) {
         seedConfigForm()
@@ -1763,11 +1847,15 @@ const seedConfigForm = () => {
   const tempAddresses = config.temp_addresses || []
   const rows: TempConfigRow[] = []
   const live = tempEntries.value
+  const labelByAddress = new Map<string, string>()
+  tempAddresses.forEach((address, idx) => {
+    if (address) labelByAddress.set(address, tempLabels[idx] || `t${idx + 1}`)
+  })
   const length = Math.max(live.length, tempLabels.length, tempAddresses.length)
   for (let idx = 0; idx < length; idx += 1) {
     const liveEntry = live[idx]
-    const address = tempAddresses[idx] || liveEntry?.address || ''
-    const label = tempLabels[idx] || liveEntry?.label || `t${idx + 1}`
+    const address = liveEntry?.address || tempAddresses[idx] || ''
+    const label = (address && labelByAddress.get(address)) || tempLabels[idx] || liveEntry?.label || `t${idx + 1}`
     rows.push({ index: idx, address: address || null, label })
   }
   configForm.tempRows = rows
@@ -1800,10 +1888,12 @@ const saveConfig = async () => {
   configStatus.value = 'Сохраняю настройки...'
   try {
     const tempLabels: string[] = []
+    const tempAddresses: string[] = []
     configForm.tempRows.forEach((row) => {
       const label = row.label.trim()
       if (row.index !== null) {
         tempLabels[row.index] = label || `t${row.index + 1}`
+        tempAddresses[row.index] = row.address || ''
       }
     })
     for (let i = 0; i < tempLabels.length; i += 1) {
@@ -1822,6 +1912,7 @@ const saveConfig = async () => {
       body: {
         display_name: displayName ? displayName : null,
         temp_labels: tempLabels,
+        temp_addresses: tempAddresses,
         adc_labels: adcLabels,
       },
     })
@@ -1876,6 +1967,10 @@ onBeforeUnmount(() => {
   if (adcChart) {
     adcChart.destroy()
     adcChart = null
+  }
+  if (brightnessChart) {
+    brightnessChart.destroy()
+    brightnessChart = null
   }
 })
 

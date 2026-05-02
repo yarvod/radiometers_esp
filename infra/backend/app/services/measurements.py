@@ -79,6 +79,9 @@ class MeasurementService:
             adc1_cal=row.adc1_cal,
             adc2_cal=row.adc2_cal,
             adc3_cal=row.adc3_cal,
+            brightness_temp1=None,
+            brightness_temp2=None,
+            brightness_temp3=None,
         )
 
     @staticmethod
