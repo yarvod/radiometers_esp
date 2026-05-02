@@ -90,6 +90,8 @@ constexpr uint16_t INA219_CALIBRATION = 4096;        // Register calibration kep
 constexpr float INA219_CURRENT_LSB = 0.0002f;        // 200 uA; 0.05R shunt doubles physical current
 constexpr float INA219_POWER_LSB = INA219_CURRENT_LSB * 20.0f;
 constexpr float INA219_BUS_LSB = 0.004f;             // 4 mV
+constexpr int INA219_I2C_FREQ_HZ = 100000;
+constexpr TickType_t INA219_I2C_TIMEOUT = pdMS_TO_TICKS(250);
 // Wi-Fi helpers
 constexpr int WIFI_CONNECTED_BIT = BIT0;
 constexpr int WIFI_FAIL_BIT = BIT1;
@@ -2603,7 +2605,7 @@ esp_err_t InitIna219() {
     bus_cfg.sda_io_num = INA_SDA;
     bus_cfg.scl_io_num = INA_SCL;
     bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
-    bus_cfg.glitch_ignore_cnt = 0;
+    bus_cfg.glitch_ignore_cnt = 7;
     bus_cfg.intr_priority = 0;
     bus_cfg.trans_queue_depth = 0;
     bus_cfg.flags.enable_internal_pullup = true;
@@ -2614,7 +2616,7 @@ esp_err_t InitIna219() {
     i2c_device_config_t dev_cfg = {};
     dev_cfg.device_address = INA219_ADDR;
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-    dev_cfg.scl_speed_hz = 400000;
+    dev_cfg.scl_speed_hz = INA219_I2C_FREQ_HZ;
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &ina219_dev), TAG, "INA219 attach failed");
   }
 
@@ -2624,7 +2626,7 @@ esp_err_t InitIna219() {
         static_cast<uint8_t>((value >> 8) & 0xFF),
         static_cast<uint8_t>(value & 0xFF),
     };
-    return i2c_master_transmit(ina219_dev, payload, sizeof(payload), pdMS_TO_TICKS(100));
+    return i2c_master_transmit(ina219_dev, payload, sizeof(payload), INA219_I2C_TIMEOUT);
   };
 
   ESP_RETURN_ON_ERROR(write_reg(0x00, INA219_CONFIG), TAG, "INA219 config failed");
@@ -2635,7 +2637,7 @@ esp_err_t InitIna219() {
 
 esp_err_t ReadIna219() {
   if (!ina219_dev) {
-    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning, "INA219 not initialized");
+    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning, "INA219 not initialized");
     return ESP_ERR_INVALID_STATE;
   }
   auto read_reg = [](uint8_t reg, uint16_t* value) -> esp_err_t {
@@ -2645,7 +2647,7 @@ esp_err_t ReadIna219() {
     uint8_t reg_addr = reg;
     uint8_t rx[2] = {};
     esp_err_t res =
-        i2c_master_transmit_receive(ina219_dev, &reg_addr, sizeof(reg_addr), rx, sizeof(rx), pdMS_TO_TICKS(100));
+        i2c_master_transmit_receive(ina219_dev, &reg_addr, sizeof(reg_addr), rx, sizeof(rx), INA219_I2C_TIMEOUT);
     if (res == ESP_OK) {
       *value = static_cast<uint16_t>(static_cast<uint16_t>(rx[0]) << 8 | static_cast<uint16_t>(rx[1]));
     }
@@ -2658,20 +2660,20 @@ esp_err_t ReadIna219() {
 
   esp_err_t err = read_reg(0x02, &bus_raw);
   if (err != ESP_OK) {
-    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                    std::string("INA219 read bus failed (i2c): ") + esp_err_to_name(err));
+    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning,
+                         std::string("INA219 read bus failed (i2c): ") + esp_err_to_name(err));
     return err;
   }
   err = read_reg(0x04, &current_raw);
   if (err != ESP_OK) {
-    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                    std::string("INA219 read current failed (i2c): ") + esp_err_to_name(err));
+    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning,
+                         std::string("INA219 read current failed (i2c): ") + esp_err_to_name(err));
     return err;
   }
   err = read_reg(0x03, &power_raw);
   if (err != ESP_OK) {
-    ErrorManagerSet(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                    std::string("INA219 read power failed (i2c): ") + esp_err_to_name(err));
+    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning,
+                         std::string("INA219 read power failed (i2c): ") + esp_err_to_name(err));
     return err;
   }
 
@@ -2685,7 +2687,7 @@ esp_err_t ReadIna219() {
     s.ina_current = current_a;
     s.ina_power = power_w;
   });
-  ErrorManagerClear(ErrorCode::kInaRead);
+  ErrorManagerClearLocal(ErrorCode::kInaRead);
   return ESP_OK;
 }
 
@@ -2923,10 +2925,29 @@ void AdcTask(void*) {
 }
 
 void Ina219Task(void*) {
+  int consecutive_failures = 0;
+  int64_t last_log_us = 0;
+  int64_t last_reinit_us = 0;
   while (true) {
     esp_err_t err = ReadIna219();
     if (err != ESP_OK) {
-      ESP_LOGW(TAG, "INA219 read failed: %s", esp_err_to_name(err));
+      consecutive_failures++;
+      const int64_t now_us = esp_timer_get_time();
+      if (consecutive_failures == 1 || now_us - last_log_us > 10'000'000) {
+        ESP_LOGW(TAG, "INA219 read failed: %s (consecutive=%d)", esp_err_to_name(err), consecutive_failures);
+        last_log_us = now_us;
+      }
+      if (consecutive_failures >= 3 && now_us - last_reinit_us > 10'000'000) {
+        last_reinit_us = now_us;
+        ESP_LOGW(TAG, "Reinitializing INA219 after I2C failures");
+        esp_err_t init_err = InitIna219();
+        if (init_err != ESP_OK) {
+          ESP_LOGW(TAG, "INA219 reinit failed: %s", esp_err_to_name(init_err));
+        }
+      }
+    } else if (consecutive_failures > 0) {
+      ESP_LOGI(TAG, "INA219 recovered after %d failed read(s)", consecutive_failures);
+      consecutive_failures = 0;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
@@ -3233,7 +3254,7 @@ extern "C" void app_main(void) {
   xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
   xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
   if (ina_err == ESP_OK) {
-    xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 3072, nullptr, 2, nullptr, 0);
+    xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 5120, nullptr, 2, nullptr, 0);
   }
   if (FAN1_TACH != GPIO_NUM_NC || FAN2_TACH != GPIO_NUM_NC) {
     xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);

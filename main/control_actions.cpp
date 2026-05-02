@@ -11,6 +11,22 @@
 
 namespace {
 
+TaskHandle_t network_apply_task = nullptr;
+
+void NetworkApplyTask(void*) {
+  vTaskDelay(pdMS_TO_TICKS(700));
+  ApplyNetworkConfig();
+  network_apply_task = nullptr;
+  vTaskDelete(nullptr);
+}
+
+void ScheduleNetworkApply() {
+  if (network_apply_task) {
+    return;
+  }
+  xTaskCreatePinnedToCore(&NetworkApplyTask, "net_apply", 4096, nullptr, 2, &network_apply_task, 0);
+}
+
 std::string BuildStateJsonInternal() {
   SharedState snapshot = CopyState();
   cJSON* root = cJSON_CreateObject();
@@ -299,8 +315,8 @@ ActionResult ActionWifiApply(const WifiApplyRequest& req) {
   app_config.wifi_ap_mode = (mode == "ap");
   app_config.wifi_from_file = true;
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
-  ApplyNetworkConfig();
-  return {true, "wifi_applied", {}};
+  ScheduleNetworkApply();
+  return {true, "wifi_saved_reconnect_scheduled", {}};
 }
 
 ActionResult ActionNetApply(const NetApplyRequest& req) {
@@ -315,8 +331,8 @@ ActionResult ActionNetApply(const NetApplyRequest& req) {
   app_config.net_mode = new_mode;
   app_config.net_priority = new_priority;
   SaveConfigToSdCard(app_config, pid_config, usb_mode);
-  ApplyNetworkConfig();
-  return {true, "net_applied", {}};
+  ScheduleNetworkApply();
+  return {true, "net_saved_reconnect_scheduled", {}};
 }
 
 ActionResult ActionCloudApply(const CloudApplyRequest& req) {
