@@ -279,7 +279,7 @@ void Log1033AsciiFragments(const RtcmFrame& frame) {
     fragments.push_back(current);
   }
   for (size_t i = 0; i < fragments.size() && i < 6; ++i) {
-    ESP_LOGI(TAG_GPS, "RTCM1033 ascii[%u]: %s", static_cast<unsigned>(i), fragments[i].c_str());
+    ESP_LOGD(TAG_GPS, "RTCM1033 ascii[%u]: %s", static_cast<unsigned>(i), fragments[i].c_str());
   }
 }
 
@@ -434,7 +434,7 @@ bool parseRtcmFrameFromBuffer(std::vector<uint8_t>& buffer, RtcmFrame& out, bool
   }
 
   const uint16_t payload_len = (static_cast<uint16_t>(buffer[1] & 0x03) << 8) | buffer[2];
-  ESP_LOGI(TAG_GPS, "RTCM candidate header: %s payload_len=%u buffered=%u",
+  ESP_LOGD(TAG_GPS, "RTCM candidate header: %s payload_len=%u buffered=%u",
            HexPreview(buffer.data(), std::min<size_t>(buffer.size(), 12), 12).c_str(),
            payload_len, static_cast<unsigned>(buffer.size()));
   if ((buffer[1] & 0xFC) != 0 || payload_len == 0 || payload_len > kRtcmMaxPayloadLen) {
@@ -467,7 +467,7 @@ bool parseRtcmFrameFromBuffer(std::vector<uint8_t>& buffer, RtcmFrame& out, bool
   parsed.raw = std::move(frame);
   parsed.crc_ok = true;
   parsed.message_type = getRtcmMessageType(parsed.raw);
-  ESP_LOGI(TAG_GPS, "RTCM frame parsed type=%u payload_len=%u total=%u",
+  ESP_LOGD(TAG_GPS, "RTCM frame parsed type=%u payload_len=%u total=%u",
            parsed.message_type, payload_len, static_cast<unsigned>(parsed.raw.size()));
   out = std::move(parsed);
   buffer.erase(buffer.begin(), buffer.begin() + frame_len);
@@ -531,7 +531,7 @@ void GpsUnicoreClient::sendCommand(const std::string& cmd) {
   if (written != static_cast<int>(line.size())) {
     ESP_LOGW(TAG_GPS, "UART write incomplete for '%s': %d/%u", cmd.c_str(), written, static_cast<unsigned>(line.size()));
   } else {
-    ESP_LOGI(TAG_GPS, "TX: %s", cmd.c_str());
+    ESP_LOGD(TAG_GPS, "TX: %s", cmd.c_str());
   }
 }
 
@@ -645,7 +645,7 @@ bool GpsUnicoreClient::finishFrame(CurrentFrame& out) {
   out = current_frame_;
   current_frame_active_ = false;
   xSemaphoreGive(data_mutex_);
-  ESP_LOGI(TAG_GPS, "Frame %u collected: time=%s gpzda=%s 1006=%s 1033=%s 1004=%s",
+  ESP_LOGD(TAG_GPS, "Frame %u collected: time=%s gpzda=%s 1006=%s 1033=%s 1004=%s",
            static_cast<unsigned>(out.frame_index),
            out.timestamp.valid ? "yes" : "no",
            out.gpzda_line.empty() ? "no" : "yes",
@@ -679,28 +679,28 @@ bool GpsUnicoreClient::writeRtcmFramesToFile(const CurrentFrame& frame, FILE* fi
     if (type == 1004) {
       Rtcm1004Debug dbg{};
       if (DecodeRtcm1004(rtcm, &dbg)) {
-        ESP_LOGI(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=%u",
+        ESP_LOGD(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=%u",
                  static_cast<unsigned>(rtcm.raw.size()), static_cast<unsigned>(dbg.satellite_count));
       } else {
-        ESP_LOGI(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=unknown",
+        ESP_LOGD(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=unknown",
                  static_cast<unsigned>(rtcm.raw.size()));
       }
     } else if (type == 1006) {
       Rtcm1006Debug dbg{};
       if (DecodeRtcm1006(rtcm, &dbg)) {
-        ESP_LOGI(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
+        ESP_LOGD(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
                  static_cast<unsigned>(rtcm.raw.size()));
-        ESP_LOGI(TAG_GPS, "RTCM1006 XYZ: X=%.4f, Y=%.4f, Z=%.4f, H=%.4f",
+        ESP_LOGD(TAG_GPS, "RTCM1006 XYZ: X=%.4f, Y=%.4f, Z=%.4f, H=%.4f",
                  dbg.ecef_x_m, dbg.ecef_y_m, dbg.ecef_z_m, dbg.antenna_height_m);
       } else {
-        ESP_LOGI(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
+        ESP_LOGD(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
                  static_cast<unsigned>(rtcm.raw.size()));
       }
     } else if (type == 1033) {
-      ESP_LOGI(TAG_GPS, "RTCM1033 written, size=%u, receiver/antenna metadata",
+      ESP_LOGD(TAG_GPS, "RTCM1033 written, size=%u, receiver/antenna metadata",
                static_cast<unsigned>(rtcm.raw.size()));
     } else {
-      ESP_LOGI(TAG_GPS, "RTCM%u written, size=%u", type, static_cast<unsigned>(rtcm.raw.size()));
+      ESP_LOGD(TAG_GPS, "RTCM%u written, size=%u", type, static_cast<unsigned>(rtcm.raw.size()));
     }
   };
 
@@ -778,7 +778,7 @@ void GpsUnicoreClient::handleBytes(const uint8_t* data, size_t len) {
   if (!data || len == 0) return;
   const bool chunk_has_d3 = std::find(data, data + len, 0xD3) != data + len;
   if (chunk_has_d3) {
-    ESP_LOGI(TAG_GPS, "RX chunk contains RTCM preamble 0xD3, bytes=%u parser_buffer_before=%u",
+    ESP_LOGD(TAG_GPS, "RX chunk contains RTCM preamble 0xD3, bytes=%u parser_buffer_before=%u",
              static_cast<unsigned>(len), static_cast<unsigned>(rx_buffer_.size()));
   }
   if (rx_buffer_.size() + len > kParserMaxBuffer) {
@@ -866,20 +866,20 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
       xSemaphoreGive(data_mutex_);
     }
     if (active) {
-      ESP_LOGI(TAG_GPS, "Frame %u time %04u-%02u-%02u %02u:%02u:%02u.%03u UTC",
+      ESP_LOGD(TAG_GPS, "Frame %u time %04u-%02u-%02u %02u:%02u:%02u.%03u UTC",
                static_cast<unsigned>(frame_index), parsed.year, parsed.month, parsed.day,
                parsed.hour, parsed.minute, parsed.second, parsed.millisecond);
     } else {
-      ESP_LOGI(TAG_GPS, "UTC %04u-%02u-%02u %02u:%02u:%02u.%03u",
+      ESP_LOGD(TAG_GPS, "UTC %04u-%02u-%02u %02u:%02u:%02u.%03u",
                parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second, parsed.millisecond);
     }
     return;
   }
 
   if (line.rfind("$command", 0) == 0) {
-    ESP_LOGI(TAG_GPS, "Command response: %s", line.c_str());
+    ESP_LOGD(TAG_GPS, "Command response: %s", line.c_str());
   } else if (line.rfind("#VERSION", 0) == 0 || line.rfind("#MODE", 0) == 0) {
-    ESP_LOGI(TAG_GPS, "Receiver response: %s", line.c_str());
+    ESP_LOGD(TAG_GPS, "Receiver response: %s", line.c_str());
     if (line.rfind("#MODE", 0) == 0) {
       const std::string mode = ExtractModeFromLine(line);
       if (!mode.empty() && data_mutex_ && xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -923,27 +923,27 @@ void GpsUnicoreClient::handleRtcmFrame(const RtcmFrame& frame) {
   if (frame.message_type == 1006) {
     Rtcm1006Debug dbg{};
     if (DecodeRtcm1006(frame, &dbg)) {
-      ESP_LOGI(TAG_GPS, "%s %u got RTCM1006 size=%u crc=OK, used for APPROX POSITION XYZ, station=%u xyz=%.4f,%.4f,%.4f h=%.4f",
+      ESP_LOGD(TAG_GPS, "%s %u got RTCM1006 size=%u crc=OK, used for APPROX POSITION XYZ, station=%u xyz=%.4f,%.4f,%.4f h=%.4f",
                prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()),
                dbg.station_id, dbg.ecef_x_m, dbg.ecef_y_m, dbg.ecef_z_m, dbg.antenna_height_m);
     } else {
-      ESP_LOGI(TAG_GPS, "%s %u got RTCM1006 size=%u crc=OK, used for APPROX POSITION XYZ",
+      ESP_LOGD(TAG_GPS, "%s %u got RTCM1006 size=%u crc=OK, used for APPROX POSITION XYZ",
                prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()));
     }
   } else if (frame.message_type == 1033) {
-    ESP_LOGI(TAG_GPS, "%s %u got RTCM1033 size=%u crc=OK, receiver/antenna metadata",
+    ESP_LOGD(TAG_GPS, "%s %u got RTCM1033 size=%u crc=OK, receiver/antenna metadata",
              prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()));
     Log1033AsciiFragments(frame);
   } else if (frame.message_type == 1004) {
     Rtcm1004Debug dbg{};
     if (DecodeRtcm1004(frame, &dbg)) {
       const std::string prns = FormatGpsPrns(dbg.prns);
-      ESP_LOGI(TAG_GPS, "%s %u got RTCM1004 size=%u crc=OK, GPS obs, station=%u epoch_ms=%u sat_count=%u prns=%s",
+      ESP_LOGD(TAG_GPS, "%s %u got RTCM1004 size=%u crc=OK, GPS obs, station=%u epoch_ms=%u sat_count=%u prns=%s",
                prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()),
                dbg.station_id, static_cast<unsigned>(dbg.gps_epoch_time_ms),
                static_cast<unsigned>(dbg.satellite_count), prns.c_str());
     } else {
-      ESP_LOGI(TAG_GPS, "%s %u got RTCM1004 size=%u crc=OK, GPS obs",
+      ESP_LOGD(TAG_GPS, "%s %u got RTCM1004 size=%u crc=OK, GPS obs",
                prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()));
     }
   }
@@ -959,7 +959,7 @@ void GpsUnicoreClient::storeRtcmLocked(const RtcmFrame& frame) {
           return;
         }
         if (dbg.satellite_count == 0) {
-          ESP_LOGW(TAG_GPS, "RTCM1004 empty: satellite_count=0");
+          ESP_LOGD(TAG_GPS, "RTCM1004 empty: satellite_count=0");
           return;
         }
       }

@@ -1064,10 +1064,10 @@ static bool QueueCurrentGnssLogForUploadLocked() {
   return true;
 }
 
-static bool EnsureRtcmLogFileLocked() {
+static bool EnsureRtcmLogFileLocked(const GpsDateTime* frame_time) {
   if (current_gnss_log_path.empty() || gps_log_file_start_us == 0) {
     (void)MoveRootGpsFilesToUploadLocked("");
-    const std::string filename = BuildGnssLogFilename(nullptr);
+    const std::string filename = BuildGnssLogFilename(frame_time);
     current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
     gps_log_file_start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
@@ -1088,7 +1088,7 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
   const bool first_open = gps_log_file_start_us == 0;
   const uint64_t now_us = esp_timer_get_time();
   if (first_open || current_gnss_log_path.empty()) {
-    if (!EnsureRtcmLogFileLocked()) {
+    if (!EnsureRtcmLogFileLocked(frame.timestamp.valid ? &frame.timestamp : nullptr)) {
       return false;
     }
   } else if (now_us - gps_log_file_start_us >= kRotateUs) {
@@ -1117,7 +1117,7 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
   }
   if (ok) {
     UpdateSdStatsLocked();
-    ESP_LOGI(TAG, "GNSS frame %u appended to RTCM3 log %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
+    ESP_LOGD(TAG, "GNSS frame %u appended to RTCM3 log %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
   } else {
     ESP_LOGE(TAG, "Failed to append GNSS frame %u to RTCM3 log", static_cast<unsigned>(frame.frame_index));
   }
@@ -1127,7 +1127,7 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
 static void WarnMissingGnssFrameData(const CurrentFrame& frame) {
   for (uint16_t type : app_config.gps_rtcm_types) {
     if (frame.rtcm_by_type.count(type) == 0) {
-      ESP_LOGW(TAG, "GNSS frame %u missing RTCM%u", static_cast<unsigned>(frame.frame_index), static_cast<unsigned>(type));
+      ESP_LOGD(TAG, "GNSS frame %u missing RTCM%u", static_cast<unsigned>(frame.frame_index), static_cast<unsigned>(type));
     }
   }
 }
@@ -1147,7 +1147,7 @@ static void GpsLogTask(void*) {
   {
     SdLockGuard guard(pdMS_TO_TICKS(1000));
     if (guard.locked() && MountLogSd()) {
-      (void)EnsureRtcmLogFileLocked();
+      (void)MoveRootGpsFilesToUploadLocked("");
       if (!log_file) {
         UnmountLogSd();
       }
