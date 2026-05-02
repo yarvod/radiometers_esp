@@ -65,6 +65,31 @@ class MeasurementPoint:
 
 
 @dataclass
+class RadiometerCalibration:
+    id: str
+    device_id: str
+    created_at: datetime
+    t_black_body_1: float
+    t_black_body_2: float
+    adc1_1: float
+    adc2_1: float
+    adc3_1: float
+    adc1_2: float
+    adc2_2: float
+    adc3_2: float
+    t_adc1: float
+    t_adc2: float
+    t_adc3: float
+    adc1_slope: float
+    adc2_slope: float
+    adc3_slope: float
+    adc1_intercept: float
+    adc2_intercept: float
+    adc3_intercept: float
+    comment: Optional[str]
+
+
+@dataclass
 class User:
     id: str
     username: str

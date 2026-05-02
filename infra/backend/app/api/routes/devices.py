@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from dishka.integrations.fastapi import FromDishka, inject
 
 from app.api.deps import get_current_user
@@ -13,8 +13,13 @@ from app.api.schemas import (
     DeviceUpdateRequest,
     ErrorEventOut,
     ErrorEventsResponse,
+    RadiometerCalibrationCreateRequest,
+    RadiometerCalibrationOut,
+    RadiometerCalibrationUpdateRequest,
+    RadiometerCalibrationsResponse,
 )
 from app.domain.entities import User
+from app.services.calibrations import CalibrationError, RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
 
@@ -128,6 +133,100 @@ async def update_device_gps(
         actual_mode=payload.actual_mode,
     )
     return DeviceGpsConfigOut.model_validate(config, from_attributes=True)
+
+
+@router.get("/{device_id}/calibrations", response_model=RadiometerCalibrationsResponse)
+@inject
+async def list_radiometer_calibrations(
+    device_id: str,
+    calibrations: FromDishka[RadiometerCalibrationService],
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+):
+    items, total = await calibrations.list(device_id=device_id, limit=limit, offset=offset)
+    return RadiometerCalibrationsResponse(
+        items=[RadiometerCalibrationOut.model_validate(item, from_attributes=True) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/{device_id}/calibrations", response_model=RadiometerCalibrationOut, status_code=status.HTTP_201_CREATED)
+@inject
+async def create_radiometer_calibration(
+    device_id: str,
+    payload: RadiometerCalibrationCreateRequest,
+    calibrations: FromDishka[RadiometerCalibrationService],
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        calibration = await calibrations.create(
+            device_id=device_id,
+            t_black_body_1=payload.t_black_body_1,
+            t_black_body_2=payload.t_black_body_2,
+            adc1_1=payload.adc1_1,
+            adc2_1=payload.adc2_1,
+            adc3_1=payload.adc3_1,
+            adc1_2=payload.adc1_2,
+            adc2_2=payload.adc2_2,
+            adc3_2=payload.adc3_2,
+            t_adc1=payload.t_adc1,
+            t_adc2=payload.t_adc2,
+            t_adc3=payload.t_adc3,
+            comment=payload.comment,
+        )
+    except CalibrationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return RadiometerCalibrationOut.model_validate(calibration, from_attributes=True)
+
+
+@router.patch("/{device_id}/calibrations/{calibration_id}", response_model=RadiometerCalibrationOut)
+@inject
+async def update_radiometer_calibration(
+    device_id: str,
+    calibration_id: str,
+    payload: RadiometerCalibrationUpdateRequest,
+    calibrations: FromDishka[RadiometerCalibrationService],
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        calibration = await calibrations.update(
+            device_id=device_id,
+            calibration_id=calibration_id,
+            t_black_body_1=payload.t_black_body_1,
+            t_black_body_2=payload.t_black_body_2,
+            adc1_1=payload.adc1_1,
+            adc2_1=payload.adc2_1,
+            adc3_1=payload.adc3_1,
+            adc1_2=payload.adc1_2,
+            adc2_2=payload.adc2_2,
+            adc3_2=payload.adc3_2,
+            t_adc1=payload.t_adc1,
+            t_adc2=payload.t_adc2,
+            t_adc3=payload.t_adc3,
+            comment=payload.comment,
+        )
+    except CalibrationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if calibration is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="calibration not found")
+    return RadiometerCalibrationOut.model_validate(calibration, from_attributes=True)
+
+
+@router.delete("/{device_id}/calibrations/{calibration_id}", status_code=status.HTTP_204_NO_CONTENT)
+@inject
+async def delete_radiometer_calibration(
+    device_id: str,
+    calibration_id: str,
+    calibrations: FromDishka[RadiometerCalibrationService],
+    current_user: User = Depends(get_current_user),
+):
+    deleted = await calibrations.delete(device_id=device_id, calibration_id=calibration_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="calibration not found")
+    return None
 
 
 @router.get("/{device_id}/errors", response_model=ErrorEventsResponse)

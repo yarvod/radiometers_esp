@@ -26,6 +26,9 @@ class DeviceModel(Base):
     adc_labels: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")
+    radiometer_calibrations: Mapped[list[RadiometerCalibrationModel]] = relationship(
+        "RadiometerCalibrationModel", back_populates="device"
+    )
     gps_config: Mapped[DeviceGpsConfigModel | None] = relationship(
         "DeviceGpsConfigModel", back_populates="device", uselist=False
     )
@@ -80,6 +83,34 @@ class MeasurementModel(Base):
     log_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="measurements")
+
+
+class RadiometerCalibrationModel(Base):
+    __tablename__ = "radiometer_calibrations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    t_black_body_1: Mapped[float] = mapped_column(Float)
+    t_black_body_2: Mapped[float] = mapped_column(Float)
+    adc1_1: Mapped[float] = mapped_column(Float)
+    adc2_1: Mapped[float] = mapped_column(Float)
+    adc3_1: Mapped[float] = mapped_column(Float)
+    adc1_2: Mapped[float] = mapped_column(Float)
+    adc2_2: Mapped[float] = mapped_column(Float)
+    adc3_2: Mapped[float] = mapped_column(Float)
+    t_adc1: Mapped[float] = mapped_column(Float)
+    t_adc2: Mapped[float] = mapped_column(Float)
+    t_adc3: Mapped[float] = mapped_column(Float)
+    adc1_slope: Mapped[float] = mapped_column(Float)
+    adc2_slope: Mapped[float] = mapped_column(Float)
+    adc3_slope: Mapped[float] = mapped_column(Float)
+    adc1_intercept: Mapped[float] = mapped_column(Float)
+    adc2_intercept: Mapped[float] = mapped_column(Float)
+    adc3_intercept: Mapped[float] = mapped_column(Float)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="radiometer_calibrations")
 
 
 class ErrorEventModel(Base):

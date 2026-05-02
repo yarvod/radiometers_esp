@@ -11,6 +11,7 @@ from app.domain.entities import (
     ErrorEvent,
     Measurement,
     MeasurementPoint,
+    RadiometerCalibration,
     Sounding,
     SoundingExportJob,
     SoundingJob,
@@ -238,6 +239,32 @@ class MeasurementRepository(ABC):
         bucket_seconds: int,
         limit: int,
     ) -> Sequence[MeasurementPoint]:
+        raise NotImplementedError
+
+
+class RadiometerCalibrationRepository(ABC):
+    @abstractmethod
+    async def create(self, calibration: RadiometerCalibration) -> RadiometerCalibration:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, device_id: str, calibration_id: str) -> RadiometerCalibration | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update(self, calibration: RadiometerCalibration) -> RadiometerCalibration | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete(self, device_id: str, calibration_id: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list(self, device_id: str, limit: int, offset: int) -> Sequence[RadiometerCalibration]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count(self, device_id: str) -> int:
         raise NotImplementedError
 
 

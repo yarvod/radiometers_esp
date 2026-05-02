@@ -16,6 +16,7 @@
       <button class="tab-btn" :class="{ active: activeTab === 'data' }" @click="setActiveTab('data')">Данные</button>
       <button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="setActiveTab('control')">Мониторинг и управление</button>
       <button class="tab-btn" :class="{ active: activeTab === 'gps' }" @click="setActiveTab('gps')">GPS</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'calibration' }" @click="setActiveTab('calibration')">Калибровка</button>
       <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="setActiveTab('settings')">Настройки</button>
       <button class="tab-btn" :class="{ active: activeTab === 'errors' }" @click="setActiveTab('errors')">Ошибки</button>
     </div>
@@ -473,6 +474,13 @@
       @update:rtcm-text="updateGpsRtcmText"
     />
 
+    <DeviceCalibrationPanel
+      v-show="activeTab === 'calibration'"
+      :device-id="deviceId"
+      :logging="!!device?.state?.logging"
+      :adc-labels="adcLabelMap"
+    />
+
     <div class="card" v-show="activeTab === 'errors'">
       <div class="card-head">
         <h3>Ошибки устройства</h3>
@@ -610,7 +618,7 @@ type TempConfigRow = {
   label: string
 }
 
-type DeviceTab = 'data' | 'control' | 'gps' | 'settings' | 'errors'
+type DeviceTab = 'data' | 'control' | 'gps' | 'calibration' | 'settings' | 'errors'
 
 const { apiFetch } = useApi()
 const route = useRoute()
@@ -621,7 +629,7 @@ store.init(nuxtApp.$mqtt)
 
 const device = computed(() => (deviceId.value ? store.devices.get(deviceId.value) : undefined))
 const deviceConfig = ref<DeviceConfig | null>(null)
-const validTabs = new Set<DeviceTab>(['data', 'control', 'gps', 'settings', 'errors'])
+const validTabs = new Set<DeviceTab>(['data', 'control', 'gps', 'calibration', 'settings', 'errors'])
 const tabFromQuery = (): DeviceTab => {
   const raw = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
   return raw && validTabs.has(raw as DeviceTab) ? (raw as DeviceTab) : 'control'

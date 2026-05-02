@@ -504,8 +504,9 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
   ActionResult res{false, "unknown type", {}};
 
   if (type == "get_state") {
+    ActionResult state_res = ActionGetState();
     PublishCurrentState();
-    MqttSendResponse(device, req_id, {true, "state_published", {}});
+    MqttSendResponse(device, req_id, {true, "state_published", {}}, state_res.json.c_str());
     cJSON_Delete(root);
     return;
   } else if (type == "log_start") {

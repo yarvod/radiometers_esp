@@ -13,6 +13,7 @@ from app.repositories.interfaces import (
     DeviceRepository,
     ErrorRepository,
     MeasurementRepository,
+    RadiometerCalibrationRepository,
     SoundingExportJobRepository,
     SoundingJobRepository,
     SoundingRepository,
@@ -26,6 +27,7 @@ from app.repositories.sqlalchemy import (
     SqlDeviceRepository,
     SqlErrorRepository,
     SqlMeasurementRepository,
+    SqlRadiometerCalibrationRepository,
     SqlSoundingExportJobRepository,
     SqlSoundingJobRepository,
     SqlSoundingRepository,
@@ -36,6 +38,7 @@ from app.repositories.sqlalchemy import (
     SqlUserRepository,
 )
 from app.services.auth import AuthService
+from app.services.calibrations import RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
 from app.services.measurements import MeasurementService
@@ -86,6 +89,10 @@ class AppProvider(Provider):
         return SqlMeasurementRepository(session)
 
     @provide(scope=Scope.REQUEST)
+    def provide_radiometer_calibration_repo(self, session: AsyncSession) -> RadiometerCalibrationRepository:
+        return SqlRadiometerCalibrationRepository(session)
+
+    @provide(scope=Scope.REQUEST)
     def provide_station_repo(self, session: AsyncSession) -> StationRepository:
         return SqlStationRepository(session)
 
@@ -132,6 +139,12 @@ class AppProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def provide_measurement_service(self, measurements: MeasurementRepository) -> MeasurementService:
         return MeasurementService(measurements)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_radiometer_calibration_service(
+        self, calibrations: RadiometerCalibrationRepository
+    ) -> RadiometerCalibrationService:
+        return RadiometerCalibrationService(calibrations)
 
     @provide(scope=Scope.REQUEST)
     def provide_station_service(self, stations: StationRepository, settings: Settings) -> StationService:

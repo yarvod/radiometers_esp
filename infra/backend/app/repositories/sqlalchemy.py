@@ -13,6 +13,7 @@ from app.domain.entities import (
     ErrorEvent,
     Measurement,
     MeasurementPoint,
+    RadiometerCalibration,
     Sounding,
     SoundingExportJob,
     SoundingJob,
@@ -27,6 +28,7 @@ from app.db.models import (
     DeviceGpsConfigModel,
     ErrorEventModel,
     MeasurementModel,
+    RadiometerCalibrationModel,
     SoundingExportJobModel,
     SoundingJobModel,
     SoundingModel,
@@ -39,6 +41,7 @@ from app.repositories.interfaces import (
     DeviceRepository,
     ErrorRepository,
     MeasurementRepository,
+    RadiometerCalibrationRepository,
     SoundingJobRepository,
     SoundingExportJobRepository,
     SoundingRepository,
@@ -132,6 +135,32 @@ def to_point_from_measurement(model: MeasurementModel) -> MeasurementPoint:
         adc1_cal=model.adc1_cal,
         adc2_cal=model.adc2_cal,
         adc3_cal=model.adc3_cal,
+    )
+
+
+def to_radiometer_calibration(model: RadiometerCalibrationModel) -> RadiometerCalibration:
+    return RadiometerCalibration(
+        id=model.id,
+        device_id=model.device_id,
+        created_at=model.created_at,
+        t_black_body_1=model.t_black_body_1,
+        t_black_body_2=model.t_black_body_2,
+        adc1_1=model.adc1_1,
+        adc2_1=model.adc2_1,
+        adc3_1=model.adc3_1,
+        adc1_2=model.adc1_2,
+        adc2_2=model.adc2_2,
+        adc3_2=model.adc3_2,
+        t_adc1=model.t_adc1,
+        t_adc2=model.t_adc2,
+        t_adc3=model.t_adc3,
+        adc1_slope=model.adc1_slope,
+        adc2_slope=model.adc2_slope,
+        adc3_slope=model.adc3_slope,
+        adc1_intercept=model.adc1_intercept,
+        adc2_intercept=model.adc2_intercept,
+        adc3_intercept=model.adc3_intercept,
+        comment=model.comment,
     )
 
 
@@ -479,6 +508,115 @@ class SqlMeasurementRepository(MeasurementRepository):
                 )
             )
         return points
+
+
+class SqlRadiometerCalibrationRepository(RadiometerCalibrationRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, calibration: RadiometerCalibration) -> RadiometerCalibration:
+        device_result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == calibration.device_id))
+        if device_result.scalar_one_or_none() is None:
+            self._session.add(DeviceModel(id=calibration.device_id, temp_labels=[], temp_addresses=[], adc_labels={}))
+            await self._session.flush()
+        model = RadiometerCalibrationModel(
+            id=calibration.id,
+            device_id=calibration.device_id,
+            created_at=calibration.created_at,
+            t_black_body_1=calibration.t_black_body_1,
+            t_black_body_2=calibration.t_black_body_2,
+            adc1_1=calibration.adc1_1,
+            adc2_1=calibration.adc2_1,
+            adc3_1=calibration.adc3_1,
+            adc1_2=calibration.adc1_2,
+            adc2_2=calibration.adc2_2,
+            adc3_2=calibration.adc3_2,
+            t_adc1=calibration.t_adc1,
+            t_adc2=calibration.t_adc2,
+            t_adc3=calibration.t_adc3,
+            adc1_slope=calibration.adc1_slope,
+            adc2_slope=calibration.adc2_slope,
+            adc3_slope=calibration.adc3_slope,
+            adc1_intercept=calibration.adc1_intercept,
+            adc2_intercept=calibration.adc2_intercept,
+            adc3_intercept=calibration.adc3_intercept,
+            comment=calibration.comment,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        return to_radiometer_calibration(model)
+
+    async def get(self, device_id: str, calibration_id: str) -> RadiometerCalibration | None:
+        result = await self._session.execute(
+            select(RadiometerCalibrationModel).where(
+                RadiometerCalibrationModel.device_id == device_id,
+                RadiometerCalibrationModel.id == calibration_id,
+            )
+        )
+        model = result.scalar_one_or_none()
+        return to_radiometer_calibration(model) if model else None
+
+    async def update(self, calibration: RadiometerCalibration) -> RadiometerCalibration | None:
+        result = await self._session.execute(
+            select(RadiometerCalibrationModel).where(
+                RadiometerCalibrationModel.device_id == calibration.device_id,
+                RadiometerCalibrationModel.id == calibration.id,
+            )
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return None
+        model.t_black_body_1 = calibration.t_black_body_1
+        model.t_black_body_2 = calibration.t_black_body_2
+        model.adc1_1 = calibration.adc1_1
+        model.adc2_1 = calibration.adc2_1
+        model.adc3_1 = calibration.adc3_1
+        model.adc1_2 = calibration.adc1_2
+        model.adc2_2 = calibration.adc2_2
+        model.adc3_2 = calibration.adc3_2
+        model.t_adc1 = calibration.t_adc1
+        model.t_adc2 = calibration.t_adc2
+        model.t_adc3 = calibration.t_adc3
+        model.adc1_slope = calibration.adc1_slope
+        model.adc2_slope = calibration.adc2_slope
+        model.adc3_slope = calibration.adc3_slope
+        model.adc1_intercept = calibration.adc1_intercept
+        model.adc2_intercept = calibration.adc2_intercept
+        model.adc3_intercept = calibration.adc3_intercept
+        model.comment = calibration.comment
+        await self._session.flush()
+        return to_radiometer_calibration(model)
+
+    async def delete(self, device_id: str, calibration_id: str) -> bool:
+        result = await self._session.execute(
+            select(RadiometerCalibrationModel).where(
+                RadiometerCalibrationModel.device_id == device_id,
+                RadiometerCalibrationModel.id == calibration_id,
+            )
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return False
+        await self._session.delete(model)
+        await self._session.flush()
+        return True
+
+    async def list(self, device_id: str, limit: int, offset: int) -> Sequence[RadiometerCalibration]:
+        query = (
+            select(RadiometerCalibrationModel)
+            .where(RadiometerCalibrationModel.device_id == device_id)
+            .order_by(RadiometerCalibrationModel.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self._session.execute(query)
+        return [to_radiometer_calibration(row) for row in result.scalars().all()]
+
+    async def count(self, device_id: str) -> int:
+        result = await self._session.execute(
+            select(func.count()).select_from(RadiometerCalibrationModel).where(RadiometerCalibrationModel.device_id == device_id)
+        )
+        return int(result.scalar_one())
 
 
 class SqlStationRepository(StationRepository):
