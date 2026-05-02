@@ -26,23 +26,6 @@ constexpr size_t kRtcmMaxPayloadLen = 1023;
 constexpr TickType_t kReadTimeout = pdMS_TO_TICKS(100);
 constexpr TickType_t kCommandDelay = pdMS_TO_TICKS(150);
 
-struct Rtcm1004Debug {
-  bool valid = false;
-  uint16_t station_id = 0;
-  uint32_t gps_epoch_time_ms = 0;
-  uint8_t satellite_count = 0;
-  std::vector<uint8_t> prns;
-};
-
-struct Rtcm1006Debug {
-  bool valid = false;
-  uint16_t station_id = 0;
-  double ecef_x_m = 0.0;
-  double ecef_y_m = 0.0;
-  double ecef_z_m = 0.0;
-  double antenna_height_m = 0.0;
-};
-
 bool HexNibble(char c, uint8_t* out) {
   if (!out) return false;
   if (c >= '0' && c <= '9') {
@@ -163,135 +146,6 @@ void SetNeedMore(bool* need_more, bool value) {
   if (need_more) {
     *need_more = value;
   }
-}
-
-bool ReadBits(const uint8_t* data, size_t bit_len, size_t* bit_pos, uint8_t count, uint64_t* out) {
-  if (!data || !bit_pos || !out || count > 64 || *bit_pos + count > bit_len) {
-    return false;
-  }
-  uint64_t value = 0;
-  for (uint8_t i = 0; i < count; ++i) {
-    const size_t pos = *bit_pos + i;
-    const uint8_t bit = (data[pos / 8] >> (7 - (pos % 8))) & 0x01;
-    value = (value << 1) | bit;
-  }
-  *bit_pos += count;
-  *out = value;
-  return true;
-}
-
-int64_t SignExtend(uint64_t value, uint8_t bits) {
-  if (bits == 0 || bits >= 64) {
-    return static_cast<int64_t>(value);
-  }
-  const uint64_t sign = 1ULL << (bits - 1);
-  if ((value & sign) == 0) {
-    return static_cast<int64_t>(value);
-  }
-  const uint64_t mask = (~0ULL) << bits;
-  return static_cast<int64_t>(value | mask);
-}
-
-bool DecodeRtcm1004(const RtcmFrame& frame, Rtcm1004Debug* out) {
-  if (!out || frame.raw.size() < 6 || frame.message_type != 1004) return false;
-  const uint16_t payload_len = (static_cast<uint16_t>(frame.raw[1] & 0x03) << 8) | frame.raw[2];
-  if (frame.raw.size() < 3 + payload_len + 3) return false;
-  const uint8_t* payload = frame.raw.data() + 3;
-  const size_t bit_len = static_cast<size_t>(payload_len) * 8;
-  size_t bit = 0;
-  uint64_t v = 0;
-
-  if (!ReadBits(payload, bit_len, &bit, 12, &v) || v != 1004) return false;
-  if (!ReadBits(payload, bit_len, &bit, 12, &v)) return false;
-  out->station_id = static_cast<uint16_t>(v);
-  if (!ReadBits(payload, bit_len, &bit, 30, &v)) return false;
-  out->gps_epoch_time_ms = static_cast<uint32_t>(v);
-  if (!ReadBits(payload, bit_len, &bit, 1, &v)) return false;
-  if (!ReadBits(payload, bit_len, &bit, 5, &v)) return false;
-  out->satellite_count = static_cast<uint8_t>(v);
-  if (!ReadBits(payload, bit_len, &bit, 1, &v)) return false;
-  if (!ReadBits(payload, bit_len, &bit, 3, &v)) return false;
-
-  out->prns.clear();
-  out->prns.reserve(out->satellite_count);
-  for (uint8_t i = 0; i < out->satellite_count; ++i) {
-    if (!ReadBits(payload, bit_len, &bit, 6, &v)) return false;
-    out->prns.push_back(static_cast<uint8_t>(v));
-    bit += 119;  // Remaining bits in an RTCM1004 GPS satellite observation block.
-    if (bit > bit_len && i + 1 < out->satellite_count) {
-      return false;
-    }
-  }
-  out->valid = true;
-  return true;
-}
-
-bool DecodeRtcm1006(const RtcmFrame& frame, Rtcm1006Debug* out) {
-  if (!out || frame.raw.size() < 6 || frame.message_type != 1006) return false;
-  const uint16_t payload_len = (static_cast<uint16_t>(frame.raw[1] & 0x03) << 8) | frame.raw[2];
-  if (frame.raw.size() < 3 + payload_len + 3) return false;
-  const uint8_t* payload = frame.raw.data() + 3;
-  const size_t bit_len = static_cast<size_t>(payload_len) * 8;
-  size_t bit = 0;
-  uint64_t v = 0;
-
-  if (!ReadBits(payload, bit_len, &bit, 12, &v) || v != 1006) return false;
-  if (!ReadBits(payload, bit_len, &bit, 12, &v)) return false;
-  out->station_id = static_cast<uint16_t>(v);
-  if (!ReadBits(payload, bit_len, &bit, 6, &v)) return false;  // ITRF realization year
-  bit += 4;  // GPS/GLO/GAL/reference-station indicator bits.
-  if (bit > bit_len) return false;
-  if (!ReadBits(payload, bit_len, &bit, 38, &v)) return false;
-  out->ecef_x_m = static_cast<double>(SignExtend(v, 38)) * 0.0001;
-  bit += 2;  // oscillator indicator + reserved bit.
-  if (bit > bit_len) return false;
-  if (!ReadBits(payload, bit_len, &bit, 38, &v)) return false;
-  out->ecef_y_m = static_cast<double>(SignExtend(v, 38)) * 0.0001;
-  bit += 2;  // quarter-cycle indicator.
-  if (bit > bit_len) return false;
-  if (!ReadBits(payload, bit_len, &bit, 38, &v)) return false;
-  out->ecef_z_m = static_cast<double>(SignExtend(v, 38)) * 0.0001;
-  if (!ReadBits(payload, bit_len, &bit, 16, &v)) return false;
-  out->antenna_height_m = static_cast<double>(v) * 0.0001;
-  out->valid = true;
-  return true;
-}
-
-void Log1033AsciiFragments(const RtcmFrame& frame) {
-  if (frame.raw.size() < 6) return;
-  const size_t payload_len = ((frame.raw[1] & 0x03) << 8) | frame.raw[2];
-  if (frame.raw.size() < 3 + payload_len + 3) return;
-
-  std::string current;
-  std::vector<std::string> fragments;
-  for (size_t i = 3; i < 3 + payload_len; ++i) {
-    const uint8_t b = frame.raw[i];
-    if (b >= 0x20 && b <= 0x7E) {
-      current.push_back(static_cast<char>(b));
-    } else {
-      if (current.size() >= 4) {
-        fragments.push_back(current);
-      }
-      current.clear();
-    }
-  }
-  if (current.size() >= 4) {
-    fragments.push_back(current);
-  }
-  for (size_t i = 0; i < fragments.size() && i < 6; ++i) {
-    ESP_LOGD(TAG_GPS, "RTCM1033 ascii[%u]: %s", static_cast<unsigned>(i), fragments[i].c_str());
-  }
-}
-
-std::string FormatGpsPrns(const std::vector<uint8_t>& prns) {
-  std::string out;
-  for (size_t i = 0; i < prns.size(); ++i) {
-    if (i > 0) out += ",";
-    char buf[8];
-    std::snprintf(buf, sizeof(buf), "G%02u", static_cast<unsigned>(prns[i]));
-    out += buf;
-  }
-  return out;
 }
 
 std::string HexPreview(const uint8_t* data, size_t len, size_t max_len) {
@@ -675,33 +529,7 @@ bool GpsUnicoreClient::writeRtcmFramesToFile(const CurrentFrame& frame, FILE* fi
       return;
     }
     fflush(file);
-
-    if (type == 1004) {
-      Rtcm1004Debug dbg{};
-      if (DecodeRtcm1004(rtcm, &dbg)) {
-        ESP_LOGD(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=%u",
-                 static_cast<unsigned>(rtcm.raw.size()), static_cast<unsigned>(dbg.satellite_count));
-      } else {
-        ESP_LOGD(TAG_GPS, "RTCM1004 written, size=%u, satellite_count=unknown",
-                 static_cast<unsigned>(rtcm.raw.size()));
-      }
-    } else if (type == 1006) {
-      Rtcm1006Debug dbg{};
-      if (DecodeRtcm1006(rtcm, &dbg)) {
-        ESP_LOGD(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
-                 static_cast<unsigned>(rtcm.raw.size()));
-        ESP_LOGD(TAG_GPS, "RTCM1006 XYZ: X=%.4f, Y=%.4f, Z=%.4f, H=%.4f",
-                 dbg.ecef_x_m, dbg.ecef_y_m, dbg.ecef_z_m, dbg.antenna_height_m);
-      } else {
-        ESP_LOGD(TAG_GPS, "RTCM1006 written, size=%u, APPROX POSITION XYZ source",
-                 static_cast<unsigned>(rtcm.raw.size()));
-      }
-    } else if (type == 1033) {
-      ESP_LOGD(TAG_GPS, "RTCM1033 written, size=%u, receiver/antenna metadata",
-               static_cast<unsigned>(rtcm.raw.size()));
-    } else {
-      ESP_LOGD(TAG_GPS, "RTCM%u written, size=%u", type, static_cast<unsigned>(rtcm.raw.size()));
-    }
+    ESP_LOGD(TAG_GPS, "RTCM%u raw frame written, size=%u", type, static_cast<unsigned>(rtcm.raw.size()));
   };
 
   static constexpr std::array<uint16_t, 3> kPriorityOrder = {1006, 1033, 1004};
@@ -908,61 +736,15 @@ void GpsUnicoreClient::handleRtcmFrame(const RtcmFrame& frame) {
     return;
   }
 
-  uint32_t frame_index = 0;
-  bool active = false;
   if (data_mutex_ && xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
     storeRtcmLocked(frame);
-    if (current_frame_active_) {
-      frame_index = current_frame_.frame_index;
-      active = true;
-    }
     xSemaphoreGive(data_mutex_);
-  }
-
-  const char* prefix = active ? "Frame" : "Last";
-  if (frame.message_type == 1006) {
-    Rtcm1006Debug dbg{};
-    if (DecodeRtcm1006(frame, &dbg)) {
-      ESP_LOGD(TAG_GPS, "%s %u got RTCM1006 size=%u crc=OK, used for APPROX POSITION XYZ, station=%u xyz=%.4f,%.4f,%.4f h=%.4f",
-               prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()),
-               dbg.station_id, dbg.ecef_x_m, dbg.ecef_y_m, dbg.ecef_z_m, dbg.antenna_height_m);
-    } else {
-      ESP_LOGD(TAG_GPS, "%s %u got RTCM1006 size=%u crc=OK, used for APPROX POSITION XYZ",
-               prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()));
-    }
-  } else if (frame.message_type == 1033) {
-    ESP_LOGD(TAG_GPS, "%s %u got RTCM1033 size=%u crc=OK, receiver/antenna metadata",
-             prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()));
-    Log1033AsciiFragments(frame);
-  } else if (frame.message_type == 1004) {
-    Rtcm1004Debug dbg{};
-    if (DecodeRtcm1004(frame, &dbg)) {
-      const std::string prns = FormatGpsPrns(dbg.prns);
-      ESP_LOGD(TAG_GPS, "%s %u got RTCM1004 size=%u crc=OK, GPS obs, station=%u epoch_ms=%u sat_count=%u prns=%s",
-               prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()),
-               dbg.station_id, static_cast<unsigned>(dbg.gps_epoch_time_ms),
-               static_cast<unsigned>(dbg.satellite_count), prns.c_str());
-    } else {
-      ESP_LOGD(TAG_GPS, "%s %u got RTCM1004 size=%u crc=OK, GPS obs",
-               prefix, static_cast<unsigned>(frame_index), static_cast<unsigned>(frame.raw.size()));
-    }
   }
 }
 
 void GpsUnicoreClient::storeRtcmLocked(const RtcmFrame& frame) {
   switch (frame.message_type) {
     case static_cast<uint16_t>(RtcmMessageType::kGpsL1L2Observables):
-      {
-        Rtcm1004Debug dbg{};
-        if (!DecodeRtcm1004(frame, &dbg)) {
-          ESP_LOGW(TAG_GPS, "RTCM1004 header decode failed, not writing to .rtcm3");
-          return;
-        }
-        if (dbg.satellite_count == 0) {
-          ESP_LOGD(TAG_GPS, "RTCM1004 empty: satellite_count=0");
-          return;
-        }
-      }
       if (current_frame_active_) {
         current_frame_.rtcm_by_type[frame.message_type] = frame;
       }
