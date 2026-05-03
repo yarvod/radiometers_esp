@@ -37,6 +37,7 @@
 #include "esp_http_server.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -104,9 +105,12 @@ bool wifi_inited = false;
 esp_netif_t* wifi_netif_sta = nullptr;
 esp_netif_t* wifi_netif_ap = nullptr;
 static TaskHandle_t wifi_recover_task = nullptr;
+static TaskHandle_t eth_preferred_wifi_fallback_task = nullptr;
+static TaskHandle_t config_ap_fallback_task = nullptr;
 static bool fallback_ap_active = false;
 static bool wifi_recover_active = false;
 static wifi_config_t sta_cfg_cached = {};
+static int64_t last_wifi_connect_attempt_us = 0;
 static bool eth_inited = false;
 static bool eth_started = false;
 static bool shared_spi_bus_inited = false;
@@ -192,7 +196,18 @@ bool CycleExternalPower(uint32_t off_ms) {
 void StartSntp();
 bool EnsureTimeSynced(int timeout_ms);
 esp_err_t InitSpiBus();
+void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
+static bool StartEthernet();
+static esp_err_t EnsureWifiInit();
+static void StopWifiInterface(bool clear_ap_ip);
+static bool RequestWifiConnect(const char* reason);
+static void StartWifiRecoverTask(int interval_ms);
 static void StopWifiRecoverTask();
+static void StartEthPreferredWifiFallbackTask(int delay_ms);
+static void StopEthPreferredWifiFallbackTask();
+static bool StartConfigAp();
+static void StartConfigApFallbackTask(int delay_ms);
+static void StopConfigApFallbackTask();
 static void ReadNetworkUpFlags(bool* wifi_up, bool* eth_up);
 
 std::string BuildLogFilename(const std::string& postfix_raw) {
@@ -559,6 +574,43 @@ static void UpdateDefaultNetif() {
   }
 }
 
+static void EnsureConfiguredNetworkProgress() {
+  bool wifi_up = false;
+  bool eth_up = false;
+  ReadNetworkUpFlags(&wifi_up, &eth_up);
+
+  if (app_config.net_mode == NetMode::kWifiOnly) {
+    if (!wifi_inited) {
+      InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+    } else if (!wifi_up && !fallback_ap_active && !wifi_recover_task) {
+      StartWifiRecoverTask(15000);
+    }
+    return;
+  }
+
+  if (app_config.net_mode == NetMode::kEthOnly) {
+    if (!eth_started) {
+      StartEthernet();
+    }
+    if (!eth_up && !fallback_ap_active && !config_ap_fallback_task) {
+      StartConfigApFallbackTask(15000);
+    }
+    return;
+  }
+
+  if (!eth_started) {
+    StartEthernet();
+  }
+
+  if (app_config.net_priority == NetPriority::kEth) {
+    if (!eth_up && !wifi_up && !wifi_recover_task && !fallback_ap_active && !eth_preferred_wifi_fallback_task) {
+      StartEthPreferredWifiFallbackTask(15000);
+    }
+  } else if (wifi_inited && !wifi_up && !fallback_ap_active && !wifi_recover_task) {
+    StartWifiRecoverTask(15000);
+  }
+}
+
 static bool TrySyncTimeOnNetif(esp_netif_t* netif, int timeout_ms) {
   if (!netif || timeout_ms <= 0) {
     return false;
@@ -602,6 +654,7 @@ static void NetworkMonitorTask(void*) {
   const int interval_ms = 15000;
   const int check_timeout_ms = 1500;
   while (true) {
+    EnsureConfiguredNetworkProgress();
     if (app_config.net_mode == NetMode::kWifiEth) {
       bool wifi_up = false;
       bool eth_up = false;
@@ -656,16 +709,26 @@ static void NetworkMonitorTask(void*) {
 
 void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
   if (event_base == ETH_EVENT) {
-    if (event_id == ETHERNET_EVENT_CONNECTED) {
+    if (event_id == ETHERNET_EVENT_START) {
+      ESP_LOGI(TAG, "Ethernet started");
+    } else if (event_id == ETHERNET_EVENT_CONNECTED) {
+      ESP_LOGI(TAG, "Ethernet link up");
       UpdateState([](SharedState& s) { s.eth_link_up = true; });
     } else if (event_id == ETHERNET_EVENT_DISCONNECTED) {
+      ESP_LOGW(TAG, "Ethernet link down");
       UpdateState([](SharedState& s) {
         s.eth_link_up = false;
         s.eth_ip.clear();
         s.eth_ip_up = false;
       });
       UpdateDefaultNetif();
+      if (app_config.net_mode == NetMode::kEthOnly) {
+        StartConfigApFallbackTask(5000);
+      } else if (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth) {
+        StartEthPreferredWifiFallbackTask(5000);
+      }
     } else if (event_id == ETHERNET_EVENT_STOP) {
+      ESP_LOGI(TAG, "Ethernet stopped");
       UpdateState([](SharedState& s) {
         s.eth_link_up = false;
         s.eth_ip.clear();
@@ -676,11 +739,22 @@ void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, v
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
     const std::string ip = FormatIp4(event->ip_info.ip);
-    ESP_LOGI(TAG, "Ethernet got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    ESP_LOGI(TAG, "Ethernet got IP: " IPSTR " mask " IPSTR " gw " IPSTR,
+             IP2STR(&event->ip_info.ip),
+             IP2STR(&event->ip_info.netmask),
+             IP2STR(&event->ip_info.gw));
     UpdateState([&](SharedState& s) {
       s.eth_ip = ip;
       s.eth_ip_up = !ip.empty();
     });
+    StopEthPreferredWifiFallbackTask();
+    StopConfigApFallbackTask();
+    if (wifi_inited &&
+        (app_config.net_mode == NetMode::kEthOnly ||
+         (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth))) {
+      ESP_LOGI(TAG, "Ethernet is preferred and has IP, stopping Wi-Fi fallback/AP");
+      StopWifiInterface(true);
+    }
     UpdateDefaultNetif();
   }
 }
@@ -694,6 +768,8 @@ static esp_err_t InitEthernet() {
     return ESP_OK;
   }
   EnsureNetifInit();
+  ESP_LOGI(TAG, "Initializing W5500 Ethernet (CS=%d INT=%d RST=%d)",
+           static_cast<int>(ETH_CS), static_cast<int>(ETH_INT), static_cast<int>(ETH_RST));
   esp_err_t ret = InitSpiBus();
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Shared SPI bus init for Ethernet failed: %s", esp_err_to_name(ret));
@@ -721,6 +797,14 @@ static esp_err_t InitEthernet() {
   eth_phy = esp_eth_phy_new_w5500(&phy_config);
   if (!eth_mac || !eth_phy) {
     ESP_LOGE(TAG, "Failed to create W5500 MAC/PHY");
+    if (eth_mac) {
+      eth_mac->del(eth_mac);
+      eth_mac = nullptr;
+    }
+    if (eth_phy) {
+      eth_phy->del(eth_phy);
+      eth_phy = nullptr;
+    }
     gpio_set_level(ETH_CS, 1);
     gpio_set_level(ETH_RST, 0);
     return ESP_FAIL;
@@ -732,6 +816,22 @@ static esp_err_t InitEthernet() {
     ESP_LOGE(TAG, "Ethernet driver install failed: %s", esp_err_to_name(install_err));
     return install_err;
   }
+
+  uint8_t base_mac[6] = {};
+  uint8_t eth_addr[6] = {};
+  esp_err_t mac_err = esp_efuse_mac_get_default(base_mac);
+  if (mac_err == ESP_OK) {
+    mac_err = esp_derive_local_mac(eth_addr, base_mac);
+  }
+  if (mac_err == ESP_OK) {
+    mac_err = esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, eth_addr);
+  }
+  if (mac_err != ESP_OK) {
+    ESP_LOGE(TAG, "Ethernet MAC address setup failed: %s", esp_err_to_name(mac_err));
+    return mac_err;
+  }
+  ESP_LOGI(TAG, "Ethernet MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+           eth_addr[0], eth_addr[1], eth_addr[2], eth_addr[3], eth_addr[4], eth_addr[5]);
 
   esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
   eth_netif = esp_netif_new(&cfg);
@@ -745,22 +845,27 @@ static esp_err_t InitEthernet() {
     eth_handlers_registered = true;
   }
   eth_inited = true;
+  ESP_LOGI(TAG, "W5500 Ethernet initialized");
   return ESP_OK;
 #endif
 }
 
-static void StartEthernet() {
+static bool StartEthernet() {
   if (eth_started) {
-    return;
+    ESP_LOGI(TAG, "Ethernet already started");
+    return true;
   }
   if (InitEthernet() != ESP_OK) {
-    return;
+    return false;
   }
+  ESP_LOGI(TAG, "Starting Ethernet");
   esp_err_t err = esp_eth_start(eth_handle);
   if (err == ESP_OK) {
     eth_started = true;
+    return true;
   } else {
     ESP_LOGE(TAG, "Ethernet start failed: %s", esp_err_to_name(err));
+    return false;
   }
 }
 
@@ -780,27 +885,31 @@ static void StopEthernet() {
 
 void ApplyNetworkConfig() {
   const NetMode mode = app_config.net_mode;
+  ESP_LOGI(TAG, "Applying network config: mode=%s priority=%s",
+           NetModeToString(app_config.net_mode).c_str(),
+           NetPriorityToString(app_config.net_priority).c_str());
   if (mode == NetMode::kWifiOnly) {
+    StopConfigApFallbackTask();
+    StopEthPreferredWifiFallbackTask();
     StopEthernet();
     InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
   } else if (mode == NetMode::kEthOnly) {
-    StopWifiRecoverTask();
-    fallback_ap_active = false;
-    if (wifi_inited) {
-      esp_wifi_stop();
-      esp_wifi_set_mode(WIFI_MODE_NULL);
-    }
-    UpdateState([](SharedState& s) {
-      s.wifi_ip.clear();
-      s.wifi_ip_sta.clear();
-      s.wifi_ip_ap.clear();
-      s.wifi_rssi_dbm = -127;
-      s.wifi_quality = 0;
-    });
-    StartEthernet();
+    StopConfigApFallbackTask();
+    StopEthPreferredWifiFallbackTask();
+    StopWifiInterface(true);
+    const bool eth_start_ok = StartEthernet();
+    StartConfigApFallbackTask(eth_start_ok ? 15000 : 1000);
   } else {
-    InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
-    StartEthernet();
+    StopConfigApFallbackTask();
+    if (app_config.net_priority == NetPriority::kEth) {
+      StopWifiInterface(false);
+      const bool eth_start_ok = StartEthernet();
+      StartEthPreferredWifiFallbackTask(eth_start_ok ? 15000 : 1000);
+    } else {
+      StopEthPreferredWifiFallbackTask();
+      StartEthernet();
+      InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+    }
   }
   UpdateDefaultNetif();
 }
@@ -808,7 +917,7 @@ void ApplyNetworkConfig() {
 static void WifiRecoverTask(void* arg) {
   const int interval_ms = static_cast<int>(reinterpret_cast<intptr_t>(arg));
   while (wifi_recover_active) {
-    esp_wifi_connect();
+    RequestWifiConnect("recover");
     vTaskDelay(pdMS_TO_TICKS(interval_ms));
   }
   vTaskDelete(nullptr);
@@ -827,6 +936,240 @@ static void StopWifiRecoverTask() {
   TaskHandle_t t = wifi_recover_task;
   wifi_recover_task = nullptr;
   vTaskDelete(t);
+}
+
+static void EthPreferredWifiFallbackTask(void* arg) {
+  const int delay_ms = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+  vTaskDelay(pdMS_TO_TICKS(delay_ms));
+
+  bool wifi_up = false;
+  bool eth_up = false;
+  ReadNetworkUpFlags(&wifi_up, &eth_up);
+  eth_preferred_wifi_fallback_task = nullptr;
+
+  if (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth && !eth_up && !wifi_up) {
+    ESP_LOGW(TAG, "Ethernet preferred but no Ethernet IP after %d ms, starting Wi-Fi fallback", delay_ms);
+    InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
+  }
+  vTaskDelete(nullptr);
+}
+
+static void StartEthPreferredWifiFallbackTask(int delay_ms) {
+  if (eth_preferred_wifi_fallback_task) {
+    return;
+  }
+  xTaskCreatePinnedToCore(&EthPreferredWifiFallbackTask, "eth_wifi_fb", 4096,
+                          reinterpret_cast<void*>(static_cast<intptr_t>(delay_ms)), 1,
+                          &eth_preferred_wifi_fallback_task, 0);
+}
+
+static void StopEthPreferredWifiFallbackTask() {
+  if (!eth_preferred_wifi_fallback_task) {
+    return;
+  }
+  TaskHandle_t t = eth_preferred_wifi_fallback_task;
+  eth_preferred_wifi_fallback_task = nullptr;
+  vTaskDelete(t);
+}
+
+static void ConfigApFallbackTask(void* arg) {
+  const int delay_ms = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+  vTaskDelay(pdMS_TO_TICKS(delay_ms));
+
+  bool wifi_up = false;
+  bool eth_up = false;
+  ReadNetworkUpFlags(&wifi_up, &eth_up);
+  config_ap_fallback_task = nullptr;
+
+  if (!wifi_up && !eth_up) {
+    ESP_LOGW(TAG, "No network IP after %d ms, starting configuration AP", delay_ms);
+    StartConfigAp();
+  }
+  vTaskDelete(nullptr);
+}
+
+static void StartConfigApFallbackTask(int delay_ms) {
+  if (config_ap_fallback_task || fallback_ap_active) {
+    return;
+  }
+  xTaskCreatePinnedToCore(&ConfigApFallbackTask, "cfg_ap_fb", 4096,
+                          reinterpret_cast<void*>(static_cast<intptr_t>(delay_ms)), 1,
+                          &config_ap_fallback_task, 0);
+}
+
+static void StopConfigApFallbackTask() {
+  if (!config_ap_fallback_task) {
+    return;
+  }
+  TaskHandle_t t = config_ap_fallback_task;
+  config_ap_fallback_task = nullptr;
+  vTaskDelete(t);
+}
+
+static esp_err_t EnsureWifiInit() {
+  if (!wifi_event_group) {
+    wifi_event_group = xEventGroupCreate();
+  }
+  if (wifi_inited) {
+    return ESP_OK;
+  }
+
+  EnsureNetifInit();
+  wifi_netif_sta = esp_netif_create_default_wifi_sta();
+  wifi_netif_ap = esp_netif_create_default_wifi_ap();
+  if (wifi_netif_sta && strlen(HOSTNAME) > 0) {
+    esp_netif_set_hostname(wifi_netif_sta, HOSTNAME);
+  }
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "Wi-Fi init failed");
+  ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEventHandler, nullptr),
+                      TAG, "Wi-Fi event handler register failed");
+  ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEventHandler, nullptr),
+                      TAG, "Wi-Fi IP event handler register failed");
+  wifi_inited = true;
+  return ESP_OK;
+}
+
+static void StopWifiInterface(bool clear_ap_ip) {
+  StopWifiRecoverTask();
+  StopConfigApFallbackTask();
+  fallback_ap_active = false;
+  last_wifi_connect_attempt_us = 0;
+  ErrorManagerClearLocal(ErrorCode::kWifiFallback);
+  if (wifi_inited) {
+    esp_wifi_stop();
+    esp_wifi_set_mode(WIFI_MODE_NULL);
+  }
+  UpdateState([&](SharedState& s) {
+    s.wifi_ip.clear();
+    s.wifi_ip_sta.clear();
+    if (clear_ap_ip) {
+      s.wifi_ip_ap.clear();
+    }
+    s.wifi_rssi_dbm = -127;
+    s.wifi_quality = 0;
+  });
+}
+
+static bool RequestWifiConnect(const char* reason) {
+  if (!wifi_inited) {
+    return false;
+  }
+  const int64_t now_us = esp_timer_get_time();
+  if (last_wifi_connect_attempt_us != 0 && now_us - last_wifi_connect_attempt_us < 2000000) {
+    return false;
+  }
+  last_wifi_connect_attempt_us = now_us;
+  const esp_err_t err = esp_wifi_connect();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Wi-Fi connect request failed (%s): %s", reason ? reason : "connect", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+static void FillApConfig(wifi_config_t* ap_config, const char* ssid, const char* password) {
+  if (!ap_config) {
+    return;
+  }
+  *ap_config = {};
+  std::strncpy(reinterpret_cast<char*>(ap_config->ap.ssid), ssid, sizeof(ap_config->ap.ssid) - 1);
+  std::strncpy(reinterpret_cast<char*>(ap_config->ap.password), password, sizeof(ap_config->ap.password) - 1);
+  ap_config->ap.ssid_len = strlen(reinterpret_cast<char*>(ap_config->ap.ssid));
+  ap_config->ap.channel = 1;
+  ap_config->ap.authmode = (strlen(password) >= 8) ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
+  ap_config->ap.max_connection = 4;
+}
+
+static bool StartConfigAp() {
+  StopWifiRecoverTask();
+  StopConfigApFallbackTask();
+  if (fallback_ap_active && wifi_inited) {
+    return true;
+  }
+
+  if (!wifi_event_group) {
+    wifi_event_group = xEventGroupCreate();
+  } else {
+    xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+  }
+
+  if (EnsureWifiInit() != ESP_OK) {
+    return false;
+  }
+
+  esp_wifi_stop();
+  wifi_config_t ap_config = {};
+  FillApConfig(&ap_config, "esp", "12345678");
+
+  esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to switch Wi-Fi to configuration AP: %s", esp_err_to_name(err));
+    return false;
+  }
+  err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure configuration AP: %s", esp_err_to_name(err));
+    return false;
+  }
+  err = esp_wifi_start();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to start configuration AP: %s", esp_err_to_name(err));
+    return false;
+  }
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  fallback_ap_active = true;
+  ErrorManagerSetLocal(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Configuration AP active");
+  const std::string ap_ip = GetNetifIp(wifi_netif_ap);
+  ESP_LOGW(TAG, "Configuration AP active: SSID=esp password=12345678 IP=%s", ap_ip.empty() ? "192.168.4.1" : ap_ip.c_str());
+  UpdateState([&](SharedState& s) {
+    s.wifi_ip_ap = ap_ip.empty() ? "192.168.4.1" : ap_ip;
+    s.wifi_ip = s.wifi_ip_ap;
+    s.wifi_ip_sta.clear();
+    s.wifi_rssi_dbm = -127;
+    s.wifi_quality = 0;
+  });
+  return true;
+}
+
+static bool EnableFallbackAp() {
+  if (app_config.wifi_ap_mode || fallback_ap_active) {
+    return false;
+  }
+
+  ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
+  fallback_ap_active = true;
+  ErrorManagerSetLocal(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
+
+  wifi_config_t ap_config = {};
+  FillApConfig(&ap_config, "esp", "12345678");
+
+  esp_err_t err = esp_wifi_disconnect();
+  if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) {
+    ESP_LOGW(TAG, "Wi-Fi disconnect before fallback AP failed: %s", esp_err_to_name(err));
+  }
+  err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to switch Wi-Fi to APSTA fallback: %s", esp_err_to_name(err));
+    fallback_ap_active = false;
+    return false;
+  }
+  err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure fallback AP: %s", esp_err_to_name(err));
+    fallback_ap_active = false;
+    return false;
+  }
+
+  const std::string ap_ip = GetNetifIp(wifi_netif_ap);
+  UpdateState([&](SharedState& s) {
+    if (!ap_ip.empty()) {
+      s.wifi_ip_ap = ap_ip;
+    }
+  });
+  return true;
 }
 
 static bool WaitForTempSensors(int timeout_ms) {
@@ -2279,8 +2622,19 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
 void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-    esp_wifi_connect();
+    RequestWifiConnect("sta_start");
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    bool eth_up = false;
+    ReadNetworkUpFlags(nullptr, &eth_up);
+    if (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth && eth_up) {
+      ESP_LOGI(TAG, "Ignoring Wi-Fi disconnect because Ethernet is preferred and up");
+      StopWifiRecoverTask();
+      UpdateState([&](SharedState& s) {
+        s.wifi_ip.clear();
+        s.wifi_ip_sta.clear();
+      });
+      return;
+    }
     std::string reason_msg = "Wi-Fi disconnected";
     if (event_data) {
       auto* info = static_cast<wifi_event_sta_disconnected_t*>(event_data);
@@ -2293,32 +2647,18 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     });
     UpdateDefaultNetif();
     if (retry_count < 5) {
-      esp_wifi_connect();
-      retry_count++;
-      ESP_LOGW(TAG, "Retry Wi-Fi connection (%d)", retry_count);
+      if (RequestWifiConnect("event_retry")) {
+        retry_count++;
+        ESP_LOGW(TAG, "Retry Wi-Fi connection (%d)", retry_count);
+      }
     } else {
       xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
-      if (!app_config.wifi_ap_mode && !fallback_ap_active) {
-        ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
-        fallback_ap_active = true;
-        ErrorManagerSetLocal(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
-        wifi_config_t ap_config = {};
-        const char* ap_ssid = "esp";
-        const char* ap_pass = "12345678";
-        std::strncpy(reinterpret_cast<char*>(ap_config.ap.ssid), ap_ssid, sizeof(ap_config.ap.ssid) - 1);
-        std::strncpy(reinterpret_cast<char*>(ap_config.ap.password), ap_pass, sizeof(ap_config.ap.password) - 1);
-        ap_config.ap.ssid_len = strlen(reinterpret_cast<char*>(ap_config.ap.ssid));
-        ap_config.ap.channel = 1;
-        ap_config.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-        ap_config.ap.max_connection = 4;
-        esp_wifi_set_mode(WIFI_MODE_APSTA);
-        esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached);
-      }
-      StartWifiRecoverTask(5000);
+      EnableFallbackAp();
+      StartWifiRecoverTask(15000);
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     retry_count = 0;
+    last_wifi_connect_attempt_us = 0;
     ErrorManagerClearLocal(ErrorCode::kWifiDisconnected);
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
@@ -2339,7 +2679,6 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
       fallback_ap_active = false;
       ErrorManagerClearLocal(ErrorCode::kWifiFallback);
       esp_wifi_set_mode(WIFI_MODE_STA);
-      esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached);
     }
   }
 }
@@ -2359,26 +2698,20 @@ void WifiMonitorTask(void*) {
 }
 
 void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode) {
+  StopConfigApFallbackTask();
+  StopWifiRecoverTask();
+  fallback_ap_active = false;
+  last_wifi_connect_attempt_us = 0;
+
   if (!wifi_event_group) {
     wifi_event_group = xEventGroupCreate();
   } else {
     xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
   }
 
-  if (!wifi_inited) {
-    EnsureNetifInit();
-    wifi_netif_sta = esp_netif_create_default_wifi_sta();
-    wifi_netif_ap = esp_netif_create_default_wifi_ap();
-    if (wifi_netif_sta && strlen(HOSTNAME) > 0) {
-      esp_netif_set_hostname(wifi_netif_sta, HOSTNAME);
-    }
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEventHandler, nullptr));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEventHandler, nullptr));
-    wifi_inited = true;
-  } else {
+  const bool was_wifi_inited = wifi_inited;
+  ESP_ERROR_CHECK(EnsureWifiInit());
+  if (was_wifi_inited) {
     esp_wifi_stop();
   }
 
@@ -2395,12 +2728,7 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
   wifi_config_t ap_config = {};
   const char* ap_ssid = ap_mode ? ssid.c_str() : "esp";
   const char* ap_pass = ap_mode ? password.c_str() : "12345678";
-  std::strncpy(reinterpret_cast<char*>(ap_config.ap.ssid), ap_ssid, sizeof(ap_config.ap.ssid) - 1);
-  std::strncpy(reinterpret_cast<char*>(ap_config.ap.password), ap_pass, sizeof(ap_config.ap.password) - 1);
-  ap_config.ap.ssid_len = strlen(reinterpret_cast<char*>(ap_config.ap.ssid));
-  ap_config.ap.channel = 1;
-  ap_config.ap.authmode = (strlen(ap_pass) >= 8) ? WIFI_AUTH_WPA_WPA2_PSK : WIFI_AUTH_OPEN;
-  ap_config.ap.max_connection = 4;
+  FillApConfig(&ap_config, ap_ssid, ap_pass);
 
   wifi_mode_t mode = ap_mode ? WIFI_MODE_APSTA : WIFI_MODE_STA;
   sta_cfg_cached = wifi_config;
@@ -2432,22 +2760,8 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
   } else {
     ESP_LOGW(TAG, "Failed to connect to SSID:%s, starting STA retries", ssid.c_str());
     xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
-    if (!app_config.wifi_ap_mode && !fallback_ap_active) {
-      ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
-      fallback_ap_active = true;
-      ErrorManagerSet(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
-      wifi_config_t fallback_ap = {};
-      std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.ssid), "esp", sizeof(fallback_ap.ap.ssid) - 1);
-      std::strncpy(reinterpret_cast<char*>(fallback_ap.ap.password), "12345678", sizeof(fallback_ap.ap.password) - 1);
-      fallback_ap.ap.ssid_len = strlen(reinterpret_cast<char*>(fallback_ap.ap.ssid));
-      fallback_ap.ap.channel = 1;
-      fallback_ap.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-      fallback_ap.ap.max_connection = 4;
-      ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-      ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &fallback_ap));
-      ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg_cached));
-    }
-    StartWifiRecoverTask(5000);
+    EnableFallbackAp();
+    StartWifiRecoverTask(15000);
   }
 }
 
