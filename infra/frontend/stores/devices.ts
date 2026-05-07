@@ -14,6 +14,11 @@ type PendingReq = {
   timeout: ReturnType<typeof setTimeout>
 }
 
+type StateWaiter = {
+  resolve: (state: any) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
 const makeReqId = () => {
   if (globalThis.crypto?.randomUUID) {
     return globalThis.crypto.randomUUID()
@@ -48,6 +53,7 @@ export const useDevicesStore = defineStore('devices', {
   state: () => ({
     devices: new Map<string, DeviceState>(),
     pending: new Map<string, PendingReq>(),
+    stateWaiters: new Map<string, StateWaiter[]>(),
     mqttReady: false,
     mqttOnline: false,
   }),
@@ -123,15 +129,39 @@ export const useDevicesStore = defineStore('devices', {
     },
     setState(id: string, state: any) {
       const prev = this.devices.get(id)
+      const nextState = { ...(prev?.state || {}), ...normalizeDeviceState(state) }
       this.devices.set(id, {
         ...(prev || { id }),
         id,
-        state: { ...(prev?.state || {}), ...normalizeDeviceState(state) },
+        state: nextState,
         online: true,
         lastSeen: Date.now(),
       })
+      const waiters = this.stateWaiters.get(id)
+      if (waiters?.length) {
+        this.stateWaiters.delete(id)
+        for (const waiter of waiters) {
+          clearTimeout(waiter.timeout)
+          waiter.resolve(nextState)
+        }
+      }
     },
-    sendCommand(mqtt: MqttClient | null | undefined, deviceId: string, cmd: any) {
+    waitForNextState(deviceId: string, timeoutMs = 3000) {
+      return new Promise((resolve) => {
+        const waiter: StateWaiter = {
+          resolve,
+          timeout: setTimeout(() => {
+            const waiters = this.stateWaiters.get(deviceId) || []
+            this.stateWaiters.set(deviceId, waiters.filter((item) => item !== waiter))
+            resolve(undefined)
+          }, timeoutMs),
+        }
+        const waiters = this.stateWaiters.get(deviceId) || []
+        waiters.push(waiter)
+        this.stateWaiters.set(deviceId, waiters)
+      })
+    },
+    sendCommand(mqtt: MqttClient | null | undefined, deviceId: string, cmd: any, timeoutMs = 15000) {
       if (!mqtt) throw new Error('MQTT client not ready')
       if (!deviceId) throw new Error('Device id is empty')
       if (!mqtt.connected) throw new Error('MQTT не подключен')
@@ -142,7 +172,7 @@ export const useDevicesStore = defineStore('devices', {
         const timeout = setTimeout(() => {
           this.pending.delete(reqId)
           reject(new Error(`MQTT command timeout: ${topic}`))
-        }, 8000)
+        }, timeoutMs)
         this.pending.set(reqId, { resolve, reject, timeout })
       })
       mqtt.publish(topic, msg, { qos: 0 }, (err?: Error) => {
@@ -156,11 +186,21 @@ export const useDevicesStore = defineStore('devices', {
       return p
     },
     async getState(mqtt: MqttClient, deviceId: string) {
-      const res: any = await this.sendCommand(mqtt, deviceId, { type: 'get_state' })
-      if (res?.data) {
-        this.setState(deviceId, res.data)
-      }
-      return res?.data
+      if (!mqtt) throw new Error('MQTT client not ready')
+      if (!deviceId) throw new Error('Device id is empty')
+      if (!mqtt.connected) throw new Error('MQTT не подключен')
+
+      const statePromise = this.waitForNextState(deviceId, 3000)
+      const topic = `${deviceId}/cmd`
+      const msg = JSON.stringify({ type: 'get_state', reqId: makeReqId() })
+      await new Promise<void>((resolve, reject) => {
+        mqtt.publish(topic, msg, { qos: 0 }, (err?: Error) => {
+          err ? reject(err) : resolve()
+        })
+      })
+
+      const state = await statePromise
+      return state || this.devices.get(deviceId)?.state
     },
     async logStart(mqtt: MqttClient, deviceId: string, payload: { filename: string; useMotor: boolean; durationSec: number }) {
       return this.sendCommand(mqtt, deviceId, { type: 'log_start', ...payload })

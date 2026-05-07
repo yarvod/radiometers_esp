@@ -283,23 +283,23 @@ void PublishErrorPayloadInternal(const std::string& payload) {
 }
 
 void MqttSendResponse(const std::string& device, const std::string& req_id, const ActionResult& res, const char* data_json = nullptr) {
-  char json[1536];
-  int len = 0;
+  std::string json;
+  const size_t data_len = (data_json && data_json[0]) ? std::strlen(data_json) : 0;
+  json.reserve(data_len + req_id.size() + res.message.size() + 64);
+  json += "{\"ok\":";
+  json += res.ok ? "true" : "false";
+  json += ",\"reqId\":\"";
+  json += req_id;
+  json += "\",\"message\":\"";
+  json += res.message;
+  json += "\"";
   if (data_json && data_json[0]) {
-    len = std::snprintf(json, sizeof(json), "{\"ok\":%s,\"reqId\":\"%s\",\"message\":\"%s\",\"data\":%s}",
-                        res.ok ? "true" : "false", req_id.c_str(), res.message.c_str(), data_json);
-  } else {
-    len = std::snprintf(json, sizeof(json), "{\"ok\":%s,\"reqId\":\"%s\",\"message\":\"%s\"}",
-                        res.ok ? "true" : "false", req_id.c_str(), res.message.c_str());
+    json += ",\"data\":";
+    json += data_json;
   }
-  if (len < 0) {
-    return;
-  }
-  if (len >= static_cast<int>(sizeof(json))) {
-    len = sizeof(json) - 1;
-  }
+  json += "}";
   std::string topic = device + "/resp";
-  MqttPublish(topic, json, len);
+  MqttPublish(topic, json);
 }
 
 void BuildMqttState(char* out, size_t out_len) {
