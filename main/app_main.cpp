@@ -123,6 +123,7 @@ static spi_device_interface_config_t eth_devcfg = {};
 static GpsUnicoreClient gps_client;
 static TaskHandle_t gps_log_task = nullptr;
 static TaskHandle_t external_power_cycle_task = nullptr;
+constexpr uint32_t kExternalPowerCycleStackBytes = 6144;
 static uint64_t gps_log_file_start_us = 0;
 static std::string current_gnss_log_path;
 static volatile bool gps_reconfigure_requested = false;
@@ -175,21 +176,23 @@ void SetExternalPower(bool enabled) {
   ESP_LOGI(TAG, "External module power %s", enabled ? "ON" : "OFF");
 }
 
+static void ExternalPowerCycleTask(void* arg) {
+  const uint32_t delay_ms = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
+  SetExternalPower(false);
+  vTaskDelay(pdMS_TO_TICKS(delay_ms));
+  SetExternalPower(true);
+  external_power_cycle_task = nullptr;
+  vTaskDelete(nullptr);
+}
+
 bool CycleExternalPower(uint32_t off_ms) {
   if (external_power_cycle_task != nullptr) {
     return false;
   }
   off_ms = std::clamp<uint32_t>(off_ms, 100, 30000);
-  BaseType_t ok = xTaskCreate(
-      [](void* arg) {
-        const uint32_t delay_ms = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
-        SetExternalPower(false);
-        vTaskDelay(pdMS_TO_TICKS(delay_ms));
-        SetExternalPower(true);
-        external_power_cycle_task = nullptr;
-        vTaskDelete(nullptr);
-      },
-      "ext_pwr_cycle", 2048, reinterpret_cast<void*>(static_cast<uintptr_t>(off_ms)), 4, &external_power_cycle_task);
+  BaseType_t ok = xTaskCreate(&ExternalPowerCycleTask, "ext_pwr_cycle", kExternalPowerCycleStackBytes,
+                              reinterpret_cast<void*>(static_cast<uintptr_t>(off_ms)), 4,
+                              &external_power_cycle_task);
   return ok == pdPASS;
 }
 
