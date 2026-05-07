@@ -41,9 +41,12 @@ def apply_brightness_temperatures(
         while cal_idx + 1 < len(ordered) and normalize_dt(ordered[cal_idx + 1].created_at) <= ts:
             cal_idx += 1
         cal = ordered[cal_idx]
-        point.brightness_temp1 = cal.adc1_slope * point.adc1 + cal.adc1_intercept
-        point.brightness_temp2 = cal.adc2_slope * point.adc2 + cal.adc2_intercept
-        point.brightness_temp3 = cal.adc3_slope * point.adc3 + cal.adc3_intercept
+        if cal.adc1_slope is not None and cal.adc1_intercept is not None:
+            point.brightness_temp1 = cal.adc1_slope * point.adc1 + cal.adc1_intercept
+        if cal.adc2_slope is not None and cal.adc2_intercept is not None:
+            point.brightness_temp2 = cal.adc2_slope * point.adc2 + cal.adc2_intercept
+        if cal.adc3_slope is not None and cal.adc3_intercept is not None:
+            point.brightness_temp3 = cal.adc3_slope * point.adc3 + cal.adc3_intercept
 
 
 @router.get("", response_model=MeasurementsResponse)

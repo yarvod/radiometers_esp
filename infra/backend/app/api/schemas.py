@@ -93,33 +93,33 @@ class RadiometerCalibrationOut(BaseModel):
     created_at: datetime
     t_black_body_1: float
     t_black_body_2: float
-    adc1_1: float
-    adc2_1: float
-    adc3_1: float
-    adc1_2: float
-    adc2_2: float
-    adc3_2: float
+    adc1_1: Optional[float] = None
+    adc2_1: Optional[float] = None
+    adc3_1: Optional[float] = None
+    adc1_2: Optional[float] = None
+    adc2_2: Optional[float] = None
+    adc3_2: Optional[float] = None
     t_adc1: float
     t_adc2: float
     t_adc3: float
-    adc1_slope: float
-    adc2_slope: float
-    adc3_slope: float
-    adc1_intercept: float
-    adc2_intercept: float
-    adc3_intercept: float
+    adc1_slope: Optional[float] = None
+    adc2_slope: Optional[float] = None
+    adc3_slope: Optional[float] = None
+    adc1_intercept: Optional[float] = None
+    adc2_intercept: Optional[float] = None
+    adc3_intercept: Optional[float] = None
     comment: Optional[str] = None
 
 
 class RadiometerCalibrationCreateRequest(BaseModel):
     t_black_body_1: float
     t_black_body_2: float
-    adc1_1: float
-    adc2_1: float
-    adc3_1: float
-    adc1_2: float
-    adc2_2: float
-    adc3_2: float
+    adc1_1: Optional[float] = None
+    adc2_1: Optional[float] = None
+    adc3_1: Optional[float] = None
+    adc1_2: Optional[float] = None
+    adc2_2: Optional[float] = None
+    adc3_2: Optional[float] = None
     t_adc1: float
     t_adc2: float
     t_adc3: float

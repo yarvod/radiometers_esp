@@ -149,9 +149,10 @@
         </div>
 
         <div class="actions">
-          <button class="btn success" :disabled="saving || isSampling || !canSave" @click="saveCalibration">
+          <button class="btn success" :disabled="saving || isSampling" @click="saveCalibration">
             {{ editingId ? 'Сохранить изменения' : 'Сохранить калибровку' }}
           </button>
+          <span class="muted" v-if="!modalStatus && saveBlockReason">{{ saveBlockReason }}</span>
           <span class="muted" v-if="modalStatus">{{ modalStatus }}</span>
         </div>
       </div>
@@ -168,21 +169,21 @@ type Calibration = {
   created_at: string
   t_black_body_1: number
   t_black_body_2: number
-  adc1_1: number
-  adc2_1: number
-  adc3_1: number
-  adc1_2: number
-  adc2_2: number
-  adc3_2: number
+  adc1_1: number | null
+  adc2_1: number | null
+  adc3_1: number | null
+  adc1_2: number | null
+  adc2_2: number | null
+  adc3_2: number | null
   t_adc1: number
   t_adc2: number
   t_adc3: number
-  adc1_slope: number
-  adc2_slope: number
-  adc3_slope: number
-  adc1_intercept: number
-  adc2_intercept: number
-  adc3_intercept: number
+  adc1_slope: number | null
+  adc2_slope: number | null
+  adc3_slope: number | null
+  adc1_intercept: number | null
+  adc2_intercept: number | null
+  adc3_intercept: number | null
   comment: string | null
 }
 
@@ -194,9 +195,9 @@ type CalibrationsResponse = {
 }
 
 type AdcSample = {
-  adc1: number
-  adc2: number
-  adc3: number
+  adc1: number | null
+  adc2: number | null
+  adc3: number | null
 }
 
 const props = defineProps<{
@@ -264,19 +265,17 @@ const formatDate = (value: string) => {
 
 const average = (samples: AdcSample[]) => {
   if (!samples.length) return { adc1: null, adc2: null, adc3: null }
-  const sums = samples.reduce(
-    (acc, sample) => {
-      acc.adc1 += sample.adc1
-      acc.adc2 += sample.adc2
-      acc.adc3 += sample.adc3
-      return acc
-    },
-    { adc1: 0, adc2: 0, adc3: 0 }
-  )
+  const avgChannel = (key: keyof AdcSample) => {
+    const values = samples
+      .map((sample) => sample[key])
+      .filter((value): value is number => Number.isFinite(value))
+    if (!values.length) return null
+    return values.reduce((sum, value) => sum + value, 0) / values.length
+  }
   return {
-    adc1: sums.adc1 / samples.length,
-    adc2: sums.adc2 / samples.length,
-    adc3: sums.adc3 / samples.length,
+    adc1: avgChannel('adc1'),
+    adc2: avgChannel('adc2'),
+    adc3: avgChannel('adc3'),
   }
 }
 
@@ -299,34 +298,52 @@ const coefficients = computed(() => ({
 }))
 
 const canSave = computed(() => {
-  return (
-    samples1.value.length > 0 &&
-    samples2.value.length > 0 &&
-    Number.isFinite(form.t_black_body_1) &&
-    Number.isFinite(form.t_black_body_2) &&
-    Number.isFinite(form.t_adc1) &&
-    Number.isFinite(form.t_adc2) &&
-    Number.isFinite(form.t_adc3) &&
-    Number.isFinite(avg1.value.adc1) &&
-    Number.isFinite(avg1.value.adc2) &&
-    Number.isFinite(avg1.value.adc3) &&
-    Number.isFinite(avg2.value.adc1) &&
-    Number.isFinite(avg2.value.adc2) &&
-    Number.isFinite(avg2.value.adc3) &&
-    Number.isFinite(coefficients.value.adc1.slope) &&
-    Number.isFinite(coefficients.value.adc2.slope) &&
-    Number.isFinite(coefficients.value.adc3.slope)
-  )
+  return !saveBlockReason.value
 })
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+const apiErrorMessage = (e: any, fallback: string) => {
+  const detail = e?.data?.detail ?? e?.response?._data?.detail
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item?.msg || JSON.stringify(item)).join('; ')
+  }
+  if (typeof detail === 'string' && detail) return detail
+  return e?.statusMessage || e?.message || fallback
+}
+
+const saveBlockReason = computed(() => {
+  if (samples1.value.length === 0) return 'Сначала сними нагрузку 1'
+  if (samples2.value.length === 0) return 'Сначала сними нагрузку 2'
+  if (![form.t_black_body_1, form.t_black_body_2, form.t_adc1, form.t_adc2, form.t_adc3].every(Number.isFinite)) {
+    return 'Проверь температуры: все поля должны быть числами'
+  }
+  if (![coefficients.value.adc1.slope, coefficients.value.adc2.slope, coefficients.value.adc3.slope].some(Number.isFinite)) {
+    return 'Нет ни одного ADC-канала с двумя разными валидными точками'
+  }
+  return ''
+})
+
+const skippedChannels = computed(() => {
+  const skipped: string[] = []
+  if (!Number.isFinite(coefficients.value.adc1.slope)) skipped.push(adcLabel('adc1', 'ADC1'))
+  if (!Number.isFinite(coefficients.value.adc2.slope)) skipped.push(adcLabel('adc2', 'ADC2'))
+  if (!Number.isFinite(coefficients.value.adc3.slope)) skipped.push(adcLabel('adc3', 'ADC3'))
+  return skipped
+})
+
+const nullableNumber = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return null
+  const num = Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
 const currentSample = (snapshot?: any) => {
   const state = snapshot || store.devices.get(props.deviceId)?.state || {}
-  const adc1 = Number(state.voltage1 ?? state.adc1)
-  const adc2 = Number(state.voltage2 ?? state.adc2)
-  const adc3 = Number(state.voltage3 ?? state.adc3)
-  if (![adc1, adc2, adc3].every(Number.isFinite)) return null
+  const adc1 = nullableNumber(state.voltage1 ?? state.adc1)
+  const adc2 = nullableNumber(state.voltage2 ?? state.adc2)
+  const adc3 = nullableNumber(state.voltage3 ?? state.adc3)
+  if (![adc1, adc2, adc3].some(Number.isFinite)) return null
   return { adc1, adc2, adc3 }
 }
 
@@ -340,7 +357,7 @@ const loadCalibrations = async () => {
     calibrations.value = res.items
     total.value = res.total
   } catch (e: any) {
-    status.value = e?.message || 'Не удалось загрузить калибровки'
+    status.value = apiErrorMessage(e, 'Не удалось загрузить калибровки')
   } finally {
     loading.value = false
   }
@@ -426,7 +443,7 @@ const stopSample = () => {
 
 const saveCalibration = async () => {
   if (!canSave.value) {
-    modalStatus.value = 'Нужно снять обе нагрузки и проверить коэффициенты'
+    modalStatus.value = saveBlockReason.value || 'Нужно снять обе нагрузки и проверить коэффициенты'
     return
   }
   saving.value = true
@@ -435,29 +452,33 @@ const saveCalibration = async () => {
     const url = editingId.value
       ? `/api/devices/${props.deviceId}/calibrations/${editingId.value}`
       : `/api/devices/${props.deviceId}/calibrations`
+    const body = {
+      t_black_body_1: form.t_black_body_1,
+      t_black_body_2: form.t_black_body_2,
+      adc1_1: avg1.value.adc1,
+      adc2_1: avg1.value.adc2,
+      adc3_1: avg1.value.adc3,
+      adc1_2: avg2.value.adc1,
+      adc2_2: avg2.value.adc2,
+      adc3_2: avg2.value.adc3,
+      t_adc1: form.t_adc1,
+      t_adc2: form.t_adc2,
+      t_adc3: form.t_adc3,
+      comment: form.comment,
+    }
+    console.info('Saving calibration', { url, body, skippedChannels: skippedChannels.value })
     await apiFetch<Calibration>(url, {
       method: editingId.value ? 'PATCH' : 'POST',
-      body: {
-        t_black_body_1: form.t_black_body_1,
-        t_black_body_2: form.t_black_body_2,
-        adc1_1: avg1.value.adc1,
-        adc2_1: avg1.value.adc2,
-        adc3_1: avg1.value.adc3,
-        adc1_2: avg2.value.adc1,
-        adc2_2: avg2.value.adc2,
-        adc3_2: avg2.value.adc3,
-        t_adc1: form.t_adc1,
-        t_adc2: form.t_adc2,
-        t_adc3: form.t_adc3,
-        comment: form.comment,
-      },
+      body,
     })
     modalOpen.value = false
-    status.value = editingId.value ? 'Калибровка обновлена' : 'Калибровка сохранена'
+    const skipped = skippedChannels.value.length ? ` Пропущено: ${skippedChannels.value.join(', ')}` : ''
+    status.value = (editingId.value ? 'Калибровка обновлена.' : 'Калибровка сохранена.') + skipped
     page.value = 1
     await loadCalibrations()
   } catch (e: any) {
-    modalStatus.value = e?.message || 'Не удалось сохранить калибровку'
+    console.error('Calibration save failed', e)
+    modalStatus.value = apiErrorMessage(e, 'Не удалось сохранить калибровку')
   } finally {
     saving.value = false
   }
@@ -478,7 +499,7 @@ const deleteCalibration = async (item: Calibration) => {
     }
     await loadCalibrations()
   } catch (e: any) {
-    status.value = e?.message || 'Не удалось удалить калибровку'
+    status.value = apiErrorMessage(e, 'Не удалось удалить калибровку')
   } finally {
     deletingId.value = ''
   }

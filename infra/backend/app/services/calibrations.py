@@ -28,12 +28,12 @@ class RadiometerCalibrationService:
         device_id: str,
         t_black_body_1: float,
         t_black_body_2: float,
-        adc1_1: float,
-        adc2_1: float,
-        adc3_1: float,
-        adc1_2: float,
-        adc2_2: float,
-        adc3_2: float,
+        adc1_1: float | None,
+        adc2_1: float | None,
+        adc3_1: float | None,
+        adc1_2: float | None,
+        adc2_2: float | None,
+        adc3_2: float | None,
         t_adc1: float,
         t_adc2: float,
         t_adc3: float,
@@ -42,12 +42,6 @@ class RadiometerCalibrationService:
         values = [
             t_black_body_1,
             t_black_body_2,
-            adc1_1,
-            adc2_1,
-            adc3_1,
-            adc1_2,
-            adc2_2,
-            adc3_2,
             t_adc1,
             t_adc2,
             t_adc3,
@@ -55,9 +49,12 @@ class RadiometerCalibrationService:
         if not all(math.isfinite(value) for value in values):
             raise CalibrationError("calibration values must be finite")
 
-        adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2, "adc1")
-        adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2, "adc2")
-        adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2, "adc3")
+        if not self._has_any_channel((adc1_1, adc1_2), (adc2_1, adc2_2), (adc3_1, adc3_2)):
+            raise CalibrationError("at least one ADC channel must have valid calibration points")
+
+        adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
+        adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
+        adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
 
         calibration = RadiometerCalibration(
             id=str(uuid.uuid4()),
@@ -91,12 +88,12 @@ class RadiometerCalibrationService:
         calibration_id: str,
         t_black_body_1: float,
         t_black_body_2: float,
-        adc1_1: float,
-        adc2_1: float,
-        adc3_1: float,
-        adc1_2: float,
-        adc2_2: float,
-        adc3_2: float,
+        adc1_1: float | None,
+        adc2_1: float | None,
+        adc3_1: float | None,
+        adc1_2: float | None,
+        adc2_2: float | None,
+        adc3_2: float | None,
         t_adc1: float,
         t_adc2: float,
         t_adc3: float,
@@ -108,12 +105,6 @@ class RadiometerCalibrationService:
         values = [
             t_black_body_1,
             t_black_body_2,
-            adc1_1,
-            adc2_1,
-            adc3_1,
-            adc1_2,
-            adc2_2,
-            adc3_2,
             t_adc1,
             t_adc2,
             t_adc3,
@@ -121,9 +112,12 @@ class RadiometerCalibrationService:
         if not all(math.isfinite(value) for value in values):
             raise CalibrationError("calibration values must be finite")
 
-        adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2, "adc1")
-        adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2, "adc2")
-        adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2, "adc3")
+        if not self._has_any_channel((adc1_1, adc1_2), (adc2_1, adc2_2), (adc3_1, adc3_2)):
+            raise CalibrationError("at least one ADC channel must have valid calibration points")
+
+        adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
+        adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
+        adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
 
         calibration = RadiometerCalibration(
             id=existing.id,
@@ -154,10 +148,21 @@ class RadiometerCalibrationService:
         return await self._calibrations.delete(device_id=device_id, calibration_id=calibration_id)
 
     @staticmethod
-    def _linear_coefficients(t1: float, t2: float, adc1: float, adc2: float, name: str) -> tuple[float, float]:
+    def _has_any_channel(*channels: tuple[float | None, float | None]) -> bool:
+        return any(
+            a is not None and b is not None and math.isfinite(a) and math.isfinite(b) and abs(b - a) >= 1e-12
+            for a, b in channels
+        )
+
+    @staticmethod
+    def _linear_coefficients(t1: float, t2: float, adc1: float | None, adc2: float | None) -> tuple[float | None, float | None]:
+        if adc1 is None or adc2 is None:
+            return None, None
+        if not math.isfinite(adc1) or not math.isfinite(adc2):
+            return None, None
         denominator = adc2 - adc1
         if abs(denominator) < 1e-12:
-            raise CalibrationError(f"{name} calibration points have equal ADC values")
+            return None, None
         slope = (t2 - t1) / denominator
         intercept = t1 - slope * adc1
         return slope, intercept
