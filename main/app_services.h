@@ -28,6 +28,16 @@ struct UtcTimeSnapshot {
   bool valid = false;
 };
 
+struct GpsPositionSnapshot {
+  double latitude_deg = 0.0;
+  double longitude_deg = 0.0;
+  double altitude_m = 0.0;
+  int fix_quality = 0;
+  int satellites = 0;
+  int64_t age_ms = 0;
+  bool valid = false;
+};
+
 UtcTimeSnapshot GetBestUtcTimeForData();
 UtcTimeSnapshot GetBestUtcTimeForGps();
 const char* UtcTimeSourceName(UtcTimeSource source);
@@ -81,5 +91,6 @@ void StopLogging();
 void UploadTask(void*);
 
 std::string GetGpsCurrentMode();
+bool RequestGpsPositionOnce(int timeout_ms, GpsPositionSnapshot* out);
 void RequestGpsReconfigure();
 void ProbeGpsMode();

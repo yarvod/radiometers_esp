@@ -85,8 +85,32 @@ static std::vector<uint16_t> ParseRtcmTypesText(const std::string& text) {
   return out;
 }
 
+static void AppendGpsCsvFields(FILE* file, const GpsPositionSnapshot& gps) {
+  if (!file) return;
+  if (gps.valid) {
+    fprintf(file, ",%.8f,%.8f,%.3f,%d,%d,%lld",
+            gps.latitude_deg, gps.longitude_deg, gps.altitude_m,
+            gps.fix_quality, gps.satellites, static_cast<long long>(gps.age_ms));
+  } else {
+    fprintf(file, ",,,,,,");
+  }
+}
+
+static void AddGpsJsonFields(cJSON* root, const GpsPositionSnapshot& gps) {
+  if (!root) return;
+  cJSON_AddBoolToObject(root, "gpsPositionValid", gps.valid);
+  if (!gps.valid) return;
+  cJSON_AddNumberToObject(root, "gpsLat", gps.latitude_deg);
+  cJSON_AddNumberToObject(root, "gpsLon", gps.longitude_deg);
+  cJSON_AddNumberToObject(root, "gpsAlt", gps.altitude_m);
+  cJSON_AddNumberToObject(root, "gpsFixQuality", gps.fix_quality);
+  cJSON_AddNumberToObject(root, "gpsSatellites", gps.satellites);
+  cJSON_AddNumberToObject(root, "gpsFixAgeMs", static_cast<double>(gps.age_ms));
+}
+
 static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const SharedState& base,
-                                  const SharedState* cal, UtcTimeSource time_source) {
+                                  const SharedState* cal, UtcTimeSource time_source,
+                                  const GpsPositionSnapshot& gps) {
   cJSON* root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "timestampIso", iso.c_str());
   cJSON_AddNumberToObject(root, "timestampMs", static_cast<double>(ts_ms));
@@ -122,6 +146,7 @@ static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const 
     cJSON_AddNumberToObject(root, "adc2Cal", cal->voltage2);
     cJSON_AddNumberToObject(root, "adc3Cal", cal->voltage3);
   }
+  AddGpsJsonFields(root, gps);
   const char* json = cJSON_PrintUnformatted(root);
   if (json) {
     PublishMeasurementPayload(json);
@@ -903,6 +928,7 @@ void StopLogging() {
 
 void LoggingTask(void*) {
   constexpr int kLoggingMotorSteps = 100;  // 90 degrees on the current motor/driver setup.
+  constexpr int kGpsPositionTimeoutMs = 1500;
   const TickType_t settle_delay = pdMS_TO_TICKS(1000);  // pause after motor moves
   constexpr UBaseType_t kLogStackLowWords = 512;
 
@@ -1060,6 +1086,8 @@ void LoggingTask(void*) {
       if (!has_pending_base) {
         ESP_LOGW(TAG, "Logging: got cal without base, skipping");
       } else {
+        GpsPositionSnapshot gps{};
+        (void)RequestGpsPositionOnce(kGpsPositionTimeoutMs, &gps);
         SdLockGuard guard(pdMS_TO_TICKS(2000));
         if (!guard.locked()) {
           ESP_LOGW(TAG, "SD mutex unavailable, retrying logging write");
@@ -1076,10 +1104,11 @@ void LoggingTask(void*) {
         }
         fprintf(log_file, ",%.3f,%.3f,%.3f", pending_base.ina_bus_voltage, pending_base.ina_current, pending_base.ina_power);
         fprintf(log_file, ",%.6f,%.6f,%.6f", avg.voltage1, avg.voltage2, avg.voltage3);
+        AppendGpsCsvFields(log_file, gps);
         fprintf(log_file, "\n");
         FlushLogFile();
         ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
-        PublishLogMeasurement(iso, ts_ms, pending_base, &avg, row_time.source);
+        PublishLogMeasurement(iso, ts_ms, pending_base, &avg, row_time.source, gps);
         UpdateState([&](SharedState& s) {
           s.voltage1_cal = avg.voltage1;
           s.voltage2_cal = avg.voltage2;
@@ -1111,6 +1140,8 @@ void LoggingTask(void*) {
     }
     bool have_cal = false;
     SharedState avg2{};
+    GpsPositionSnapshot gps{};
+    (void)RequestGpsPositionOnce(kGpsPositionTimeoutMs, &gps);
 
     SdLockGuard guard(pdMS_TO_TICKS(2000));
     if (!guard.locked()) {
@@ -1130,10 +1161,11 @@ void LoggingTask(void*) {
     if (log_config.use_motor && have_cal) {
       fprintf(log_file, ",%.6f,%.6f,%.6f", avg2.voltage1, avg2.voltage2, avg2.voltage3);
     }
+    AppendGpsCsvFields(log_file, gps);
     fprintf(log_file, "\n");
     FlushLogFile();
     ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
-    PublishLogMeasurement(iso, ts_ms, avg1, nullptr, row_time.source);
+    PublishLogMeasurement(iso, ts_ms, avg1, nullptr, row_time.source, gps);
     UpdateState([&](SharedState& s) {
       s.voltage1_cal = avg1.voltage1;
       s.voltage2_cal = avg1.voltage2;

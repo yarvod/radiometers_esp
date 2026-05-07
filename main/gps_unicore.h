@@ -29,6 +29,15 @@ struct GpsDateTime {
   bool valid = false;
 };
 
+struct GpsPosition {
+  double latitude_deg = 0.0;
+  double longitude_deg = 0.0;
+  double altitude_m = 0.0;
+  int fix_quality = 0;
+  int satellites = 0;
+  bool valid = false;
+};
+
 struct RtcmFrame {
   uint16_t message_type = 0;
   std::vector<uint8_t> raw;
@@ -43,6 +52,7 @@ struct CurrentFrame {
 };
 
 bool parseZdaLine(const std::string& line, GpsDateTime& out);
+bool parseGgaLine(const std::string& line, GpsPosition& out);
 bool parseRtcmFrameFromBuffer(std::vector<uint8_t>& buffer, RtcmFrame& out, bool* need_more = nullptr);
 uint32_t crc24q(const uint8_t* data, size_t len);
 bool checkRtcmCrc(const std::vector<uint8_t>& frame);
@@ -68,6 +78,8 @@ class GpsUnicoreClient {
 
   bool getLastDateTime(GpsDateTime& out);
   bool getLastDateTime(GpsDateTime& out, int64_t* received_us);
+  bool getLastPosition(GpsPosition& out);
+  bool getLastPosition(GpsPosition& out, int64_t* received_us);
   bool getLastRtcm(uint16_t type, RtcmFrame& out);
   bool getCurrentMode(std::string& out);
 
@@ -92,6 +104,10 @@ class GpsUnicoreClient {
   GpsDateTime last_datetime_{};
   int64_t last_datetime_received_us_ = 0;
   bool has_datetime_ = false;
+
+  GpsPosition last_position_{};
+  int64_t last_position_received_us_ = 0;
+  bool has_position_ = false;
 
   RtcmFrame last_1004_{};
   RtcmFrame last_1006_{};

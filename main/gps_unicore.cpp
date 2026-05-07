@@ -142,6 +142,39 @@ uint16_t ParseMilliseconds(const std::string& time_field, size_t dot) {
   return ms;
 }
 
+bool ParseDoubleField(const std::string& s, double* out) {
+  if (!out || s.empty()) return false;
+  char* end = nullptr;
+  double v = std::strtod(s.c_str(), &end);
+  if (!end || *end != '\0') return false;
+  *out = v;
+  return true;
+}
+
+bool ParseNmeaDegrees(const std::string& value, const std::string& hemisphere,
+                      bool longitude, double* out) {
+  if (!out || value.empty() || hemisphere.empty()) return false;
+  const size_t dot = value.find('.');
+  const size_t min_start = longitude ? 3 : 2;
+  if (dot == std::string::npos || dot < min_start) return false;
+  const std::string deg_text = value.substr(0, min_start);
+  const std::string min_text = value.substr(min_start);
+  int deg = 0;
+  double minutes = 0.0;
+  if (!ParseIntField(deg_text, &deg) || !ParseDoubleField(min_text, &minutes)) {
+    return false;
+  }
+  double sign = 1.0;
+  const char hemi = static_cast<char>(std::toupper(static_cast<unsigned char>(hemisphere[0])));
+  if (hemi == 'S' || hemi == 'W') {
+    sign = -1.0;
+  } else if (hemi != 'N' && hemi != 'E') {
+    return false;
+  }
+  *out = sign * (static_cast<double>(deg) + minutes / 60.0);
+  return true;
+}
+
 void SetNeedMore(bool* need_more, bool value) {
   if (need_more) {
     *need_more = value;
@@ -228,6 +261,59 @@ bool parseZdaLine(const std::string& raw_line, GpsDateTime& out) {
   parsed.minute = static_cast<uint8_t>(minute);
   parsed.second = static_cast<uint8_t>(second);
   parsed.millisecond = ParseMilliseconds(time_field, time_field.find('.'));
+  parsed.valid = true;
+  out = parsed;
+  return true;
+}
+
+bool parseGgaLine(const std::string& raw_line, GpsPosition& out) {
+  const std::string line = TrimLine(raw_line);
+  if (line.empty() || line[0] != '$') {
+    return false;
+  }
+
+  const size_t star = line.find('*');
+  if (star == std::string::npos) {
+    return false;
+  }
+
+  uint8_t expected = 0;
+  if (!ParseNmeaChecksum(line, star, &expected)) {
+    return false;
+  }
+  const uint8_t actual = CalcNmeaChecksum(line, star);
+  if (actual != expected) {
+    return false;
+  }
+
+  const std::string body = line.substr(1, star - 1);
+  const std::vector<std::string> fields = SplitCsv(body);
+  if (fields.size() < 10) {
+    return false;
+  }
+  if (fields[0].size() < 3 || fields[0].compare(fields[0].size() - 3, 3, "GGA") != 0) {
+    return false;
+  }
+
+  int fix_quality = 0;
+  int satellites = 0;
+  double lat = 0.0;
+  double lon = 0.0;
+  double alt = 0.0;
+  if (!ParseIntField(fields[6], &fix_quality) || fix_quality <= 0 ||
+      !ParseIntField(fields[7], &satellites) ||
+      !ParseNmeaDegrees(fields[2], fields[3], false, &lat) ||
+      !ParseNmeaDegrees(fields[4], fields[5], true, &lon) ||
+      !ParseDoubleField(fields[9], &alt)) {
+    return false;
+  }
+
+  GpsPosition parsed{};
+  parsed.latitude_deg = lat;
+  parsed.longitude_deg = lon;
+  parsed.altitude_m = alt;
+  parsed.fix_quality = fix_quality;
+  parsed.satellites = satellites;
   parsed.valid = true;
   out = parsed;
   return true;
@@ -577,6 +663,25 @@ bool GpsUnicoreClient::getLastDateTime(GpsDateTime& out, int64_t* received_us) {
   return ok;
 }
 
+bool GpsUnicoreClient::getLastPosition(GpsPosition& out) {
+  return getLastPosition(out, nullptr);
+}
+
+bool GpsUnicoreClient::getLastPosition(GpsPosition& out, int64_t* received_us) {
+  if (!data_mutex_ || xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) != pdTRUE) {
+    return false;
+  }
+  const bool ok = has_position_;
+  if (ok) {
+    out = last_position_;
+    if (received_us) {
+      *received_us = last_position_received_us_;
+    }
+  }
+  xSemaphoreGive(data_mutex_);
+  return ok;
+}
+
 bool GpsUnicoreClient::getLastRtcm(uint16_t type, RtcmFrame& out) {
   if (!data_mutex_ || xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) != pdTRUE) {
     return false;
@@ -701,6 +806,25 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
       ESP_LOGD(TAG_GPS, "UTC %04u-%02u-%02u %02u:%02u:%02u.%03u",
                parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second, parsed.millisecond);
     }
+    return;
+  }
+
+  const bool is_gga = line.rfind("$GNGGA", 0) == 0 || line.rfind("$GPGGA", 0) == 0;
+  if (is_gga) {
+    GpsPosition parsed{};
+    if (!parseGgaLine(line, parsed)) {
+      ESP_LOGW(TAG_GPS, "Invalid GGA line ignored: %s", line.c_str());
+      return;
+    }
+    if (data_mutex_ && xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+      last_position_ = parsed;
+      last_position_received_us_ = esp_timer_get_time();
+      has_position_ = true;
+      xSemaphoreGive(data_mutex_);
+    }
+    ESP_LOGD(TAG_GPS, "Position lat=%.8f lon=%.8f alt=%.2f fix=%d sats=%d",
+             parsed.latitude_deg, parsed.longitude_deg, parsed.altitude_m,
+             parsed.fix_quality, parsed.satellites);
     return;
   }
 

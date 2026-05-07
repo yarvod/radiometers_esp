@@ -99,6 +99,14 @@ def extract_gps_config(data: dict) -> tuple[bool, list[int] | None, str | None, 
     return has_keys, rtcm_types, mode, actual_mode
 
 
+def optional_float(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def optional_int(value) -> int | None:
+    return int(value) if isinstance(value, (int, float)) else None
+
+
 async def handle_measurement(topic: str, payload: bytes, container) -> None:
     device_id = device_from_topic(topic)
     if not device_id:
@@ -115,6 +123,9 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
         raw_temps = data.get("temps") or []
         if isinstance(raw_temps, list):
             temps = [float(v) for v in raw_temps if isinstance(v, (int, float))]
+    gps_valid = bool(data.get("gpsPositionValid")) or (
+        isinstance(data.get("gpsLat"), (int, float)) and isinstance(data.get("gpsLon"), (int, float))
+    )
 
     measurement = Measurement(
         id=str(uuid.uuid4()),
@@ -131,6 +142,12 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
         adc1_cal=float(data["adc1Cal"]) if isinstance(data.get("adc1Cal"), (int, float)) else None,
         adc2_cal=float(data["adc2Cal"]) if isinstance(data.get("adc2Cal"), (int, float)) else None,
         adc3_cal=float(data["adc3Cal"]) if isinstance(data.get("adc3Cal"), (int, float)) else None,
+        gps_lat=optional_float(data.get("gpsLat")) if gps_valid else None,
+        gps_lon=optional_float(data.get("gpsLon")) if gps_valid else None,
+        gps_alt=optional_float(data.get("gpsAlt")) if gps_valid else None,
+        gps_fix_quality=optional_int(data.get("gpsFixQuality")) if gps_valid else None,
+        gps_satellites=optional_int(data.get("gpsSatellites")) if gps_valid else None,
+        gps_fix_age_ms=optional_int(data.get("gpsFixAgeMs")) if gps_valid else None,
         log_use_motor=bool(data.get("logUseMotor", False)),
         log_duration=float(data.get("logDuration", 1.0)),
         log_filename=data.get("logFilename"),

@@ -115,6 +115,12 @@ def to_measurement(model: MeasurementModel) -> Measurement:
         adc1_cal=model.adc1_cal,
         adc2_cal=model.adc2_cal,
         adc3_cal=model.adc3_cal,
+        gps_lat=model.gps_lat,
+        gps_lon=model.gps_lon,
+        gps_alt=model.gps_alt,
+        gps_fix_quality=model.gps_fix_quality,
+        gps_satellites=model.gps_satellites,
+        gps_fix_age_ms=model.gps_fix_age_ms,
         log_use_motor=model.log_use_motor,
         log_duration=model.log_duration,
         log_filename=model.log_filename,
@@ -135,6 +141,12 @@ def to_point_from_measurement(model: MeasurementModel) -> MeasurementPoint:
         adc1_cal=model.adc1_cal,
         adc2_cal=model.adc2_cal,
         adc3_cal=model.adc3_cal,
+        gps_lat=model.gps_lat,
+        gps_lon=model.gps_lon,
+        gps_alt=model.gps_alt,
+        gps_fix_quality=model.gps_fix_quality,
+        gps_satellites=model.gps_satellites,
+        gps_fix_age_ms=model.gps_fix_age_ms,
     )
 
 
@@ -413,6 +425,12 @@ class SqlMeasurementRepository(MeasurementRepository):
             adc1_cal=measurement.adc1_cal,
             adc2_cal=measurement.adc2_cal,
             adc3_cal=measurement.adc3_cal,
+            gps_lat=measurement.gps_lat,
+            gps_lon=measurement.gps_lon,
+            gps_alt=measurement.gps_alt,
+            gps_fix_quality=measurement.gps_fix_quality,
+            gps_satellites=measurement.gps_satellites,
+            gps_fix_age_ms=measurement.gps_fix_age_ms,
             log_use_motor=measurement.log_use_motor,
             log_duration=measurement.log_duration,
             log_filename=measurement.log_filename,
@@ -472,6 +490,12 @@ class SqlMeasurementRepository(MeasurementRepository):
             func.avg(MeasurementModel.adc1_cal).label("adc1_cal"),
             func.avg(MeasurementModel.adc2_cal).label("adc2_cal"),
             func.avg(MeasurementModel.adc3_cal).label("adc3_cal"),
+            func.avg(MeasurementModel.gps_lat).label("gps_lat"),
+            func.avg(MeasurementModel.gps_lon).label("gps_lon"),
+            func.avg(MeasurementModel.gps_alt).label("gps_alt"),
+            func.max(MeasurementModel.gps_fix_quality).label("gps_fix_quality"),
+            func.max(MeasurementModel.gps_satellites).label("gps_satellites"),
+            func.avg(MeasurementModel.gps_fix_age_ms).label("gps_fix_age_ms"),
         ]
         max_temps = 8
         for idx in range(1, max_temps + 1):
@@ -505,6 +529,12 @@ class SqlMeasurementRepository(MeasurementRepository):
                     adc1_cal=float(row.adc1_cal) if row.adc1_cal is not None else None,
                     adc2_cal=float(row.adc2_cal) if row.adc2_cal is not None else None,
                     adc3_cal=float(row.adc3_cal) if row.adc3_cal is not None else None,
+                    gps_lat=float(row.gps_lat) if row.gps_lat is not None else None,
+                    gps_lon=float(row.gps_lon) if row.gps_lon is not None else None,
+                    gps_alt=float(row.gps_alt) if row.gps_alt is not None else None,
+                    gps_fix_quality=int(row.gps_fix_quality) if row.gps_fix_quality is not None else None,
+                    gps_satellites=int(row.gps_satellites) if row.gps_satellites is not None else None,
+                    gps_fix_age_ms=int(row.gps_fix_age_ms) if row.gps_fix_age_ms is not None else None,
                 )
             )
         return points

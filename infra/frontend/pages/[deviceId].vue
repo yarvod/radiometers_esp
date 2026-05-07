@@ -565,6 +565,12 @@ type MeasurementPoint = {
   adc1_cal: number | null
   adc2_cal: number | null
   adc3_cal: number | null
+  gps_lat: number | null
+  gps_lon: number | null
+  gps_alt: number | null
+  gps_fix_quality: number | null
+  gps_satellites: number | null
+  gps_fix_age_ms: number | null
   brightness_temp1: number | null
   brightness_temp2: number | null
   brightness_temp3: number | null

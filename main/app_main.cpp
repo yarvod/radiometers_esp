@@ -271,6 +271,47 @@ std::string GetGpsCurrentMode() {
   return gps_client.getCurrentMode(mode) ? mode : "";
 }
 
+static bool CopyGpsPositionSnapshot(const GpsPosition& pos, int64_t received_us, GpsPositionSnapshot* out) {
+  if (!out || !pos.valid || received_us <= 0) {
+    return false;
+  }
+  out->latitude_deg = pos.latitude_deg;
+  out->longitude_deg = pos.longitude_deg;
+  out->altitude_m = pos.altitude_m;
+  out->fix_quality = pos.fix_quality;
+  out->satellites = pos.satellites;
+  out->age_ms = std::max<int64_t>((esp_timer_get_time() - received_us) / 1000, 0);
+  out->valid = true;
+  return true;
+}
+
+bool RequestGpsPositionOnce(int timeout_ms, GpsPositionSnapshot* out) {
+  if (out) {
+    *out = GpsPositionSnapshot{};
+  }
+  GpsPosition previous{};
+  int64_t previous_received_us = 0;
+  (void)gps_client.getLastPosition(previous, &previous_received_us);
+
+  gps_client.sendCommand("GPGGA COM2");
+  const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(std::max(timeout_ms, 0)) * 1000;
+  while (esp_timer_get_time() < deadline_us) {
+    GpsPosition pos{};
+    int64_t received_us = 0;
+    if (gps_client.getLastPosition(pos, &received_us) && received_us > previous_received_us) {
+      return CopyGpsPositionSnapshot(pos, received_us, out);
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  GpsPosition cached{};
+  int64_t cached_received_us = 0;
+  if (gps_client.getLastPosition(cached, &cached_received_us)) {
+    return CopyGpsPositionSnapshot(cached, cached_received_us, out);
+  }
+  return false;
+}
+
 void RequestGpsReconfigure() {
   gps_reconfigure_requested = true;
 }
@@ -2101,6 +2142,7 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
   if (log_config.use_motor) {
     fprintf(log_file, ",adc1_cal,adc2_cal,adc3_cal");
   }
+  fprintf(log_file, ",gps_lat,gps_lon,gps_alt,gps_fix_quality,gps_satellites,gps_fix_age_ms");
   fprintf(log_file, "\n");
   FlushLogFile();
 

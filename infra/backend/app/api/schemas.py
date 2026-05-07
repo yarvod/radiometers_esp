@@ -303,6 +303,12 @@ class MeasurementOut(BaseModel):
     adc1_cal: Optional[float]
     adc2_cal: Optional[float]
     adc3_cal: Optional[float]
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
+    gps_alt: Optional[float] = None
+    gps_fix_quality: Optional[int] = None
+    gps_satellites: Optional[int] = None
+    gps_fix_age_ms: Optional[int] = None
     log_use_motor: bool
     log_duration: float
     log_filename: Optional[str]
@@ -321,6 +327,12 @@ class MeasurementPointOut(BaseModel):
     adc1_cal: Optional[float]
     adc2_cal: Optional[float]
     adc3_cal: Optional[float]
+    gps_lat: Optional[float] = None
+    gps_lon: Optional[float] = None
+    gps_alt: Optional[float] = None
+    gps_fix_quality: Optional[int] = None
+    gps_satellites: Optional[int] = None
+    gps_fix_age_ms: Optional[int] = None
     brightness_temp1: Optional[float] = None
     brightness_temp2: Optional[float] = None
     brightness_temp3: Optional[float] = None
