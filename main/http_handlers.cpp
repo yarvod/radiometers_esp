@@ -953,6 +953,10 @@ void LoggingTask(void*) {
     double sum_bus_v = 0, sum_bus_i = 0, sum_bus_p = 0;
     while ((esp_timer_get_time() / 1000ULL - start) < duration_ms) {
       SharedState snap = CopyState();
+      if (log_config.use_motor && (snap.stepper_moving || snap.homing)) {
+        ESP_LOGW(TAG, "Logging: stepper moved during averaging, discarding samples");
+        return false;
+      }
       sum_v1 += snap.voltage1;
       sum_v2 += snap.voltage2;
       sum_v3 += snap.voltage3;
@@ -1083,9 +1087,13 @@ void LoggingTask(void*) {
         });
       }
 
-      // Вернуться на пользовательский ноль и продолжить цикл.
-      if (!move_blocking(kLoggingMotorSteps, false)) {
-        ESP_LOGW(TAG, "Logging aborted during stepper move");
+      // Вернуться на пользовательский ноль через Hall + offset, чтобы ошибка шагов не накапливалась.
+      StepperHomeResult home_result = home_blocking();
+      if (home_result.aborted || !home_result.hall_found || !home_result.offset_done) {
+        ESP_LOGW(TAG, "Logging stopped: return homing failed (hall=%s offset=%s aborted=%s)",
+                 home_result.hall_found ? "yes" : "no",
+                 home_result.offset_done ? "yes" : "no",
+                 home_result.aborted ? "yes" : "no");
         StopLogging();
         vTaskDelete(nullptr);
       }
