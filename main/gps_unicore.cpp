@@ -703,6 +703,22 @@ bool GpsUnicoreClient::getCurrentMode(std::string& out) {
   return ok;
 }
 
+bool GpsUnicoreClient::getCurrentMode(char* out, size_t out_len) {
+  if (!out || out_len == 0) {
+    return false;
+  }
+  out[0] = '\0';
+  if (!data_mutex_ || xSemaphoreTake(data_mutex_, pdMS_TO_TICKS(50)) != pdTRUE) {
+    return false;
+  }
+  const bool ok = has_current_mode_;
+  if (ok) {
+    std::snprintf(out, out_len, "%s", current_mode_.c_str());
+  }
+  xSemaphoreGive(data_mutex_);
+  return ok;
+}
+
 void GpsUnicoreClient::ReadTaskThunk(void* arg) {
   static_cast<GpsUnicoreClient*>(arg)->uartReadTask();
 }

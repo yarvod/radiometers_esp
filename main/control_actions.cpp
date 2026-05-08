@@ -83,8 +83,26 @@ std::string BuildStateJsonInternal() {
   }
   cJSON_AddItemToObject(root, "gpsRtcmTypes", gps_types);
   cJSON_AddStringToObject(root, "gpsMode", app_config.gps_mode.c_str());
-  const std::string gps_actual_mode = GetGpsCurrentMode();
-  cJSON_AddStringToObject(root, "gpsActualMode", gps_actual_mode.c_str());
+  char gps_actual_mode[256] = {};
+  GetGpsCurrentModeText(gps_actual_mode, sizeof(gps_actual_mode));
+  cJSON_AddStringToObject(root, "gpsActualMode", gps_actual_mode);
+  cJSON_AddNumberToObject(root, "gpsAntennaShortRaw", GetGpsAntennaShortRaw());
+  cJSON_AddBoolToObject(root, "gpsAntennaShort", IsGpsAntennaShort());
+  const GpsReceiverStatus gps_status = GetGpsReceiverStatus();
+  cJSON_AddBoolToObject(root, "gpsPositionValid", gps_status.position_valid);
+  if (gps_status.position_valid) {
+    cJSON_AddNumberToObject(root, "gpsLat", gps_status.latitude_deg);
+    cJSON_AddNumberToObject(root, "gpsLon", gps_status.longitude_deg);
+    cJSON_AddNumberToObject(root, "gpsAlt", gps_status.altitude_m);
+    cJSON_AddNumberToObject(root, "gpsFixQuality", gps_status.fix_quality);
+    cJSON_AddNumberToObject(root, "gpsSatellites", gps_status.satellites);
+    cJSON_AddNumberToObject(root, "gpsPositionAgeMs", static_cast<double>(gps_status.position_age_ms));
+  }
+  cJSON_AddBoolToObject(root, "gpsTimeValid", gps_status.time_valid);
+  if (gps_status.time_valid) {
+    cJSON_AddStringToObject(root, "gpsTimeIso", gps_status.time_iso);
+    cJSON_AddNumberToObject(root, "gpsTimeAgeMs", static_cast<double>(gps_status.time_age_ms));
+  }
   cJSON* temp_obj = cJSON_CreateObject();
   for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
     const std::string key = "t" + std::to_string(i + 1);

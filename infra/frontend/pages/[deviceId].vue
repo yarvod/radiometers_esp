@@ -471,6 +471,18 @@
       v-show="activeTab === 'gps'"
       :has-gps="hasGps"
       :actual-mode="gpsActualMode"
+      :antenna-short="gpsAntennaShort"
+      :antenna-short-raw="gpsAntennaShortRaw"
+      :position-valid="gpsPositionValid"
+      :latitude="gpsLatitude"
+      :longitude="gpsLongitude"
+      :altitude="gpsAltitude"
+      :fix-quality="gpsFixQuality"
+      :satellites="gpsSatellites"
+      :position-age-ms="gpsPositionAgeMs"
+      :time-valid="gpsTimeValid"
+      :time-iso="gpsTimeIso"
+      :time-age-ms="gpsTimeAgeMs"
       :form="gpsForm"
       :saving="gpsSaving"
       :status="gpsStatus"
@@ -729,9 +741,36 @@ const gpsLiveTypes = computed(() => {
   return raw.map((value: any) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
 })
 const gpsActualMode = computed(() => String(device.value?.state?.gpsActualMode || gpsConfig.value?.actual_mode || ''))
+const gpsAntennaShort = computed(() => {
+  const value = device.value?.state?.gpsAntennaShort
+  return typeof value === 'boolean' ? value : null
+})
+const gpsAntennaShortRaw = computed(() => {
+  const value = Number(device.value?.state?.gpsAntennaShortRaw)
+  return Number.isFinite(value) ? value : null
+})
+const optionalNumberState = (key: string) => {
+  const value = Number(device.value?.state?.[key])
+  return Number.isFinite(value) ? value : null
+}
+const gpsPositionValid = computed(() => device.value?.state?.gpsPositionValid === true)
+const gpsLatitude = computed(() => optionalNumberState('gpsLat'))
+const gpsLongitude = computed(() => optionalNumberState('gpsLon'))
+const gpsAltitude = computed(() => optionalNumberState('gpsAlt'))
+const gpsFixQuality = computed(() => optionalNumberState('gpsFixQuality'))
+const gpsSatellites = computed(() => optionalNumberState('gpsSatellites'))
+const gpsPositionAgeMs = computed(() => optionalNumberState('gpsPositionAgeMs') ?? optionalNumberState('gpsFixAgeMs'))
+const gpsTimeValid = computed(() => device.value?.state?.gpsTimeValid === true)
+const gpsTimeIso = computed(() => String(device.value?.state?.gpsTimeIso || ''))
+const gpsTimeAgeMs = computed(() => optionalNumberState('gpsTimeAgeMs'))
 const hasGps = computed(() => {
   const state = device.value?.state || {}
-  return !!gpsConfig.value?.has_gps || gpsLiveTypes.value.length > 0 || !!state.gpsMode || !!state.gpsActualMode
+  return !!gpsConfig.value?.has_gps ||
+    gpsLiveTypes.value.length > 0 ||
+    !!state.gpsMode ||
+    !!state.gpsActualMode ||
+    state.gpsPositionValid === true ||
+    state.gpsTimeValid === true
 })
 const adcLabelDefaults: Record<string, string> = {
   adc1: 'ADC1',

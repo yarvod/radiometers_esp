@@ -424,8 +424,27 @@ void BuildMqttState(char* out, size_t out_len) {
   JsonAppend(&b, "],\"gpsMode\":");
   JsonAppendEscaped(&b, app_config.gps_mode.c_str());
   JsonAppend(&b, ",\"gpsActualMode\":");
-  const std::string gps_actual_mode = GetGpsCurrentMode();
-  JsonAppendEscaped(&b, gps_actual_mode.c_str());
+  char gps_actual_mode[256] = {};
+  GetGpsCurrentModeText(gps_actual_mode, sizeof(gps_actual_mode));
+  JsonAppendEscaped(&b, gps_actual_mode);
+  JsonAppend(&b, ",\"gpsAntennaShortRaw\":%d,\"gpsAntennaShort\":%s",
+             GetGpsAntennaShortRaw(), IsGpsAntennaShort() ? "true" : "false");
+  const GpsReceiverStatus gps_status = GetGpsReceiverStatus();
+  JsonAppend(&b, ",\"gpsPositionValid\":%s", gps_status.position_valid ? "true" : "false");
+  if (gps_status.position_valid) {
+    JsonAppend(&b,
+               ",\"gpsLat\":%.8f,\"gpsLon\":%.8f,\"gpsAlt\":%.3f,"
+               "\"gpsFixQuality\":%d,\"gpsSatellites\":%d,\"gpsPositionAgeMs\":%lld",
+               gps_status.latitude_deg, gps_status.longitude_deg, gps_status.altitude_m,
+               gps_status.fix_quality, gps_status.satellites,
+               static_cast<long long>(gps_status.position_age_ms));
+  }
+  JsonAppend(&b, ",\"gpsTimeValid\":%s", gps_status.time_valid ? "true" : "false");
+  if (gps_status.time_valid) {
+    JsonAppend(&b, ",\"gpsTimeIso\":");
+    JsonAppendEscaped(&b, gps_status.time_iso);
+    JsonAppend(&b, ",\"gpsTimeAgeMs\":%lld", static_cast<long long>(gps_status.time_age_ms));
+  }
   JsonAppend(&b, ",\"deviceId\":");
   JsonAppendEscaped(&b, app_config.device_id.c_str());
   JsonAppend(&b, ",\"minioEndpoint\":");

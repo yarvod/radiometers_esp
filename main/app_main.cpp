@@ -196,6 +196,17 @@ bool CycleExternalPower(uint32_t off_ms) {
   return ok == pdPASS;
 }
 
+int GetGpsAntennaShortRaw() {
+  if (GPS_ANT_SHORT == GPIO_NUM_NC) {
+    return -1;
+  }
+  return gpio_get_level(GPS_ANT_SHORT);
+}
+
+bool IsGpsAntennaShort() {
+  return GetGpsAntennaShortRaw() == 0;
+}
+
 void StartSntp();
 bool EnsureTimeSynced(int timeout_ms);
 esp_err_t InitSpiBus();
@@ -272,6 +283,10 @@ static std::vector<uint16_t> ParseRtcmTypesString(const std::string& value) {
 std::string GetGpsCurrentMode() {
   std::string mode;
   return gps_client.getCurrentMode(mode) ? mode : "";
+}
+
+bool GetGpsCurrentModeText(char* out, size_t out_len) {
+  return gps_client.getCurrentMode(out, out_len);
 }
 
 static bool CopyGpsPositionSnapshot(const GpsPosition& pos, int64_t received_us, GpsPositionSnapshot* out) {
@@ -419,6 +434,19 @@ bool GpsUtcNow(UtcTimeSnapshot* out) {
   return true;
 }
 
+void FormatUtcIsoToBuffer(const UtcTimeSnapshot& snapshot, char* out, size_t out_len) {
+  if (!out || out_len == 0) {
+    return;
+  }
+  time_t now = snapshot.unix_time;
+  if (now <= 0) {
+    now = static_cast<time_t>(0);
+  }
+  struct tm tm_utc {};
+  gmtime_r(&now, &tm_utc);
+  strftime(out, out_len, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+}
+
 void MaybeDisciplineSystemTimeFromGps(const UtcTimeSnapshot& gps_time);
 
 bool RequestGpsUtcTimeOnce(int timeout_ms, UtcTimeSnapshot* out) {
@@ -534,6 +562,33 @@ UtcTimeSnapshot GetBestUtcTimeForGps() {
     return MakeSystemTimeSnapshot(UtcTimeSource::kSystemCached, true);
   }
   return MakeSystemTimeSnapshot(UtcTimeSource::kMonotonic, false);
+}
+
+GpsReceiverStatus GetGpsReceiverStatus() {
+  GpsReceiverStatus status{};
+  GpsPosition pos{};
+  int64_t pos_received_us = 0;
+  if (gps_client.getLastPosition(pos, &pos_received_us)) {
+    status.position_valid = true;
+    status.latitude_deg = pos.latitude_deg;
+    status.longitude_deg = pos.longitude_deg;
+    status.altitude_m = pos.altitude_m;
+    status.fix_quality = pos.fix_quality;
+    status.satellites = pos.satellites;
+    status.position_age_ms = std::max<int64_t>((esp_timer_get_time() - pos_received_us) / 1000, 0);
+  }
+
+  GpsDateTime dt{};
+  int64_t time_received_us = 0;
+  if (gps_client.getLastDateTime(dt, &time_received_us)) {
+    UtcTimeSnapshot gps_time{};
+    if (GpsUtcNow(&gps_time)) {
+      status.time_valid = true;
+      FormatUtcIsoToBuffer(gps_time, status.time_iso, sizeof(status.time_iso));
+      status.time_age_ms = std::max<int64_t>((esp_timer_get_time() - time_received_us) / 1000, 0);
+    }
+  }
+  return status;
 }
 
 static std::string FormatIp4(const esp_ip4_addr_t& ip) {
@@ -2929,6 +2984,16 @@ void InitGpios() {
   hall_conf.pull_up_en = GPIO_PULLUP_ENABLE;
   hall_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   ESP_ERROR_CHECK(gpio_config(&hall_conf));
+
+  if (GPS_ANT_SHORT != GPIO_NUM_NC) {
+    gpio_config_t gps_ant_conf = {};
+    gps_ant_conf.intr_type = GPIO_INTR_DISABLE;
+    gps_ant_conf.mode = GPIO_MODE_INPUT;
+    gps_ant_conf.pin_bit_mask = GpioMask(GPS_ANT_SHORT);
+    gps_ant_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gps_ant_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    ESP_ERROR_CHECK(gpio_config(&gps_ant_conf));
+  }
 
   if (ETH_INT != GPIO_NUM_NC || FAN1_TACH != GPIO_NUM_NC || FAN2_TACH != GPIO_NUM_NC) {
     EnsureGpioIsrServiceInstalled();

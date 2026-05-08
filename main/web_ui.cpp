@@ -335,6 +335,9 @@ const char INDEX_HTML[] = R"rawliteral(
             <div class="form-group">
               <div>Physical Unicore port: <strong>COM2</strong></div>
               <div>Actual receiver mode: <span id="gpsActualMode">--</span></div>
+              <div>Antenna short: <span id="gpsAntennaShort">--</span> (raw <span id="gpsAntennaShortRaw">--</span>)</div>
+              <div>Position fix: <span id="gpsPositionStatus">--</span></div>
+              <div>GPS time: <span id="gpsTimeStatus">--</span></div>
             </div>
             <div class="form-group">
               <label for="gpsMode">Configured mode</label>
@@ -909,6 +912,28 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('usbModeLabel').textContent = modeLabel;
       const gpsActualModeEl = document.getElementById('gpsActualMode');
       if (gpsActualModeEl) gpsActualModeEl.textContent = data.gpsActualMode || '--';
+      const gpsAntShortEl = document.getElementById('gpsAntennaShort');
+      if (gpsAntShortEl) gpsAntShortEl.textContent = typeof data.gpsAntennaShort === 'boolean' ? (data.gpsAntennaShort ? 'YES' : 'NO') : '--';
+      const gpsAntShortRawEl = document.getElementById('gpsAntennaShortRaw');
+      if (gpsAntShortRawEl) gpsAntShortRawEl.textContent = data.gpsAntennaShortRaw ?? '--';
+      const gpsPositionStatusEl = document.getElementById('gpsPositionStatus');
+      if (gpsPositionStatusEl) {
+        if (data.gpsPositionValid) {
+          const age = Number.isFinite(data.gpsPositionAgeMs) ? `, age ${Math.round(data.gpsPositionAgeMs / 1000)}s` : '';
+          gpsPositionStatusEl.textContent = `OK lat=${Number(data.gpsLat).toFixed(6)} lon=${Number(data.gpsLon).toFixed(6)} sats=${data.gpsSatellites ?? '--'} fix=${data.gpsFixQuality ?? '--'}${age}`;
+        } else {
+          gpsPositionStatusEl.textContent = 'NO FIX';
+        }
+      }
+      const gpsTimeStatusEl = document.getElementById('gpsTimeStatus');
+      if (gpsTimeStatusEl) {
+        if (data.gpsTimeValid) {
+          const age = Number.isFinite(data.gpsTimeAgeMs) ? `, age ${Math.round(data.gpsTimeAgeMs / 1000)}s` : '';
+          gpsTimeStatusEl.textContent = `${data.gpsTimeIso || '--'}${age}`;
+        } else {
+          gpsTimeStatusEl.textContent = 'NO TIME';
+        }
+      }
       const extPowerEl = document.getElementById('externalPowerState');
       if (extPowerEl) extPowerEl.textContent = data.externalPowerOn ? 'ON' : 'OFF';
 

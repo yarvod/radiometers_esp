@@ -82,6 +82,7 @@ class GpsUnicoreClient {
   bool getLastPosition(GpsPosition& out, int64_t* received_us);
   bool getLastRtcm(uint16_t type, RtcmFrame& out);
   bool getCurrentMode(std::string& out);
+  bool getCurrentMode(char* out, size_t out_len);
 
  private:
   static void ReadTaskThunk(void* arg);
