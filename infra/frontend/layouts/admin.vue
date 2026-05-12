@@ -13,7 +13,7 @@
           :class="{ active: route.path.startsWith('/stations') }"
           @click="closeSidebarIfMobile"
         >
-          <span class="nav-icon" aria-hidden="true">🛰️</span>
+          <span class="nav-icon" aria-hidden="true">🎈</span>
           <span>Станции</span>
         </NuxtLink>
         <NuxtLink
@@ -22,7 +22,7 @@
           :class="{ active: route.path.startsWith('/soundings-schedule') }"
           @click="closeSidebarIfMobile"
         >
-          <span class="nav-icon" aria-hidden="true">🧭</span>
+          <span class="nav-icon" aria-hidden="true">📈</span>
           <span>Профили</span>
         </NuxtLink>
         <NuxtLink
