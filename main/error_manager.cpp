@@ -47,6 +47,7 @@ constexpr std::array<ErrorMeta, static_cast<size_t>(ErrorCode::kMax)> kErrorMeta
     {"sd_mutex", true, false, 450, 2},
     {"mqtt_transport", true, true, 650, 2},
     {"minio_upload", true, false, 700, 2},
+    {"stepper_homing", true, false, 300, 5},
 }};
 
 static_assert(kErrorMeta.size() == static_cast<size_t>(ErrorCode::kMax), "error meta mismatch");

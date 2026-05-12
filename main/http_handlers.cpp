@@ -552,6 +552,26 @@ struct StepperHomeResult {
   int offset_steps = 0;
 };
 
+constexpr int kStepperHomeRetryAttempts = 3;
+
+static bool StepperHomeSucceeded(const StepperHomeResult& result) {
+  return !result.aborted && result.hall_found && result.offset_done;
+}
+
+static std::string StepperHomeFailureMessage(const char* phase, const StepperHomeResult& result, int attempts) {
+  char buf[192];
+  std::snprintf(buf, sizeof(buf),
+                "%s failed after %d attempt(s): hall=%s offset=%s aborted=%s hall_steps=%d offset_steps=%d",
+                phase ? phase : "Stepper homing",
+                attempts,
+                result.hall_found ? "yes" : "no",
+                result.offset_done ? "yes" : "no",
+                result.aborted ? "yes" : "no",
+                result.hall_steps,
+                result.offset_steps);
+  return std::string(buf);
+}
+
 static void StepperPulseOnce() {
   gpio_set_level(STEPPER_STEP, 1);
   esp_rom_delay_us(4);
@@ -653,6 +673,38 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
   });
 
   return result;
+}
+
+static StepperHomeResult HomeStepperToUserZeroWithRetries(bool enable_motor, const char* log_context, int attempts) {
+  attempts = std::max(attempts, 1);
+  StepperHomeResult last{};
+  for (int attempt = 1; attempt <= attempts; ++attempt) {
+    last = HomeStepperToUserZeroBlocking(enable_motor, log_context);
+    if (StepperHomeSucceeded(last)) {
+      if (attempt > 1) {
+        ESP_LOGI(TAG, "%s succeeded on attempt %d/%d", log_context, attempt, attempts);
+      }
+      ErrorManagerClear(ErrorCode::kStepperHoming);
+      return last;
+    }
+
+    ESP_LOGW(TAG, "%s failed attempt %d/%d (hall=%s offset=%s aborted=%s hall_steps=%d offset_steps=%d)",
+             log_context,
+             attempt,
+             attempts,
+             last.hall_found ? "yes" : "no",
+             last.offset_done ? "yes" : "no",
+             last.aborted ? "yes" : "no",
+             last.hall_steps,
+             last.offset_steps);
+    if (last.aborted) {
+      break;
+    }
+    if (attempt < attempts) {
+      vTaskDelay(pdMS_TO_TICKS(300));
+    }
+  }
+  return last;
 }
 
 }  // namespace
@@ -955,7 +1007,7 @@ void LoggingTask(void*) {
   constexpr UBaseType_t kLogStackLowWords = 512;
 
   auto home_blocking = [&]() {
-    return HomeStepperToUserZeroBlocking(true, "Logging home");
+    return HomeStepperToUserZeroWithRetries(true, "Logging home", kStepperHomeRetryAttempts);
   };
 
   auto move_blocking = [&](int steps, bool forward) -> bool {
@@ -1038,11 +1090,12 @@ void LoggingTask(void*) {
   if (log_config.use_motor || !log_config.homed_once) {
     StepperHomeResult home_result = home_blocking();
     log_config.homed_once = true;
-    if (home_result.aborted || !home_result.hall_found || !home_result.offset_done) {
-      ESP_LOGW(TAG, "Logging stopped: homing failed (hall=%s offset=%s aborted=%s)",
-               home_result.hall_found ? "yes" : "no",
-               home_result.offset_done ? "yes" : "no",
-               home_result.aborted ? "yes" : "no");
+    if (!StepperHomeSucceeded(home_result)) {
+      const std::string msg = StepperHomeFailureMessage("Logging stopped: homing",
+                                                        home_result,
+                                                        kStepperHomeRetryAttempts);
+      ESP_LOGW(TAG, "%s", msg.c_str());
+      ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, msg);
       StopLogging();
       vTaskDelete(nullptr);
     }
@@ -1140,11 +1193,12 @@ void LoggingTask(void*) {
 
       // Вернуться на пользовательский ноль через Hall + offset, чтобы ошибка шагов не накапливалась.
       StepperHomeResult home_result = home_blocking();
-      if (home_result.aborted || !home_result.hall_found || !home_result.offset_done) {
-        ESP_LOGW(TAG, "Logging stopped: return homing failed (hall=%s offset=%s aborted=%s)",
-                 home_result.hall_found ? "yes" : "no",
-                 home_result.offset_done ? "yes" : "no",
-                 home_result.aborted ? "yes" : "no");
+      if (!StepperHomeSucceeded(home_result)) {
+        const std::string msg = StepperHomeFailureMessage("Logging stopped: return homing",
+                                                          home_result,
+                                                          kStepperHomeRetryAttempts);
+        ESP_LOGW(TAG, "%s", msg.c_str());
+        ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, msg);
         StopLogging();
         vTaskDelete(nullptr);
       }

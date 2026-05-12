@@ -18,6 +18,7 @@ enum class ErrorCode : uint8_t {
   kSdMutex = 11,
   kMqttTransport = 12,
   kMinioUpload = 13,
+  kStepperHoming = 14,
   kMax
 };
 
