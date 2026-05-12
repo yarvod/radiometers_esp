@@ -38,6 +38,7 @@ from app.repositories.sqlalchemy import (
     SqlUserRepository,
 )
 from app.services.auth import AuthService
+from app.services.atmosphere import AtmosphereService
 from app.services.calibrations import RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
@@ -163,6 +164,17 @@ class AppProvider(Provider):
         redis: ArqRedis,
     ) -> SoundingService:
         return SoundingService(soundings, jobs, export_jobs, schedules, schedule_config, stations, settings, redis)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_atmosphere_service(
+        self,
+        devices: DeviceRepository,
+        stations: StationRepository,
+        soundings: SoundingRepository,
+        measurements: MeasurementService,
+        calibrations: RadiometerCalibrationRepository,
+    ) -> AtmosphereService:
+        return AtmosphereService(devices, stations, soundings, measurements, calibrations)
 
     @provide(scope=Scope.REQUEST)
     def provide_error_service(self, errors: ErrorRepository) -> ErrorService:

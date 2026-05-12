@@ -25,6 +25,7 @@ class DeviceService:
         temp_addresses: list[str] | None = None,
         temp_label_map: dict[str, str] | None = None,
         temp_bindings: dict[str, str] | None = None,
+        atmosphere_config: dict[str, object] | None = None,
         adc_labels: dict[str, str] | None = None,
     ) -> Device:
         if temp_label_map is not None:
@@ -92,6 +93,28 @@ class DeviceService:
                 for role, address in temp_bindings.items()
                 if str(role).strip() in allowed_keys and str(address).strip()
             }
+        if atmosphere_config is not None:
+            station_ids: list[str] = []
+            for raw in atmosphere_config.get("station_ids", []) if isinstance(atmosphere_config, dict) else []:
+                value = str(raw).strip()
+                if value and value not in station_ids:
+                    station_ids.append(value)
+            try:
+                altitude_m = float(atmosphere_config.get("altitude_m", 0.0))
+            except (TypeError, ValueError, AttributeError):
+                altitude_m = 0.0
+            try:
+                h0_m = float(atmosphere_config.get("h0_m", 5300.0))
+            except (TypeError, ValueError, AttributeError):
+                h0_m = 5300.0
+            tau_station_id = str(atmosphere_config.get("tau_station_id", "")).strip()
+            atmosphere_config = {
+                "station_ids": station_ids,
+                "altitude_m": max(0.0, altitude_m),
+                "h0_m": h0_m if h0_m > 0 else 5300.0,
+                "tau_station_id": tau_station_id if tau_station_id in station_ids else (station_ids[0] if station_ids else ""),
+                "tau_average": bool(atmosphere_config.get("tau_average", False)),
+            }
         return await self._devices.update(
             device_id=device_id,
             display_name=display_name,
@@ -99,6 +122,7 @@ class DeviceService:
             temp_addresses=temp_addresses,
             temp_label_map=temp_label_map,
             temp_bindings=temp_bindings,
+            atmosphere_config=atmosphere_config,
             adc_labels=adc_labels,
         )
 

@@ -5,6 +5,9 @@ from dishka.integrations.fastapi import FromDishka, inject
 
 from app.api.deps import get_current_user
 from app.api.schemas import (
+    AtmosphereEffectiveTemperaturePointOut,
+    AtmosphereMeasurementPointOut,
+    AtmosphereSeriesResponse,
     DeviceConfigOut,
     DeviceCreateRequest,
     DeviceGpsConfigOut,
@@ -19,11 +22,21 @@ from app.api.schemas import (
     RadiometerCalibrationsResponse,
 )
 from app.domain.entities import User
+from app.services.atmosphere import AtmosphereService
 from app.services.calibrations import CalibrationError, RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+
+
+def parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    return datetime.fromisoformat(raw)
 
 
 def sanitize_rtcm_types(values: list[int] | None) -> list[int] | None:
@@ -76,6 +89,7 @@ async def update_device(
         payload.temp_addresses,
         payload.temp_label_map,
         payload.temp_bindings,
+        payload.atmosphere_config,
         payload.adc_labels,
     )
     return DeviceConfigOut.model_validate(device, from_attributes=True)
@@ -92,6 +106,47 @@ async def get_device(
     if not device:
         device = await devices.create_device(device_id)
     return DeviceConfigOut.model_validate(device, from_attributes=True)
+
+
+@router.get("/{device_id}/atmosphere", response_model=AtmosphereSeriesResponse)
+@inject
+async def get_device_atmosphere(
+    device_id: str,
+    atmosphere: FromDishka[AtmosphereService],
+    start: str | None = Query(None, alias="from"),
+    end: str | None = Query(None, alias="to"),
+    limit: int = Query(default=2000, ge=1, le=10000),
+    bucket_seconds: int | None = Query(default=None, ge=0, le=86400),
+    tau_station_id: str | None = Query(default=None),
+    average: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+):
+    series = await atmosphere.build_series(
+        device_id=device_id,
+        start=parse_datetime(start),
+        end=parse_datetime(end),
+        limit=limit,
+        bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
+        tau_station_id=tau_station_id,
+        average=average,
+    )
+    return AtmosphereSeriesResponse(
+        config=series.config,
+        station_labels=series.station_labels,
+        adc_labels=series.adc_labels,
+        t_eff_points=[
+            AtmosphereEffectiveTemperaturePointOut.model_validate(item, from_attributes=True)
+            for item in series.t_eff_points
+        ],
+        measurement_points=[
+            AtmosphereMeasurementPointOut.model_validate(item, from_attributes=True)
+            for item in series.measurement_points
+        ],
+        raw_count=series.raw_count,
+        bucket_seconds=series.bucket_seconds,
+        bucket_label=series.bucket_label,
+        aggregated=series.aggregated,
+    )
 
 
 @router.get("/{device_id}/gps", response_model=DeviceGpsConfigOut)

@@ -63,6 +63,7 @@ def to_device(model: DeviceModel) -> Device:
         temp_addresses=list(model.temp_addresses or []),
         temp_label_map=dict(model.temp_label_map or {}),
         temp_bindings=dict(model.temp_bindings or {}),
+        atmosphere_config=dict(model.atmosphere_config or {}),
         adc_labels=dict(model.adc_labels or {}),
     )
 
@@ -317,6 +318,7 @@ class SqlDeviceRepository(DeviceRepository):
             temp_addresses=[],
             temp_label_map={},
             temp_bindings={},
+            atmosphere_config={},
             adc_labels={},
         )
         self._session.add(model)
@@ -334,6 +336,7 @@ class SqlDeviceRepository(DeviceRepository):
                 temp_addresses=[],
                 temp_label_map={},
                 temp_bindings={},
+                atmosphere_config={},
                 adc_labels={},
             )
             self._session.add(model)
@@ -350,6 +353,7 @@ class SqlDeviceRepository(DeviceRepository):
         temp_addresses: list[str] | None,
         temp_label_map: dict[str, str] | None,
         temp_bindings: dict[str, str] | None,
+        atmosphere_config: dict[str, object] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
@@ -362,6 +366,7 @@ class SqlDeviceRepository(DeviceRepository):
                 temp_addresses=temp_addresses or [],
                 temp_label_map=temp_label_map or {},
                 temp_bindings=temp_bindings or {},
+                atmosphere_config=atmosphere_config or {},
                 adc_labels=adc_labels or {},
             )
             self._session.add(model)
@@ -376,6 +381,8 @@ class SqlDeviceRepository(DeviceRepository):
                 model.temp_label_map = temp_label_map
             if temp_bindings is not None:
                 model.temp_bindings = temp_bindings
+            if atmosphere_config is not None:
+                model.atmosphere_config = atmosphere_config
             if adc_labels is not None:
                 model.adc_labels = adc_labels
         await self._session.flush()
@@ -397,7 +404,17 @@ class SqlDeviceRepository(DeviceRepository):
         device_result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
         device = device_result.scalar_one_or_none()
         if not device:
-            self._session.add(DeviceModel(id=device_id, temp_labels=[], temp_addresses=[], temp_label_map={}, adc_labels={}))
+            self._session.add(
+                DeviceModel(
+                    id=device_id,
+                    temp_labels=[],
+                    temp_addresses=[],
+                    temp_label_map={},
+                    temp_bindings={},
+                    atmosphere_config={},
+                    adc_labels={},
+                )
+            )
         result = await self._session.execute(select(DeviceGpsConfigModel).where(DeviceGpsConfigModel.device_id == device_id))
         model = result.scalar_one_or_none()
         now = datetime.now(timezone.utc)
@@ -577,7 +594,15 @@ class SqlRadiometerCalibrationRepository(RadiometerCalibrationRepository):
         device_result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == calibration.device_id))
         if device_result.scalar_one_or_none() is None:
             self._session.add(
-                DeviceModel(id=calibration.device_id, temp_labels=[], temp_addresses=[], temp_label_map={}, adc_labels={})
+                DeviceModel(
+                    id=calibration.device_id,
+                    temp_labels=[],
+                    temp_addresses=[],
+                    temp_label_map={},
+                    temp_bindings={},
+                    atmosphere_config={},
+                    adc_labels={},
+                )
             )
             await self._session.flush()
         model = RadiometerCalibrationModel(

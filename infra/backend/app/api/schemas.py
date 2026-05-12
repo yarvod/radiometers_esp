@@ -52,6 +52,7 @@ class DeviceUpdateRequest(BaseModel):
     temp_addresses: Optional[list[str]] = None
     temp_label_map: Optional[dict[str, str]] = None
     temp_bindings: Optional[dict[str, str]] = None
+    atmosphere_config: Optional[dict[str, object]] = None
     adc_labels: Optional[dict[str, str]] = None
 
 
@@ -71,7 +72,46 @@ class DeviceConfigOut(BaseModel):
     temp_addresses: list[str] = Field(default_factory=list)
     temp_label_map: dict[str, str] = Field(default_factory=dict)
     temp_bindings: dict[str, str] = Field(default_factory=dict)
+    atmosphere_config: dict[str, object] = Field(default_factory=dict)
     adc_labels: dict[str, str] = Field(default_factory=dict)
+
+
+class AtmosphereEffectiveTemperaturePointOut(BaseModel):
+    station_id: str
+    station_name: Optional[str] = None
+    sounding_time: datetime
+    t_eff: Optional[float] = None
+    pwv_profile: Optional[float] = None
+    row_count: int
+
+
+class AtmosphereMeasurementPointOut(BaseModel):
+    timestamp: datetime
+    timestamp_ms: Optional[int] = None
+    t_eff: Optional[float] = None
+    t_eff_station_id: Optional[str] = None
+    t_eff_age_hours: Optional[float] = None
+    brightness_temp1: Optional[float] = None
+    brightness_temp2: Optional[float] = None
+    brightness_temp3: Optional[float] = None
+    tau1: Optional[float] = None
+    tau2: Optional[float] = None
+    tau3: Optional[float] = None
+    pwv1: Optional[float] = None
+    pwv2: Optional[float] = None
+    pwv3: Optional[float] = None
+
+
+class AtmosphereSeriesResponse(BaseModel):
+    config: dict[str, object] = Field(default_factory=dict)
+    station_labels: dict[str, str] = Field(default_factory=dict)
+    adc_labels: dict[str, str] = Field(default_factory=dict)
+    t_eff_points: list[AtmosphereEffectiveTemperaturePointOut] = Field(default_factory=list)
+    measurement_points: list[AtmosphereMeasurementPointOut] = Field(default_factory=list)
+    raw_count: int
+    bucket_seconds: int
+    bucket_label: str
+    aggregated: bool
 
 
 class DeviceGpsConfigOut(BaseModel):

@@ -359,6 +359,7 @@
       <div class="actions">
         <button class="btn primary" @click="loadHistory" :disabled="historyLoading">Загрузить</button>
         <span class="muted" v-if="historyStatus">{{ historyStatus }}</span>
+        <span class="muted" v-if="atmosphereStatus">{{ atmosphereStatus }}</span>
       </div>
       <div class="inline fields">
         <label class="checkbox">
@@ -429,6 +430,39 @@
             <canvas ref="loadCheckChartEl"></canvas>
           </div>
         </div>
+        <div class="chart-box">
+          <h4>Эффективная температура по зондам</h4>
+          <div class="chart-body">
+            <canvas ref="teffChartEl"></canvas>
+          </div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-head-row">
+            <h4>Тау атмосферы</h4>
+            <div class="inline fields compact-controls">
+              <label class="checkbox">
+                <input type="checkbox" v-model="atmosphereAverage" :disabled="atmosphereStationOptions.length === 0" />
+                <span>Усреднить</span>
+              </label>
+              <label class="compact">Станция
+                <select v-model="atmospherePrimaryStation" :disabled="atmosphereAverage || atmosphereStationOptions.length === 0">
+                  <option v-for="station in atmosphereStationOptions" :key="station.station_id" :value="station.station_id">
+                    {{ stationLabel(station) }}
+                  </option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="chart-body">
+            <canvas ref="tauChartEl"></canvas>
+          </div>
+        </div>
+        <div class="chart-box">
+          <h4>PWV</h4>
+          <div class="chart-body">
+            <canvas ref="pwvAtmosphereChartEl"></canvas>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -488,6 +522,31 @@
             </select>
           </label>
         </div>
+      </div>
+      <div class="form-group">
+        <label>Атмосферные профили для расчета Tэфф / tau / PWV</label>
+        <div class="config-grid">
+          <label class="compact">Высота прибора, м
+            <input type="number" min="0" step="1" v-model.number="configForm.atmosphere.altitudeM" @input="configDirty = true" />
+          </label>
+          <label class="compact">h0, м
+            <input type="number" min="1" step="1" v-model.number="configForm.atmosphere.h0M" @input="configDirty = true" />
+          </label>
+        </div>
+        <div class="chip-select">
+          <button
+            v-for="station in stationOptions"
+            :key="`atm-station-${station.station_id}`"
+            type="button"
+            class="chip-option"
+            :class="{ selected: configForm.atmosphere.stationIds.includes(station.station_id) }"
+            @click="toggleAtmosphereStation(station.station_id)"
+          >
+            {{ stationLabel(station) }}
+          </button>
+          <span v-if="stationOptions.length === 0" class="muted">Станции не загружены</span>
+        </div>
+        <p class="muted small">Профили с количеством точек меньше 50 в расчет не попадают.</p>
       </div>
       <div class="actions">
         <button class="btn primary" @click="saveConfig" :disabled="configSaving">Сохранить</button>
@@ -664,7 +723,59 @@ type DeviceConfig = {
   temp_addresses: string[]
   temp_label_map: Record<string, string>
   temp_bindings: Record<string, string>
+  atmosphere_config: AtmosphereConfig
   adc_labels: Record<string, string>
+}
+
+type AtmosphereConfig = {
+  station_ids?: string[]
+  altitude_m?: number
+  h0_m?: number
+  tau_station_id?: string
+  tau_average?: boolean
+}
+
+type StationOption = {
+  station_id: string
+  name: string | null
+}
+
+type AtmosphereTeffPoint = {
+  station_id: string
+  station_name: string | null
+  sounding_time: string
+  t_eff: number | null
+  pwv_profile: number | null
+  row_count: number
+}
+
+type AtmosphereMeasurementPoint = {
+  timestamp: string
+  timestamp_ms: number | null
+  t_eff: number | null
+  t_eff_station_id: string | null
+  t_eff_age_hours: number | null
+  brightness_temp1: number | null
+  brightness_temp2: number | null
+  brightness_temp3: number | null
+  tau1: number | null
+  tau2: number | null
+  tau3: number | null
+  pwv1: number | null
+  pwv2: number | null
+  pwv3: number | null
+}
+
+type AtmosphereResponse = {
+  config: AtmosphereConfig
+  station_labels: Record<string, string>
+  adc_labels: Record<string, string>
+  t_eff_points: AtmosphereTeffPoint[]
+  measurement_points: AtmosphereMeasurementPoint[]
+  raw_count: number
+  bucket_seconds: number
+  bucket_label: string
+  aggregated: boolean
 }
 
 type DeviceGpsConfig = {
@@ -720,6 +831,11 @@ const configForm = reactive({
     radiometer_adc3: '',
     calibration_load: '',
   } as Record<string, string>,
+  atmosphere: {
+    stationIds: [] as string[],
+    altitudeM: 0,
+    h0M: 5300,
+  },
 })
 
 const buildTempLabelMap = (
@@ -864,6 +980,11 @@ const tempSensorOptions = computed(() => {
       return true
     })
 })
+const atmosphereStationOptions = computed(() => {
+  const ids = deviceConfig.value?.atmosphere_config?.station_ids || []
+  const byId = new Map(stationOptions.value.map((station) => [station.station_id, station]))
+  return ids.map((id) => byId.get(id) || { station_id: id, name: atmosphereData.value?.station_labels?.[id] || null })
+})
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1500, reverse: false })
@@ -904,6 +1025,11 @@ const historyTempLabels = ref<string[]>([])
 const historyTempAddresses = ref<string[]>([])
 const historyTempBindings = ref<Record<string, string>>({})
 const historyBrightnessLabels = ref<Record<string, string>>({})
+const atmosphereData = ref<AtmosphereResponse | null>(null)
+const atmosphereStatus = ref('')
+const atmosphereAverage = ref(false)
+const atmospherePrimaryStation = ref('')
+const stationOptions = ref<StationOption[]>([])
 const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
@@ -936,10 +1062,16 @@ const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
 const brightnessChartEl = ref<HTMLCanvasElement | null>(null)
 const loadCheckChartEl = ref<HTMLCanvasElement | null>(null)
+const teffChartEl = ref<HTMLCanvasElement | null>(null)
+const tauChartEl = ref<HTMLCanvasElement | null>(null)
+const pwvAtmosphereChartEl = ref<HTMLCanvasElement | null>(null)
 let tempChart: any = null
 let adcChart: any = null
 let brightnessChart: any = null
 let loadCheckChart: any = null
+let teffChart: any = null
+let tauChart: any = null
+let pwvAtmosphereChart: any = null
 let ChartCtor: any = null
 
 const maskToIndices = (mask: number, count: number) => {
@@ -1129,6 +1261,10 @@ const formatTimestamp = (value: string) => {
     minute: '2-digit',
     hour12: false,
   })
+}
+
+const stationLabel = (station: StationOption) => {
+  return station.name ? `${station.station_id} · ${station.name}` : station.station_id
 }
 
 const toLocalInputValue = (date: Date) => {
@@ -1330,15 +1466,139 @@ const buildLoadCheckDatasets = () => {
   return datasets
 }
 
+const timestampMs = (value: string) => {
+  const dt = new Date(value)
+  return Number.isNaN(dt.getTime()) ? null : dt.getTime()
+}
+
+const buildXYDataset = (label: string, data: { x: number; y: number }[], color: string) => ({
+  label,
+  data,
+  borderColor: color,
+  backgroundColor: color,
+  borderWidth: 2,
+  tension: 0.2,
+  pointRadius: 1.5,
+})
+
+const buildTeffDatasets = () => {
+  const response = atmosphereData.value
+  if (!response) return []
+  const byStation = new Map<string, { x: number; y: number }[]>()
+  response.t_eff_points.forEach((point) => {
+    if (!Number.isFinite(point.t_eff)) return
+    const x = timestampMs(point.sounding_time)
+    if (x === null) return
+    if (!byStation.has(point.station_id)) byStation.set(point.station_id, [])
+    byStation.get(point.station_id)!.push({ x, y: Number(point.t_eff) })
+  })
+  return Array.from(byStation.entries()).map(([stationId, data], idx) =>
+    buildXYDataset(response.station_labels[stationId] || stationId, data, palette[idx % palette.length])
+  )
+}
+
+const atmosphereAdcSeries = computed(() => [
+  { key: '1', label: adcLabelMap.value.adc1 || 'ADC1', color: '#16a085' },
+  { key: '2', label: adcLabelMap.value.adc2 || 'ADC2', color: '#c0392b' },
+  { key: '3', label: adcLabelMap.value.adc3 || 'ADC3', color: '#8e44ad' },
+])
+
+const buildTauDatasets = () => {
+  const points = atmosphereData.value?.measurement_points || []
+  return atmosphereAdcSeries.value
+    .map((series) => {
+      const key = `tau${series.key}` as keyof AtmosphereMeasurementPoint
+      const data = points
+        .map((point) => {
+          const x = timestampMs(point.timestamp)
+          const y = point[key]
+          return x !== null && Number.isFinite(y) ? { x, y: Number(y) } : null
+        })
+        .filter(Boolean) as { x: number; y: number }[]
+      return buildXYDataset(`${series.label} tau`, data, series.color)
+    })
+    .filter((dataset) => dataset.data.length > 0)
+}
+
+const buildPwvAtmosphereDatasets = () => {
+  const response = atmosphereData.value
+  if (!response) return []
+  const radiometerDatasets = atmosphereAdcSeries.value
+    .map((series) => {
+      const key = `pwv${series.key}` as keyof AtmosphereMeasurementPoint
+      const data = response.measurement_points
+        .map((point) => {
+          const x = timestampMs(point.timestamp)
+          const y = point[key]
+          return x !== null && Number.isFinite(y) ? { x, y: Number(y) } : null
+        })
+        .filter(Boolean) as { x: number; y: number }[]
+      return buildXYDataset(`${series.label} PWV`, data, series.color)
+    })
+    .filter((dataset) => dataset.data.length > 0)
+  const byStation = new Map<string, { x: number; y: number }[]>()
+  response.t_eff_points.forEach((point) => {
+    if (!Number.isFinite(point.pwv_profile)) return
+    const x = timestampMs(point.sounding_time)
+    if (x === null) return
+    if (!byStation.has(point.station_id)) byStation.set(point.station_id, [])
+    byStation.get(point.station_id)!.push({ x, y: Number(point.pwv_profile) })
+  })
+  const profileDatasets = Array.from(byStation.entries()).map(([stationId, data], idx) => {
+    const dataset = buildXYDataset(`Профиль ${response.station_labels[stationId] || stationId}`, data, palette[(idx + 3) % palette.length])
+    dataset.borderDash = [6, 4]
+    dataset.pointRadius = 2
+    return dataset
+  })
+  return [...radiometerDatasets, ...profileDatasets]
+}
+
+const atmosphereChartOptions = () => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  parsing: false,
+  interaction: { mode: 'nearest', intersect: false },
+  plugins: {
+    legend: {
+      position: 'top',
+      align: 'start',
+      labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
+    },
+  },
+  layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
+  scales: {
+    x: {
+      type: 'linear',
+      ticks: {
+        maxTicksLimit: 6,
+        callback: (value: any) => formatTimestamp(new Date(Number(value)).toISOString()),
+      },
+      grid: { display: false },
+    },
+    y: { ticks: { maxTicksLimit: 6 } },
+  },
+})
+
 const renderCharts = () => {
   if (!ChartCtor) return
-  if (!tempChartEl.value || !adcChartEl.value || !brightnessChartEl.value || !loadCheckChartEl.value) return
+  if (
+    !tempChartEl.value ||
+    !adcChartEl.value ||
+    !brightnessChartEl.value ||
+    !loadCheckChartEl.value ||
+    !teffChartEl.value ||
+    !tauChartEl.value ||
+    !pwvAtmosphereChartEl.value
+  ) return
 
   const labels = historyLabels.value
   const tempDatasets = buildTempDatasets()
   const adcDatasets = buildAdcDatasets()
   const brightnessDatasets = buildBrightnessDatasets()
   const loadCheckDatasets = buildLoadCheckDatasets()
+  const teffDatasets = buildTeffDatasets()
+  const tauDatasets = buildTauDatasets()
+  const pwvDatasets = buildPwvAtmosphereDatasets()
   const tempHidden = new Map<string, boolean>()
   const adcHidden = new Map<string, boolean>()
   const brightnessHidden = new Map<string, boolean>()
@@ -1486,6 +1746,39 @@ const renderCharts = () => {
     loadCheckChart.data.labels = labels
     loadCheckChart.data.datasets = loadCheckDatasets
     loadCheckChart.update('none')
+  }
+
+  if (!teffChart) {
+    teffChart = new ChartCtor(teffChartEl.value, {
+      type: 'line',
+      data: { datasets: teffDatasets },
+      options: atmosphereChartOptions(),
+    })
+  } else {
+    teffChart.data.datasets = teffDatasets
+    teffChart.update('none')
+  }
+
+  if (!tauChart) {
+    tauChart = new ChartCtor(tauChartEl.value, {
+      type: 'line',
+      data: { datasets: tauDatasets },
+      options: atmosphereChartOptions(),
+    })
+  } else {
+    tauChart.data.datasets = tauDatasets
+    tauChart.update('none')
+  }
+
+  if (!pwvAtmosphereChart) {
+    pwvAtmosphereChart = new ChartCtor(pwvAtmosphereChartEl.value, {
+      type: 'line',
+      data: { datasets: pwvDatasets },
+      options: atmosphereChartOptions(),
+    })
+  } else {
+    pwvAtmosphereChart.data.datasets = pwvDatasets
+    pwvAtmosphereChart.update('none')
   }
 }
 
@@ -1645,11 +1938,21 @@ watch(
     adcSeriesOptions.value.map((item) => item.label),
     historyBrightnessLabels.value,
     loadTempIndex.value,
+    atmosphereData.value,
   ],
   () => {
     renderCharts()
   },
   { deep: true }
+)
+
+watch(
+  () => [atmospherePrimaryStation.value, atmosphereAverage.value],
+  () => {
+    if (!deviceConfig.value?.atmosphere_config?.station_ids?.length) return
+    if (!historyFilters.from) return
+    loadAtmosphere()
+  }
 )
 
 async function refreshState() {
@@ -1978,6 +2281,79 @@ function toggleAdcSeries(key: string) {
   historySelection.adcSeries = adcSeriesOptions.value.filter((option) => selected.has(option.key)).map((option) => option.key)
 }
 
+function toggleAtmosphereStation(stationId: string) {
+  const selected = new Set(configForm.atmosphere.stationIds)
+  if (selected.has(stationId)) {
+    selected.delete(stationId)
+  } else {
+    selected.add(stationId)
+  }
+  configForm.atmosphere.stationIds = stationOptions.value
+    .map((station) => station.station_id)
+    .filter((id) => selected.has(id))
+  configDirty.value = true
+}
+
+async function loadStationOptions() {
+  try {
+    const collected: StationOption[] = []
+    let offset = 0
+    let total = 0
+    do {
+      const res = await apiFetch<{ items: StationOption[]; total: number }>(`/api/stations?limit=500&offset=${offset}`)
+      const items = res.items || []
+      collected.push(...items.map((item) => ({ station_id: item.station_id, name: item.name || null })))
+      total = res.total || collected.length
+      offset += items.length
+      if (items.length === 0) break
+    } while (collected.length < total)
+    stationOptions.value = collected
+  } catch (e) {
+    stationOptions.value = []
+  }
+}
+
+async function loadAtmosphere() {
+  if (!deviceId.value) return
+  if (!historyFilters.from) return
+  const selected = deviceConfig.value?.atmosphere_config?.station_ids || []
+  if (!selected.length) {
+    atmosphereData.value = null
+    atmosphereStatus.value = 'Выберите станции профилей в настройках устройства'
+    renderCharts()
+    return
+  }
+  try {
+    const params = new URLSearchParams({
+      limit: String(historyFilters.limit),
+      average: atmosphereAverage.value ? 'true' : 'false',
+    })
+    const primary = atmospherePrimaryStation.value || selected[0]
+    if (primary) params.set('tau_station_id', primary)
+    if (historyFilters.bucketMode === 'manual') {
+      const multiplier = historyFilters.bucketUnit === 'h' ? 3600 : historyFilters.bucketUnit === 'm' ? 60 : 1
+      const seconds = Math.max(1, Math.floor(historyFilters.bucketValue * multiplier))
+      params.set('bucket_seconds', String(seconds))
+    }
+    if (historyFilters.from) {
+      const isoFrom = localInputToIso(historyFilters.from)
+      if (isoFrom) params.set('from', isoFrom)
+    }
+    if (historyAutoRefresh.value) {
+      params.set('to', new Date().toISOString())
+    } else if (historyFilters.to) {
+      const isoTo = localInputToIso(historyFilters.to)
+      if (isoTo) params.set('to', isoTo)
+    }
+    const response = await apiFetch<AtmosphereResponse>(`/api/devices/${deviceId.value}/atmosphere?${params.toString()}`)
+    atmosphereData.value = response
+    atmosphereStatus.value = ''
+  } catch (e: any) {
+    atmosphereStatus.value = e?.data?.detail || e?.message || 'Не удалось рассчитать атмосферные параметры'
+    atmosphereData.value = null
+  }
+}
+
 async function loadHistory() {
   if (!deviceId.value) return
   historyLoading.value = true
@@ -2038,6 +2414,7 @@ async function loadHistory() {
     } else {
       historyStatus.value = `Получено ${response.points.length} точек`
     }
+    await loadAtmosphere()
   } catch (e: any) {
     historyStatus.value = e?.message || 'Не удалось загрузить историю'
   } finally {
@@ -2100,6 +2477,12 @@ const seedConfigForm = () => {
   tempBindingRoles.forEach(({ key }) => {
     configForm.tempBindings[key] = (config.temp_bindings || {})[key] || ''
   })
+  const atmosphere = config.atmosphere_config || {}
+  configForm.atmosphere.stationIds = [...(atmosphere.station_ids || [])]
+  configForm.atmosphere.altitudeM = Number.isFinite(Number(atmosphere.altitude_m)) ? Number(atmosphere.altitude_m) : 0
+  configForm.atmosphere.h0M = Number.isFinite(Number(atmosphere.h0_m)) ? Number(atmosphere.h0_m) : 5300
+  atmospherePrimaryStation.value = String(atmosphere.tau_station_id || configForm.atmosphere.stationIds[0] || '')
+  atmosphereAverage.value = !!atmosphere.tau_average
 }
 
 const resetConfig = () => {
@@ -2156,6 +2539,16 @@ const saveConfig = async () => {
       const address = (configForm.tempBindings[key] || '').trim()
       if (address) tempBindings[key] = address
     })
+    const stationIds = configForm.atmosphere.stationIds.map((id) => id.trim()).filter(Boolean)
+    const atmosphereConfig = {
+      station_ids: stationIds,
+      altitude_m: Math.max(0, Number(configForm.atmosphere.altitudeM) || 0),
+      h0_m: Math.max(1, Number(configForm.atmosphere.h0M) || 5300),
+      tau_station_id: stationIds.includes(atmospherePrimaryStation.value)
+        ? atmospherePrimaryStation.value
+        : (stationIds[0] || ''),
+      tau_average: atmosphereAverage.value,
+    }
     const displayName = configForm.displayName.trim()
     const res = await apiFetch<DeviceConfig>(`/api/devices/${deviceId.value}`, {
       method: 'PATCH',
@@ -2165,6 +2558,7 @@ const saveConfig = async () => {
         temp_addresses: tempAddresses,
         temp_label_map: tempLabelMap,
         temp_bindings: tempBindings,
+        atmosphere_config: atmosphereConfig,
         adc_labels: adcLabels,
       },
     })
@@ -2181,6 +2575,7 @@ const saveConfig = async () => {
       historyTempLabels.value = nextLabels
     }
     seedConfigForm()
+    await loadAtmosphere()
   } catch (e: any) {
     configStatus.value = e?.message || 'Не удалось сохранить настройки'
   } finally {
@@ -2190,6 +2585,7 @@ const saveConfig = async () => {
 
 onMounted(() => {
   refreshState()
+  loadStationOptions()
   loadDeviceConfig()
   loadDeviceGpsConfig()
   loadLatestWindow().then(loadHistory)
@@ -2227,6 +2623,18 @@ onBeforeUnmount(() => {
   if (loadCheckChart) {
     loadCheckChart.destroy()
     loadCheckChart = null
+  }
+  if (teffChart) {
+    teffChart.destroy()
+    teffChart = null
+  }
+  if (tauChart) {
+    tauChart.destroy()
+    tauChart = null
+  }
+  if (pwvAtmosphereChart) {
+    pwvAtmosphereChart.destroy()
+    pwvAtmosphereChart = null
   }
 })
 

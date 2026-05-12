@@ -482,6 +482,9 @@ input { width: 100%; box-sizing: border-box; }
 .device-page .chart-stack { display: flex; flex-direction: column; gap: 20px; }
 .device-page .chart-box { background: transparent; border: none; padding: 0; height: 320px; display: flex; flex-direction: column; gap: 8px; }
 .device-page .chart-box h4 { margin: 0; font-size: 16px; color: #1f2933; }
+.device-page .chart-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.device-page .compact-controls { align-items: center; gap: 10px; }
+.device-page .compact-controls select { min-width: 220px; }
 .device-page .chart-body { position: relative; flex: 1; min-height: 0; }
 .device-page .chart-body canvas { width: 100% !important; height: 100% !important; }
 @media (max-width: 640px) {

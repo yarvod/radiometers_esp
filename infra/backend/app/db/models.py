@@ -25,6 +25,7 @@ class DeviceModel(Base):
     temp_addresses: Mapped[list[str]] = mapped_column(JSONB, default=list)
     temp_label_map: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
     temp_bindings: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
+    atmosphere_config: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
     adc_labels: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")

@@ -15,6 +15,7 @@ class Device:
     temp_addresses: list[str]
     temp_label_map: dict[str, str]
     temp_bindings: dict[str, str]
+    atmosphere_config: dict[str, object]
     adc_labels: dict[str, str]
 
 
