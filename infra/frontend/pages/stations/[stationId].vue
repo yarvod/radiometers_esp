@@ -587,12 +587,14 @@ async function loadPwv() {
       },
     })
     pwvItems.value = res.items || []
-    await nextTick()
-    renderPwvChart()
   } catch (e: any) {
     pwvStatus.value = e?.data?.detail || e?.message || 'Не удалось рассчитать PWV'
   } finally {
     pwvLoading.value = false
+  }
+  if (pwvItems.value.length > 0) {
+    await nextTick()
+    renderPwvChart()
   }
 }
 
@@ -694,9 +696,9 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [pwvOffsetHours.value, pwvModalOpen.value, pwvItems.value.length, station.value?.name],
+  () => [pwvOffsetHours.value, pwvModalOpen.value, pwvItems.value.length, pwvLoading.value, station.value?.name],
   () => {
-    if (!pwvModalOpen.value || pwvItems.value.length === 0) {
+    if (!pwvModalOpen.value || pwvLoading.value || pwvItems.value.length === 0) {
       destroyPwvChart()
       return
     }
