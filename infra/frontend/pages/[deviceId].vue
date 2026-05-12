@@ -533,18 +533,41 @@
             <input type="number" min="1" step="1" v-model.number="configForm.atmosphere.h0M" @input="configDirty = true" />
           </label>
         </div>
-        <div class="chip-select">
-          <button
-            v-for="station in stationOptions"
-            :key="`atm-station-${station.station_id}`"
-            type="button"
-            class="chip-option"
-            :class="{ selected: configForm.atmosphere.stationIds.includes(station.station_id) }"
-            @click="toggleAtmosphereStation(station.station_id)"
-          >
-            {{ stationLabel(station) }}
+        <div class="station-multiselect">
+          <button class="station-multiselect-head" type="button" @click="stationSelectOpen = !stationSelectOpen">
+            <span v-if="selectedAtmosphereStations.length === 0" class="muted">Выбрать станции</span>
+            <span v-for="station in selectedAtmosphereStations" :key="`selected-${station.station_id}`" class="station-token">
+              {{ stationLabel(station) }}
+              <span class="station-token-remove" @click.stop="toggleAtmosphereStation(station.station_id)">×</span>
+            </span>
+            <span class="station-count">{{ selectedAtmosphereStations.length }}</span>
+            <span class="station-caret">⌄</span>
           </button>
-          <span v-if="stationOptions.length === 0" class="muted">Станции не загружены</span>
+          <div v-if="stationSelectOpen" class="station-multiselect-menu">
+            <div class="muted small">Выбрано: {{ selectedAtmosphereStations.length }}</div>
+            <input
+              class="station-search-input"
+              type="text"
+              v-model="stationSearchQuery"
+              placeholder="Поиск станции по ID или названию..."
+            />
+            <div class="station-option-list">
+              <button
+                v-for="station in stationOptions"
+                :key="`atm-station-${station.station_id}`"
+                type="button"
+                class="station-option-row"
+                :class="{ selected: configForm.atmosphere.stationIds.includes(station.station_id) }"
+                @click="toggleAtmosphereStation(station.station_id)"
+              >
+                <span class="station-check">{{ configForm.atmosphere.stationIds.includes(station.station_id) ? '✓' : '' }}</span>
+                <span>{{ stationLabel(station) }}</span>
+              </button>
+              <div v-if="stationOptions.length === 0" class="muted station-empty">
+                {{ stationOptionsLoading ? 'Ищем станции...' : 'Станции не найдены' }}
+              </div>
+            </div>
+          </div>
         </div>
         <p class="muted small">Профили с количеством точек меньше 50 в расчет не попадают.</p>
       </div>
@@ -985,6 +1008,12 @@ const atmosphereStationOptions = computed(() => {
   const byId = new Map(stationOptions.value.map((station) => [station.station_id, station]))
   return ids.map((id) => byId.get(id) || { station_id: id, name: atmosphereData.value?.station_labels?.[id] || null })
 })
+const selectedAtmosphereStations = computed(() => {
+  const byId = new Map(stationOptions.value.map((station) => [station.station_id, station]))
+  return configForm.atmosphere.stationIds.map((id) => (
+    byId.get(id) || { station_id: id, name: atmosphereData.value?.station_labels?.[id] || null }
+  ))
+})
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1500, reverse: false })
@@ -1030,6 +1059,10 @@ const atmosphereStatus = ref('')
 const atmosphereAverage = ref(false)
 const atmospherePrimaryStation = ref('')
 const stationOptions = ref<StationOption[]>([])
+const stationOptionsLoading = ref(false)
+const stationSearchQuery = ref('')
+const stationSelectOpen = ref(false)
+let stationSearchTimer: ReturnType<typeof setTimeout> | null = null
 const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
@@ -1557,12 +1590,22 @@ const atmosphereChartOptions = () => ({
   responsive: true,
   maintainAspectRatio: false,
   parsing: false,
-  interaction: { mode: 'nearest', intersect: false },
+  interaction: { mode: 'x', axis: 'x', intersect: false },
   plugins: {
     legend: {
       position: 'top',
       align: 'start',
       labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
+    },
+    tooltip: {
+      mode: 'x',
+      intersect: false,
+      callbacks: {
+        title: (items: any[]) => {
+          const x = Number(items?.[0]?.parsed?.x)
+          return Number.isFinite(x) ? formatTimestamp(new Date(x).toISOString()) : ''
+        },
+      },
     },
   },
   layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
@@ -1955,6 +1998,16 @@ watch(
   }
 )
 
+watch(
+  () => stationSearchQuery.value,
+  () => {
+    if (stationSearchTimer) clearTimeout(stationSearchTimer)
+    stationSearchTimer = setTimeout(() => {
+      loadStationOptions()
+    }, 300)
+  }
+)
+
 async function refreshState() {
   if (!deviceId.value) return
   try {
@@ -2282,34 +2335,28 @@ function toggleAdcSeries(key: string) {
 }
 
 function toggleAtmosphereStation(stationId: string) {
-  const selected = new Set(configForm.atmosphere.stationIds)
+  const selected = new Set(configForm.atmosphere.stationIds.map((id) => id.trim()).filter(Boolean))
   if (selected.has(stationId)) {
     selected.delete(stationId)
   } else {
     selected.add(stationId)
   }
-  configForm.atmosphere.stationIds = stationOptions.value
-    .map((station) => station.station_id)
-    .filter((id) => selected.has(id))
+  configForm.atmosphere.stationIds = Array.from(selected)
   configDirty.value = true
 }
 
-async function loadStationOptions() {
+async function loadStationOptions(query = stationSearchQuery.value) {
+  stationOptionsLoading.value = true
   try {
-    const collected: StationOption[] = []
-    let offset = 0
-    let total = 0
-    do {
-      const res = await apiFetch<{ items: StationOption[]; total: number }>(`/api/stations?limit=500&offset=${offset}`)
-      const items = res.items || []
-      collected.push(...items.map((item) => ({ station_id: item.station_id, name: item.name || null })))
-      total = res.total || collected.length
-      offset += items.length
-      if (items.length === 0) break
-    } while (collected.length < total)
-    stationOptions.value = collected
+    const params = new URLSearchParams({ limit: '80', offset: '0' })
+    const trimmed = query.trim()
+    if (trimmed) params.set('query', trimmed)
+    const res = await apiFetch<{ items: StationOption[]; total: number }>(`/api/stations?${params.toString()}`)
+    stationOptions.value = (res.items || []).map((item) => ({ station_id: item.station_id, name: item.name || null }))
   } catch (e) {
     stationOptions.value = []
+  } finally {
+    stationOptionsLoading.value = false
   }
 }
 
@@ -2608,6 +2655,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopHistoryTimer()
+  if (stationSearchTimer) {
+    clearTimeout(stationSearchTimer)
+    stationSearchTimer = null
+  }
   if (tempChart) {
     tempChart.destroy()
     tempChart = null
