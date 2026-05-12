@@ -156,7 +156,7 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
     async with container() as request_container:
         devices = await request_container.get(DeviceService)
         measurements = await request_container.get(MeasurementService)
-        if temp_addresses:
+        if any(temp_addresses):
             await devices.update_device(
                 device_id=device_id,
                 display_name=None,
@@ -193,7 +193,7 @@ async def handle_state(topic: str, payload: bytes | object, container=None) -> N
         temp_addresses = []
     async with container() as request_container:
         devices = await request_container.get(DeviceService)
-        if temp_addresses:
+        if any(temp_addresses):
             await devices.update_device(
                 device_id=device_id,
                 display_name=None,

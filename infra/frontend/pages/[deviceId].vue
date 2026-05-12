@@ -2066,7 +2066,7 @@ const seedConfigForm = () => {
   const length = Math.max(live.length, tempLabels.length, tempAddresses.length)
   for (let idx = 0; idx < length; idx += 1) {
     const liveEntry = live[idx]
-    const address = liveEntry?.address || tempAddresses[idx] || ''
+    const address = tempAddresses[idx] || liveEntry?.address || ''
     const label = (address && labelByAddress.get(address)) || tempLabels[idx] || liveEntry?.label || `t${idx + 1}`
     rows.push({ index: idx, address: address || null, label })
   }
@@ -2264,9 +2264,11 @@ watch(
 )
 
 watch(
-  () => tempEntries.value.map((entry) => `${entry.address || ''}:${entry.label}`),
+  () => tempEntries.value.map((entry) => entry.address || ''),
   () => {
-    if (!configDirty.value && deviceConfig.value) {
+    const known = new Set((deviceConfig.value?.temp_addresses || []).filter(Boolean))
+    const hasNewLiveAddress = tempEntries.value.some((entry) => entry.address && !known.has(entry.address))
+    if (!configDirty.value && deviceConfig.value && hasNewLiveAddress) {
       seedConfigForm()
     }
   }
