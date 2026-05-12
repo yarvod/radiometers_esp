@@ -1401,6 +1401,55 @@ static void UpdateSdStatsLocked() {
   });
 }
 
+ClearUploadedFilesResult ClearUploadedFilesManual(int max_files) {
+  ClearUploadedFilesResult result{};
+  const int limit = std::clamp(max_files > 0 ? max_files : 1000, 1, 1000);
+  if (usb_mode == UsbMode::kMsc) {
+    result.sd_busy = true;
+    return result;
+  }
+  SdLockGuard guard(pdMS_TO_TICKS(500));
+  if (!guard.locked()) {
+    result.sd_busy = true;
+    return result;
+  }
+  if (!MountLogSd() || !EnsureUploadDirs()) {
+    result.mount_failed = true;
+    return result;
+  }
+
+  DIR* dir = opendir(UPLOADED_DIR);
+  if (!dir) {
+    UpdateSdStatsLocked();
+    return result;
+  }
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr && result.scanned < limit) {
+    if (ent->d_name[0] == '.') continue;
+    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+    const std::string full = std::string(UPLOADED_DIR) + "/" + ent->d_name;
+    struct stat st {};
+    if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+      continue;
+    }
+    result.scanned++;
+    if (remove(full.c_str()) == 0) {
+      result.deleted++;
+    } else {
+      result.failed++;
+      ESP_LOGW(TAG, "Failed to delete uploaded file %s (errno %d)", full.c_str(), errno);
+    }
+    if ((result.scanned % 8) == 0) {
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
+  closedir(dir);
+  UpdateSdStatsLocked();
+  ESP_LOGI(TAG, "Manual uploaded cleanup: scanned=%d deleted=%d failed=%d limit=%d",
+           result.scanned, result.deleted, result.failed, limit);
+  return result;
+}
+
 bool QueueCurrentLogForUpload() {
   SdLockGuard guard;
   if (!guard.locked()) {

@@ -52,6 +52,14 @@ struct GpsReceiverStatus {
   int64_t time_age_ms = 0;
 };
 
+struct ClearUploadedFilesResult {
+  int scanned = 0;
+  int deleted = 0;
+  int failed = 0;
+  bool sd_busy = false;
+  bool mount_failed = false;
+};
+
 UtcTimeSnapshot GetBestUtcTimeForData();
 UtcTimeSnapshot GetBestUtcTimeForGps();
 const char* UtcTimeSourceName(UtcTimeSource source);
@@ -96,6 +104,7 @@ bool EnsureTimeSynced(int timeout_ms);
 bool MountLogSd();
 void UnmountLogSd();
 bool EnsureUploadDirs();
+ClearUploadedFilesResult ClearUploadedFilesManual(int max_files);
 bool QueueCurrentLogForUpload();
 bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
 bool SyncConfigToInternalFlash();

@@ -393,6 +393,7 @@ const char INDEX_HTML[] = R"rawliteral(
             <label class="checkbox-label"><input type="checkbox" id="selectAllFiles"> Выбрать все</label>
             <div class="file-buttons">
               <button class="btn" onclick="loadFiles()">Обновить список</button>
+              <button class="btn btn-stop" onclick="clearUploadedFiles()">Очистить uploaded</button>
               <button class="btn btn-stop" id="deleteSelectedBtn" disabled>Удалить выбранные</button>
             </div>
           </div>
@@ -1474,6 +1475,29 @@ const char INDEX_HTML[] = R"rawliteral(
 
     function deleteSingleFile(name) {
       return sendDeleteRequest([name]);
+    }
+
+    function clearUploadedFiles() {
+      if (!confirm('Удалить все файлы из /uploaded? Файлы из /to_upload не будут тронуты.')) {
+        return Promise.resolve();
+      }
+      return fetch('/fs/clear_uploaded', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxFiles: 1000 }),
+      }).then(async res => {
+        const text = await res.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+        if (!res.ok) {
+          throw new Error(data?.error || data?.message || text || 'Не удалось очистить uploaded');
+        }
+        alert(`uploaded: удалено ${data.deleted || 0}, ошибок ${data.failed || 0}, проверено ${data.scanned || 0}`);
+        loadFiles();
+        refreshData();
+      }).catch(err => {
+        alert(err.message || 'Не удалось очистить uploaded');
+      });
     }
 
     function updateFileNav() {

@@ -1746,6 +1746,38 @@ esp_err_t FsDeleteHandler(httpd_req_t* req) {
   return send_result(deleted);
 }
 
+esp_err_t UploadedClearHandler(httpd_req_t* req) {
+  int max_files = 1000;
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len > 0) {
+    std::string body(buf_len, '\0');
+    int received = httpd_req_recv(req, body.data(), buf_len);
+    if (received <= 0) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+      return ESP_FAIL;
+    }
+    body.resize(received);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+      return ESP_FAIL;
+    }
+    cJSON* max_item = cJSON_GetObjectItem(root, "maxFiles");
+    if (max_item && cJSON_IsNumber(max_item)) {
+      max_files = max_item->valueint;
+    }
+    cJSON_Delete(root);
+  }
+
+  ActionResult res = ActionUploadedClear({max_files});
+  httpd_resp_set_type(req, "application/json");
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
+  return httpd_resp_sendstr(req, res.json.empty() ? "{}" : res.json.c_str());
+}
+
 esp_err_t PidApplyHandler(httpd_req_t* req) {
   const size_t buf_len = std::min<size_t>(req->content_len, 128);
   if (buf_len == 0) {
@@ -2150,6 +2182,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t fs_list_uri = {.uri = "/fs/list", .method = HTTP_GET, .handler = FsListHandler, .user_ctx = nullptr};
   httpd_uri_t fs_download_uri = {.uri = "/fs/download", .method = HTTP_GET, .handler = FsDownloadHandler, .user_ctx = nullptr};
   httpd_uri_t fs_delete_uri = {.uri = "/fs/delete", .method = HTTP_POST, .handler = FsDeleteHandler, .user_ctx = nullptr};
+  httpd_uri_t uploaded_clear_uri = {.uri = "/fs/clear_uploaded", .method = HTTP_POST, .handler = UploadedClearHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -2182,6 +2215,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &fs_list_uri);
   httpd_register_uri_handler(http_server, &fs_download_uri);
   httpd_register_uri_handler(http_server, &fs_delete_uri);
+  httpd_register_uri_handler(http_server, &uploaded_clear_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }

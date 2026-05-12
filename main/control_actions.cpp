@@ -409,6 +409,27 @@ ActionResult ActionConfigSyncInternalFlash() {
   return {true, "config_synced_to_internal_flash", {}};
 }
 
+ActionResult ActionUploadedClear(const UploadedClearRequest& req) {
+  const int max_files = std::clamp(req.max_files > 0 ? req.max_files : 1000, 1, 1000);
+  ClearUploadedFilesResult clear = ClearUploadedFilesManual(max_files);
+  if (clear.sd_busy) {
+    return {false, "SD busy or USB MSC mode active", {}};
+  }
+  if (clear.mount_failed) {
+    return {false, "SD mount failed", {}};
+  }
+  cJSON* root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "scanned", clear.scanned);
+  cJSON_AddNumberToObject(root, "deleted", clear.deleted);
+  cJSON_AddNumberToObject(root, "failed", clear.failed);
+  cJSON_AddNumberToObject(root, "maxFiles", max_files);
+  const char* json = cJSON_PrintUnformatted(root);
+  std::string payload = json ? json : "{}";
+  cJSON_free((void*)json);
+  cJSON_Delete(root);
+  return {true, clear.failed == 0 ? "uploaded_cleared" : "uploaded_clear_partial", payload};
+}
+
 ActionResult ActionUsbModeSet(UsbMode requested) {
 #if !CONFIG_TINYUSB_MSC_ENABLED
   if (requested == UsbMode::kMsc) {

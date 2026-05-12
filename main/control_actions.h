@@ -63,6 +63,10 @@ struct GpsApplyRequest {
   std::string mode;
 };
 
+struct UploadedClearRequest {
+  int max_files = 1000;
+};
+
 struct ActionResult {
   bool ok = false;
   std::string message;
@@ -92,6 +96,7 @@ ActionResult ActionCloudApply(const CloudApplyRequest& req);
 ActionResult ActionGpsApply(const GpsApplyRequest& req);
 ActionResult ActionGpsProbe();
 ActionResult ActionConfigSyncInternalFlash();
+ActionResult ActionUploadedClear(const UploadedClearRequest& req);
 ActionResult ActionUsbModeSet(UsbMode requested);
 ActionResult ActionUsbModeGet();
 ActionResult ActionCalibrate();

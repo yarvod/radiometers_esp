@@ -636,6 +636,10 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     res = ActionGpsProbe();
   } else if (type == "config_sync_internal_flash") {
     res = ActionConfigSyncInternalFlash();
+  } else if (type == "uploaded_clear" || type == "clear_uploaded") {
+    UploadedClearRequest req;
+    req.max_files = get_int("maxFiles", 1000);
+    res = ActionUploadedClear(req);
   } else if (type == "usb_mode_get") {
     res = ActionUsbModeGet();
   } else if (type == "usb_mode_set") {
@@ -647,7 +651,7 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     res = ActionRestart();
   }
 
-  MqttSendResponse(device, req_id, res);
+  MqttSendResponse(device, req_id, res, res.json.empty() ? nullptr : res.json.c_str());
   cJSON_Delete(root);
 }
 
