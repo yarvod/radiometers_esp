@@ -1499,98 +1499,146 @@ const buildLoadCheckDatasets = () => {
   return datasets
 }
 
-const timestampMs = (value: string) => {
-  const dt = new Date(value)
-  return Number.isNaN(dt.getTime()) ? null : dt.getTime()
+type ChartTimelineEntry = {
+  key: string
+  label: string
+  sort: number
 }
 
-const buildXYDataset = (label: string, data: { x: number; y: number }[], color: string) => ({
-  label,
-  data,
-  borderColor: color,
-  backgroundColor: color,
-  borderWidth: 2,
-  tension: 0.2,
-  pointRadius: 1.5,
-})
+const timelineSortValue = (value: string) => {
+  const dt = parseDateAny(value)
+  return dt && !Number.isNaN(dt.getTime()) ? dt.getTime() : Number.MAX_SAFE_INTEGER
+}
+
+const buildTimeline = (entries: { key: string; timestamp: string }[]) => {
+  const byKey = new Map<string, ChartTimelineEntry>()
+  entries.forEach((entry) => {
+    if (!byKey.has(entry.key)) {
+      byKey.set(entry.key, {
+        key: entry.key,
+        label: formatTimestamp(entry.timestamp),
+        sort: timelineSortValue(entry.timestamp),
+      })
+    }
+  })
+  return Array.from(byKey.values()).sort((a, b) => a.sort - b.sort)
+}
+
+const dateTimeKey = (value: string) => {
+  const dt = parseDateAny(value)
+  return dt && !Number.isNaN(dt.getTime()) ? dt.toISOString() : value
+}
+
+const buildAtmosphereDataset = (label: string, data: (number | null)[], color: string) => {
+  const dataset = buildDataset(label, data, color)
+  dataset.tension = 0.2
+  dataset.pointRadius = 1.5
+  return dataset
+}
+
+const mapTimelineValues = (timeline: ChartTimelineEntry[], values: Map<string, number>) => (
+  timeline.map((entry) => values.get(entry.key) ?? null)
+)
 
 const buildTeffDatasets = () => {
   const response = atmosphereData.value
-  if (!response) return []
-  const byStation = new Map<string, { x: number; y: number }[]>()
+  if (!response) return { labels: [], datasets: [] }
+  const timeline = buildTimeline(response.t_eff_points.map((point) => ({
+    key: dateTimeKey(point.sounding_time),
+    timestamp: point.sounding_time,
+  })))
+  const byStation = new Map<string, Map<string, number>>()
   response.t_eff_points.forEach((point) => {
     if (!Number.isFinite(point.t_eff)) return
-    const x = timestampMs(point.sounding_time)
-    if (x === null) return
-    if (!byStation.has(point.station_id)) byStation.set(point.station_id, [])
-    byStation.get(point.station_id)!.push({ x, y: Number(point.t_eff) })
+    if (!byStation.has(point.station_id)) byStation.set(point.station_id, new Map())
+    byStation.get(point.station_id)!.set(dateTimeKey(point.sounding_time), Number(point.t_eff))
   })
-  return Array.from(byStation.entries()).map(([stationId, data], idx) =>
-    buildXYDataset(response.station_labels[stationId] || stationId, data, palette[idx % palette.length])
-  )
+  return {
+    labels: timeline.map((entry) => entry.label),
+    datasets: Array.from(byStation.entries()).map(([stationId, values], idx) =>
+      buildAtmosphereDataset(response.station_labels[stationId] || stationId, mapTimelineValues(timeline, values), palette[idx % palette.length])
+    ),
+  }
 }
 
-const atmosphereAdcSeries = computed(() => [
-  { key: '1', label: adcLabelMap.value.adc1 || 'ADC1', color: '#16a085' },
-  { key: '2', label: adcLabelMap.value.adc2 || 'ADC2', color: '#c0392b' },
-  { key: '3', label: adcLabelMap.value.adc3 || 'ADC3', color: '#8e44ad' },
-])
+const atmosphereAdcSeries = computed(() => {
+  const items = [
+    { key: '1', adcKey: 'adc1', label: adcLabelMap.value.adc1 || 'ADC1', color: '#16a085' },
+    { key: '2', adcKey: 'adc2', label: adcLabelMap.value.adc2 || 'ADC2', color: '#c0392b' },
+    { key: '3', adcKey: 'adc3', label: adcLabelMap.value.adc3 || 'ADC3', color: '#8e44ad' },
+  ]
+  const labelCounts = new Map<string, number>()
+  items.forEach((item) => labelCounts.set(item.label, (labelCounts.get(item.label) || 0) + 1))
+  return items.map((item) => ({
+    ...item,
+    label: (labelCounts.get(item.label) || 0) > 1 ? `${item.label} ${item.adcKey.toUpperCase()}` : item.label,
+  }))
+})
 
 const buildTauDatasets = () => {
   const points = atmosphereData.value?.measurement_points || []
-  return atmosphereAdcSeries.value
-    .map((series) => {
-      const key = `tau${series.key}` as keyof AtmosphereMeasurementPoint
-      const data = points
-        .map((point) => {
-          const x = timestampMs(point.timestamp)
+  const timeline = buildTimeline(points.map((point, idx) => ({ key: `m:${idx}`, timestamp: point.timestamp })))
+  return {
+    labels: timeline.map((entry) => entry.label),
+    datasets: atmosphereAdcSeries.value
+      .map((series) => {
+        const key = `tau${series.key}` as keyof AtmosphereMeasurementPoint
+        const data = points.map((point) => {
           const y = point[key]
-          return x !== null && Number.isFinite(y) ? { x, y: Number(y) } : null
+          return Number.isFinite(y) ? Number(y) : null
         })
-        .filter(Boolean) as { x: number; y: number }[]
-      return buildXYDataset(`${series.label} tau`, data, series.color)
-    })
-    .filter((dataset) => dataset.data.length > 0)
+        return buildAtmosphereDataset(`${series.label} tau`, data, series.color)
+      })
+      .filter((dataset) => dataset.data.some((value: number | null) => Number.isFinite(value))),
+  }
 }
 
 const buildPwvAtmosphereDatasets = () => {
   const response = atmosphereData.value
-  if (!response) return []
+  if (!response) return { labels: [], datasets: [] }
+  const measurementEntries = response.measurement_points.map((point, idx) => ({
+    key: `m:${idx}`,
+    timestamp: point.timestamp,
+  }))
+  const profileEntries = response.t_eff_points.map((point) => ({
+    key: `p:${point.station_id}:${dateTimeKey(point.sounding_time)}`,
+    timestamp: point.sounding_time,
+  }))
+  const timeline = buildTimeline([...measurementEntries, ...profileEntries])
   const radiometerDatasets = atmosphereAdcSeries.value
     .map((series) => {
       const key = `pwv${series.key}` as keyof AtmosphereMeasurementPoint
-      const data = response.measurement_points
-        .map((point) => {
-          const x = timestampMs(point.timestamp)
-          const y = point[key]
-          return x !== null && Number.isFinite(y) ? { x, y: Number(y) } : null
-        })
-        .filter(Boolean) as { x: number; y: number }[]
-      return buildXYDataset(`${series.label} PWV`, data, series.color)
+      const values = new Map<string, number>()
+      response.measurement_points.forEach((point, idx) => {
+        const y = point[key]
+        if (Number.isFinite(y)) values.set(`m:${idx}`, Number(y))
+      })
+      return buildAtmosphereDataset(`${series.label} PWV`, mapTimelineValues(timeline, values), series.color)
     })
-    .filter((dataset) => dataset.data.length > 0)
-  const byStation = new Map<string, { x: number; y: number }[]>()
+    .filter((dataset) => dataset.data.some((value: number | null) => Number.isFinite(value)))
+  const byStation = new Map<string, Map<string, number>>()
   response.t_eff_points.forEach((point) => {
     if (!Number.isFinite(point.pwv_profile)) return
-    const x = timestampMs(point.sounding_time)
-    if (x === null) return
-    if (!byStation.has(point.station_id)) byStation.set(point.station_id, [])
-    byStation.get(point.station_id)!.push({ x, y: Number(point.pwv_profile) })
+    if (!byStation.has(point.station_id)) byStation.set(point.station_id, new Map())
+    byStation.get(point.station_id)!.set(`p:${point.station_id}:${dateTimeKey(point.sounding_time)}`, Number(point.pwv_profile))
   })
-  const profileDatasets = Array.from(byStation.entries()).map(([stationId, data], idx) => {
-    const dataset = buildXYDataset(`Профиль ${response.station_labels[stationId] || stationId}`, data, palette[(idx + 3) % palette.length])
+  const profileDatasets = Array.from(byStation.entries()).map(([stationId, values], idx) => {
+    const dataset = buildAtmosphereDataset(
+      `Профиль ${response.station_labels[stationId] || stationId}`,
+      mapTimelineValues(timeline, values),
+      palette[(idx + 3) % palette.length],
+    )
     dataset.borderDash = [6, 4]
     dataset.pointRadius = 2
     return dataset
   })
-  return [...radiometerDatasets, ...profileDatasets]
+  return { labels: timeline.map((entry) => entry.label), datasets: [...radiometerDatasets, ...profileDatasets] }
 }
 
 const atmosphereChartOptions = () => ({
   responsive: true,
   maintainAspectRatio: false,
-  parsing: false,
-  interaction: { mode: 'x', axis: 'x', intersect: false },
+  interaction: { mode: 'index', intersect: false },
   plugins: {
     legend: {
       position: 'top',
@@ -1598,12 +1646,11 @@ const atmosphereChartOptions = () => ({
       labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
     },
     tooltip: {
-      mode: 'x',
+      mode: 'index',
       intersect: false,
       callbacks: {
         title: (items: any[]) => {
-          const x = Number(items?.[0]?.parsed?.x)
-          return Number.isFinite(x) ? formatTimestamp(new Date(x).toISOString()) : ''
+          return String(items?.[0]?.label || '')
         },
       },
     },
@@ -1611,10 +1658,11 @@ const atmosphereChartOptions = () => ({
   layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
   scales: {
     x: {
-      type: 'linear',
       ticks: {
         maxTicksLimit: 6,
-        callback: (value: any) => formatTimestamp(new Date(Number(value)).toISOString()),
+        autoSkip: true,
+        maxRotation: 0,
+        minRotation: 0,
       },
       grid: { display: false },
     },
@@ -1639,9 +1687,9 @@ const renderCharts = () => {
   const adcDatasets = buildAdcDatasets()
   const brightnessDatasets = buildBrightnessDatasets()
   const loadCheckDatasets = buildLoadCheckDatasets()
-  const teffDatasets = buildTeffDatasets()
-  const tauDatasets = buildTauDatasets()
-  const pwvDatasets = buildPwvAtmosphereDatasets()
+  const teffChartData = buildTeffDatasets()
+  const tauChartData = buildTauDatasets()
+  const pwvChartData = buildPwvAtmosphereDatasets()
   const tempHidden = new Map<string, boolean>()
   const adcHidden = new Map<string, boolean>()
   const brightnessHidden = new Map<string, boolean>()
@@ -1794,33 +1842,36 @@ const renderCharts = () => {
   if (!teffChart) {
     teffChart = new ChartCtor(teffChartEl.value, {
       type: 'line',
-      data: { datasets: teffDatasets },
+      data: teffChartData,
       options: atmosphereChartOptions(),
     })
   } else {
-    teffChart.data.datasets = teffDatasets
+    teffChart.data.labels = teffChartData.labels
+    teffChart.data.datasets = teffChartData.datasets
     teffChart.update('none')
   }
 
   if (!tauChart) {
     tauChart = new ChartCtor(tauChartEl.value, {
       type: 'line',
-      data: { datasets: tauDatasets },
+      data: tauChartData,
       options: atmosphereChartOptions(),
     })
   } else {
-    tauChart.data.datasets = tauDatasets
+    tauChart.data.labels = tauChartData.labels
+    tauChart.data.datasets = tauChartData.datasets
     tauChart.update('none')
   }
 
   if (!pwvAtmosphereChart) {
     pwvAtmosphereChart = new ChartCtor(pwvAtmosphereChartEl.value, {
       type: 'line',
-      data: { datasets: pwvDatasets },
+      data: pwvChartData,
       options: atmosphereChartOptions(),
     })
   } else {
-    pwvAtmosphereChart.data.datasets = pwvDatasets
+    pwvAtmosphereChart.data.labels = pwvChartData.labels
+    pwvAtmosphereChart.data.datasets = pwvChartData.datasets
     pwvAtmosphereChart.update('none')
   }
 }
