@@ -1492,8 +1492,9 @@ const char INDEX_HTML[] = R"rawliteral(
         if (!res.ok) {
           throw new Error(data?.error || data?.message || text || 'Не удалось очистить uploaded');
         }
-        alert(`uploaded: удалено ${data.deleted || 0}, ошибок ${data.failed || 0}, проверено ${data.scanned || 0}`);
-        loadFiles();
+        const status = data.status === 'already_running' ? 'очистка уже идет' : 'очистка запущена';
+        alert(`uploaded: ${status}, лимит ${data.maxFiles || 1000} файлов`);
+        setTimeout(loadFiles, 1500);
         refreshData();
       }).catch(err => {
         alert(err.message || 'Не удалось очистить uploaded');

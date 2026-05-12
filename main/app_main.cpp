@@ -124,6 +124,8 @@ static spi_device_interface_config_t eth_devcfg = {};
 static GpsUnicoreClient gps_client;
 static TaskHandle_t gps_log_task = nullptr;
 static TaskHandle_t external_power_cycle_task = nullptr;
+static TaskHandle_t uploaded_clear_task = nullptr;
+static int uploaded_clear_max_files = 1000;
 constexpr uint32_t kExternalPowerCycleStackBytes = 6144;
 static uint64_t gps_log_file_start_us = 0;
 static std::string current_gnss_log_path;
@@ -1401,30 +1403,21 @@ static void UpdateSdStatsLocked() {
   });
 }
 
-ClearUploadedFilesResult ClearUploadedFilesManual(int max_files) {
-  ClearUploadedFilesResult result{};
-  const int limit = std::clamp(max_files > 0 ? max_files : 1000, 1, 1000);
-  if (usb_mode == UsbMode::kMsc) {
-    result.sd_busy = true;
-    return result;
-  }
-  SdLockGuard guard(pdMS_TO_TICKS(500));
-  if (!guard.locked()) {
-    result.sd_busy = true;
-    return result;
-  }
+static int DeleteUploadedFilesBatchLocked(int max_files, ClearUploadedFilesResult* result) {
   if (!MountLogSd() || !EnsureUploadDirs()) {
-    result.mount_failed = true;
-    return result;
+    result->mount_failed = true;
+    return -1;
   }
 
   DIR* dir = opendir(UPLOADED_DIR);
   if (!dir) {
     UpdateSdStatsLocked();
-    return result;
+    return 0;
   }
+
+  int scanned_in_batch = 0;
   struct dirent* ent = nullptr;
-  while ((ent = readdir(dir)) != nullptr && result.scanned < limit) {
+  while ((ent = readdir(dir)) != nullptr && scanned_in_batch < max_files) {
     if (ent->d_name[0] == '.') continue;
     if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
     const std::string full = std::string(UPLOADED_DIR) + "/" + ent->d_name;
@@ -1432,22 +1425,85 @@ ClearUploadedFilesResult ClearUploadedFilesManual(int max_files) {
     if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
       continue;
     }
-    result.scanned++;
+    result->scanned++;
+    scanned_in_batch++;
     if (remove(full.c_str()) == 0) {
-      result.deleted++;
+      result->deleted++;
     } else {
-      result.failed++;
+      result->failed++;
       ESP_LOGW(TAG, "Failed to delete uploaded file %s (errno %d)", full.c_str(), errno);
-    }
-    if ((result.scanned % 8) == 0) {
-      vTaskDelay(pdMS_TO_TICKS(1));
     }
   }
   closedir(dir);
   UpdateSdStatsLocked();
-  ESP_LOGI(TAG, "Manual uploaded cleanup: scanned=%d deleted=%d failed=%d limit=%d",
-           result.scanned, result.deleted, result.failed, limit);
-  return result;
+  return scanned_in_batch;
+}
+
+static void UploadedClearTask(void*) {
+  constexpr int kBatchFiles = 8;
+  constexpr int kMaxBusyRetries = 30;
+  ClearUploadedFilesResult result{};
+  const int limit = uploaded_clear_max_files;
+  int busy_retries = 0;
+
+  while (result.scanned < limit) {
+    if (usb_mode == UsbMode::kMsc) {
+      result.sd_busy = true;
+      break;
+    }
+
+    int batch_scanned = 0;
+    {
+      SdLockGuard guard(pdMS_TO_TICKS(100));
+      if (!guard.locked()) {
+        if (++busy_retries >= kMaxBusyRetries) {
+          result.sd_busy = true;
+          break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+        continue;
+      }
+      busy_retries = 0;
+      const int batch_limit = std::min(kBatchFiles, limit - result.scanned);
+      batch_scanned = DeleteUploadedFilesBatchLocked(batch_limit, &result);
+    }
+
+    if (batch_scanned <= 0) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  ESP_LOGI(TAG,
+           "Manual uploaded cleanup done: scanned=%d deleted=%d failed=%d limit=%d%s%s",
+           result.scanned, result.deleted, result.failed, limit,
+           result.sd_busy ? " sd_busy" : "",
+           result.mount_failed ? " mount_failed" : "");
+  uploaded_clear_task = nullptr;
+  vTaskDelete(nullptr);
+}
+
+bool StartUploadedClearTask(int max_files, std::string* out_status) {
+  const int limit = std::clamp(max_files > 0 ? max_files : 1000, 1, 1000);
+  if (usb_mode == UsbMode::kMsc) {
+    if (out_status) *out_status = "sd_busy";
+    return false;
+  }
+  if (uploaded_clear_task != nullptr) {
+    if (out_status) *out_status = "already_running";
+    return true;
+  }
+
+  uploaded_clear_max_files = limit;
+  const BaseType_t ok = xTaskCreatePinnedToCore(&UploadedClearTask, "uploaded_clear", 4096,
+                                                nullptr, 1, &uploaded_clear_task, 0);
+  if (ok != pdPASS) {
+    uploaded_clear_task = nullptr;
+    if (out_status) *out_status = "start_failed";
+    return false;
+  }
+  if (out_status) *out_status = "started";
+  return true;
 }
 
 bool QueueCurrentLogForUpload() {

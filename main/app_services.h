@@ -104,7 +104,7 @@ bool EnsureTimeSynced(int timeout_ms);
 bool MountLogSd();
 void UnmountLogSd();
 bool EnsureUploadDirs();
-ClearUploadedFilesResult ClearUploadedFilesManual(int max_files);
+bool StartUploadedClearTask(int max_files, std::string* out_status);
 bool QueueCurrentLogForUpload();
 bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
 bool SyncConfigToInternalFlash();
