@@ -600,6 +600,7 @@ type MeasurementsResponse = {
   bucket_label: string
   aggregated: boolean
   temp_labels: string[]
+  temp_label_map: Record<string, string>
   adc_labels: Record<string, string>
   temp_addresses: string[]
   brightness_temp_labels: Record<string, string>
@@ -631,6 +632,7 @@ type DeviceConfig = {
   last_seen_at: string | null
   temp_labels: string[]
   temp_addresses: string[]
+  temp_label_map: Record<string, string>
   adc_labels: Record<string, string>
 }
 
@@ -682,6 +684,23 @@ const configForm = reactive({
     adc3_cal: '',
   },
 })
+
+const buildTempLabelMap = (
+  config?: Pick<DeviceConfig, 'temp_labels' | 'temp_addresses' | 'temp_label_map'> | null,
+) => {
+  const labelByAddress = new Map<string, string>()
+  Object.entries(config?.temp_label_map || {}).forEach(([address, label]) => {
+    if (address && label) labelByAddress.set(address, label)
+  })
+  const labels = config?.temp_labels || []
+  const addresses = config?.temp_addresses || []
+  addresses.forEach((address, idx) => {
+    if (address && !labelByAddress.has(address)) {
+      labelByAddress.set(address, labels[idx] || `t${idx + 1}`)
+    }
+  })
+  return labelByAddress
+}
 const gpsConfig = ref<DeviceGpsConfig | null>(null)
 const gpsDirty = ref(false)
 const gpsSaving = ref(false)
@@ -693,11 +712,7 @@ const gpsForm = reactive({
 const tempEntries = computed(() => {
   const sensors = device.value?.state?.tempSensors
   const byIndex = deviceConfig.value?.temp_labels || []
-  const addresses = deviceConfig.value?.temp_addresses || []
-  const labelByAddress = new Map<string, string>()
-  addresses.forEach((address, idx) => {
-    if (address) labelByAddress.set(address, byIndex[idx] || `t${idx + 1}`)
-  })
+  const labelByAddress = buildTempLabelMap(deviceConfig.value)
   if (Array.isArray(sensors)) {
     return sensors.map((value, idx) => ({
       key: `t${idx + 1}`,
@@ -1842,6 +1857,12 @@ async function loadHistory() {
     historyTempLabels.value = response.temp_labels || []
     historyBrightnessLabels.value = response.brightness_temp_labels || {}
     const hasKnownTempAddresses = !!deviceConfig.value?.temp_addresses?.some(Boolean)
+    if (deviceConfig.value && response.temp_label_map) {
+      deviceConfig.value = {
+        ...deviceConfig.value,
+        temp_label_map: { ...(deviceConfig.value.temp_label_map || {}), ...response.temp_label_map },
+      }
+    }
     if (response.temp_addresses?.some(Boolean) && deviceConfig.value && !hasKnownTempAddresses) {
       deviceConfig.value = { ...deviceConfig.value, temp_addresses: response.temp_addresses }
       if (!configDirty.value) {
@@ -1904,10 +1925,7 @@ const seedConfigForm = () => {
   const tempAddresses = config.temp_addresses || []
   const rows: TempConfigRow[] = []
   const live = tempEntries.value
-  const labelByAddress = new Map<string, string>()
-  tempAddresses.forEach((address, idx) => {
-    if (address) labelByAddress.set(address, tempLabels[idx] || `t${idx + 1}`)
-  })
+  const labelByAddress = buildTempLabelMap(config)
   const length = Math.max(live.length, tempLabels.length, tempAddresses.length)
   for (let idx = 0; idx < length; idx += 1) {
     const liveEntry = live[idx]
@@ -1946,11 +1964,16 @@ const saveConfig = async () => {
   try {
     const tempLabels: string[] = []
     const tempAddresses: string[] = []
+    const tempLabelMap: Record<string, string> = {}
     configForm.tempRows.forEach((row) => {
       const label = row.label.trim()
+      const address = (row.address || '').trim()
       if (row.index !== null) {
         tempLabels[row.index] = label || `t${row.index + 1}`
-        tempAddresses[row.index] = row.address || ''
+        tempAddresses[row.index] = address
+        if (address) {
+          tempLabelMap[address] = tempLabels[row.index]
+        }
       }
     })
     for (let i = 0; i < tempLabels.length; i += 1) {
@@ -1970,6 +1993,7 @@ const saveConfig = async () => {
         display_name: displayName ? displayName : null,
         temp_labels: tempLabels,
         temp_addresses: tempAddresses,
+        temp_label_map: tempLabelMap,
         adc_labels: adcLabels,
       },
     })
@@ -1977,7 +2001,7 @@ const saveConfig = async () => {
     configDirty.value = false
     configStatus.value = 'Настройки сохранены'
     if (historyTempLabels.value.length) {
-      const nextLabels = [...tempLabels]
+      const nextLabels = [...(res.temp_labels || tempLabels)]
       if (nextLabels.length < historyTempLabels.value.length) {
         for (let i = nextLabels.length; i < historyTempLabels.value.length; i += 1) {
           nextLabels.push(`t${i + 1}`)

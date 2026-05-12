@@ -77,16 +77,25 @@ async def list_measurements(
     device = await devices.get_device(device_id)
     config_temp_labels = list(device.temp_labels) if device else []
     config_temp_addresses = list(device.temp_addresses) if device else []
+    config_temp_label_map = dict(device.temp_label_map) if device else {}
+    legacy_labels_by_address = {
+        address: label
+        for address, label in zip(config_temp_addresses, config_temp_labels)
+        if address and label
+    }
     default_len = max(len(config_temp_labels), len(config_temp_addresses))
     max_temp = max((len(point.temps) for point in points), default=default_len)
-    if config_temp_labels:
-        temp_labels = list(config_temp_labels)
-        if len(temp_labels) < max_temp:
-            temp_labels.extend([f"t{idx + 1}" for idx in range(len(temp_labels), max_temp)])
-    else:
-        temp_labels = [f"t{idx + 1}" for idx in range(max_temp)]
     if len(config_temp_addresses) < max_temp:
         config_temp_addresses.extend([""] * (max_temp - len(config_temp_addresses)))
+    temp_labels = []
+    for idx in range(max_temp):
+        address = config_temp_addresses[idx] if idx < len(config_temp_addresses) else ""
+        temp_labels.append(
+            (config_temp_label_map.get(address) if address else None)
+            or legacy_labels_by_address.get(address)
+            or (config_temp_labels[idx] if idx < len(config_temp_labels) and config_temp_labels[idx] else None)
+            or f"t{idx + 1}"
+        )
     adc_labels = dict(device.adc_labels) if device else {}
     brightness_temp_labels = {
         "brightness_temp1": f"{adc_labels.get('adc1') or 'ADC1'} Tk",
@@ -103,6 +112,7 @@ async def list_measurements(
         temp_labels=temp_labels,
         adc_labels=adc_labels,
         temp_addresses=config_temp_addresses,
+        temp_label_map=config_temp_label_map,
         brightness_temp_labels=brightness_temp_labels,
     )
 

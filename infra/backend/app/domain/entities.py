@@ -13,6 +13,7 @@ class Device:
     last_seen_at: Optional[datetime]
     temp_labels: list[str]
     temp_addresses: list[str]
+    temp_label_map: dict[str, str]
     adc_labels: dict[str, str]
 
 

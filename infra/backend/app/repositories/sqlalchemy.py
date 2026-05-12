@@ -61,6 +61,7 @@ def to_device(model: DeviceModel) -> Device:
         last_seen_at=model.last_seen_at,
         temp_labels=list(model.temp_labels or []),
         temp_addresses=list(model.temp_addresses or []),
+        temp_label_map=dict(model.temp_label_map or {}),
         adc_labels=dict(model.adc_labels or {}),
     )
 
@@ -305,7 +306,14 @@ class SqlDeviceRepository(DeviceRepository):
         return to_device(model) if model else None
 
     async def create(self, device_id: str, display_name: str | None = None) -> Device:
-        model = DeviceModel(id=device_id, display_name=display_name, temp_labels=[], temp_addresses=[], adc_labels={})
+        model = DeviceModel(
+            id=device_id,
+            display_name=display_name,
+            temp_labels=[],
+            temp_addresses=[],
+            temp_label_map={},
+            adc_labels={},
+        )
         self._session.add(model)
         await self._session.flush()
         return to_device(model)
@@ -314,7 +322,14 @@ class SqlDeviceRepository(DeviceRepository):
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
         model = result.scalar_one_or_none()
         if model is None:
-            model = DeviceModel(id=device_id, last_seen_at=seen_at, temp_labels=[], temp_addresses=[], adc_labels={})
+            model = DeviceModel(
+                id=device_id,
+                last_seen_at=seen_at,
+                temp_labels=[],
+                temp_addresses=[],
+                temp_label_map={},
+                adc_labels={},
+            )
             self._session.add(model)
         else:
             model.last_seen_at = seen_at
@@ -327,6 +342,7 @@ class SqlDeviceRepository(DeviceRepository):
         display_name: str | None,
         temp_labels: list[str] | None,
         temp_addresses: list[str] | None,
+        temp_label_map: dict[str, str] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
@@ -337,6 +353,7 @@ class SqlDeviceRepository(DeviceRepository):
                 display_name=display_name,
                 temp_labels=temp_labels or [],
                 temp_addresses=temp_addresses or [],
+                temp_label_map=temp_label_map or {},
                 adc_labels=adc_labels or {},
             )
             self._session.add(model)
@@ -347,6 +364,8 @@ class SqlDeviceRepository(DeviceRepository):
                 model.temp_labels = temp_labels
             if temp_addresses is not None:
                 model.temp_addresses = temp_addresses
+            if temp_label_map is not None:
+                model.temp_label_map = temp_label_map
             if adc_labels is not None:
                 model.adc_labels = adc_labels
         await self._session.flush()
@@ -368,7 +387,7 @@ class SqlDeviceRepository(DeviceRepository):
         device_result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
         device = device_result.scalar_one_or_none()
         if not device:
-            self._session.add(DeviceModel(id=device_id, temp_labels=[], temp_addresses=[], adc_labels={}))
+            self._session.add(DeviceModel(id=device_id, temp_labels=[], temp_addresses=[], temp_label_map={}, adc_labels={}))
         result = await self._session.execute(select(DeviceGpsConfigModel).where(DeviceGpsConfigModel.device_id == device_id))
         model = result.scalar_one_or_none()
         now = datetime.now(timezone.utc)
@@ -547,7 +566,9 @@ class SqlRadiometerCalibrationRepository(RadiometerCalibrationRepository):
     async def create(self, calibration: RadiometerCalibration) -> RadiometerCalibration:
         device_result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == calibration.device_id))
         if device_result.scalar_one_or_none() is None:
-            self._session.add(DeviceModel(id=calibration.device_id, temp_labels=[], temp_addresses=[], adc_labels={}))
+            self._session.add(
+                DeviceModel(id=calibration.device_id, temp_labels=[], temp_addresses=[], temp_label_map={}, adc_labels={})
+            )
             await self._session.flush()
         model = RadiometerCalibrationModel(
             id=calibration.id,

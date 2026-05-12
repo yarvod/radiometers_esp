@@ -50,6 +50,7 @@ class DeviceUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     temp_labels: Optional[list[str]] = None
     temp_addresses: Optional[list[str]] = None
+    temp_label_map: Optional[dict[str, str]] = None
     adc_labels: Optional[dict[str, str]] = None
 
 
@@ -67,6 +68,7 @@ class DeviceConfigOut(BaseModel):
     last_seen_at: Optional[datetime] = None
     temp_labels: list[str] = Field(default_factory=list)
     temp_addresses: list[str] = Field(default_factory=list)
+    temp_label_map: dict[str, str] = Field(default_factory=dict)
     adc_labels: dict[str, str] = Field(default_factory=dict)
 
 
@@ -348,6 +350,7 @@ class MeasurementsResponse(BaseModel):
     temp_labels: list[str] = Field(default_factory=list)
     adc_labels: dict[str, str] = Field(default_factory=dict)
     temp_addresses: list[str] = Field(default_factory=list)
+    temp_label_map: dict[str, str] = Field(default_factory=dict)
     brightness_temp_labels: dict[str, str] = Field(default_factory=dict)
 
 

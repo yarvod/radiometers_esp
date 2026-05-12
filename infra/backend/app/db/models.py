@@ -23,6 +23,7 @@ class DeviceModel(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     temp_labels: Mapped[list[str]] = mapped_column(JSONB, default=list)
     temp_addresses: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    temp_label_map: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
     adc_labels: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")
