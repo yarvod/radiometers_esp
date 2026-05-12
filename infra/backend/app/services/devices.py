@@ -24,6 +24,7 @@ class DeviceService:
         temp_labels: list[str] | None = None,
         temp_addresses: list[str] | None = None,
         temp_label_map: dict[str, str] | None = None,
+        temp_bindings: dict[str, str] | None = None,
         adc_labels: dict[str, str] | None = None,
     ) -> Device:
         if temp_label_map is not None:
@@ -79,12 +80,27 @@ class DeviceService:
                         for address, label in zip(temp_addresses, temp_labels)
                         if address and label
                     }
+        if temp_bindings is not None:
+            allowed_keys = {
+                "radiometer_adc1",
+                "radiometer_adc2",
+                "radiometer_adc3",
+                "calibration_load",
+                "calibration_load_1",
+                "calibration_load_2",
+            }
+            temp_bindings = {
+                str(role).strip(): str(address).strip()
+                for role, address in temp_bindings.items()
+                if str(role).strip() in allowed_keys and str(address).strip()
+            }
         return await self._devices.update(
             device_id=device_id,
             display_name=display_name,
             temp_labels=temp_labels,
             temp_addresses=temp_addresses,
             temp_label_map=temp_label_map,
+            temp_bindings=temp_bindings,
             adc_labels=adc_labels,
         )
 

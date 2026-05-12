@@ -51,6 +51,7 @@ class DeviceUpdateRequest(BaseModel):
     temp_labels: Optional[list[str]] = None
     temp_addresses: Optional[list[str]] = None
     temp_label_map: Optional[dict[str, str]] = None
+    temp_bindings: Optional[dict[str, str]] = None
     adc_labels: Optional[dict[str, str]] = None
 
 
@@ -69,6 +70,7 @@ class DeviceConfigOut(BaseModel):
     temp_labels: list[str] = Field(default_factory=list)
     temp_addresses: list[str] = Field(default_factory=list)
     temp_label_map: dict[str, str] = Field(default_factory=dict)
+    temp_bindings: dict[str, str] = Field(default_factory=dict)
     adc_labels: dict[str, str] = Field(default_factory=dict)
 
 

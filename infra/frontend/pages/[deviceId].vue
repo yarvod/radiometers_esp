@@ -465,6 +465,24 @@
           </label>
         </div>
       </div>
+      <div class="form-group">
+        <label>Привязка температур</label>
+        <div class="config-grid">
+          <label class="compact" v-for="binding in tempBindingRoles" :key="binding.key">
+            {{ tempBindingLabel(binding.key) }}
+            <select v-model="configForm.tempBindings[binding.key]" @change="configDirty = true">
+              <option value="">Не задано</option>
+              <option
+                v-for="sensor in tempSensorOptions"
+                :key="`${binding.key}-${sensor.address}`"
+                :value="sensor.address"
+              >
+                {{ sensor.label }} ({{ sensor.address }})
+              </option>
+            </select>
+          </label>
+        </div>
+      </div>
       <div class="actions">
         <button class="btn primary" @click="saveConfig" :disabled="configSaving">Сохранить</button>
         <button class="btn ghost" @click="resetConfig" :disabled="configSaving">Сбросить</button>
@@ -501,6 +519,8 @@
       :device-id="deviceId"
       :logging="!!device?.state?.logging"
       :adc-labels="adcLabelMap"
+      :temp-bindings="deviceConfig?.temp_bindings || {}"
+      :temp-sensors="tempEntries"
     />
 
     <div class="card" v-show="activeTab === 'errors'">
@@ -633,6 +653,7 @@ type DeviceConfig = {
   temp_labels: string[]
   temp_addresses: string[]
   temp_label_map: Record<string, string>
+  temp_bindings: Record<string, string>
   adc_labels: Record<string, string>
 }
 
@@ -683,6 +704,13 @@ const configForm = reactive({
     adc2_cal: '',
     adc3_cal: '',
   },
+  tempBindings: {
+    radiometer_adc1: '',
+    radiometer_adc2: '',
+    radiometer_adc3: '',
+    calibration_load_1: '',
+    calibration_load_2: '',
+  } as Record<string, string>,
 })
 
 const buildTempLabelMap = (
@@ -801,6 +829,35 @@ const adcLabelDefaults: Record<string, string> = {
 }
 const adcLabelKeys = Object.keys(adcLabelDefaults)
 const adcLabel = (key: string, fallback: string) => adcLabelMap.value[key] || fallback
+const tempBindingRoles = [
+  { key: 'radiometer_adc1' },
+  { key: 'radiometer_adc2' },
+  { key: 'radiometer_adc3' },
+  { key: 'calibration_load_1' },
+  { key: 'calibration_load_2' },
+]
+const tempBindingLabel = (key: string) => {
+  if (key === 'radiometer_adc1') return `Температура ${adcLabel('adc1', 'ADC1')}`
+  if (key === 'radiometer_adc2') return `Температура ${adcLabel('adc2', 'ADC2')}`
+  if (key === 'radiometer_adc3') return `Температура ${adcLabel('adc3', 'ADC3')}`
+  if (key === 'calibration_load_1') return 'Калибровочная нагрузка 1'
+  if (key === 'calibration_load_2') return 'Калибровочная нагрузка 2'
+  return 'Калибровочная нагрузка'
+}
+const tempSensorOptions = computed(() => {
+  const seen = new Set<string>()
+  return configForm.tempRows
+    .map((row) => {
+      const address = (row.address || '').trim()
+      const label = row.label.trim() || (row.index !== null ? `t${row.index + 1}` : address)
+      return { address, label }
+    })
+    .filter((row) => {
+      if (!row.address || seen.has(row.address)) return false
+      seen.add(row.address)
+      return true
+    })
+})
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1500, reverse: false })
@@ -1935,6 +1992,9 @@ const seedConfigForm = () => {
   }
   configForm.tempRows = rows
   Object.assign(configForm.adcLabels, adcLabelDefaults, config.adc_labels || {})
+  tempBindingRoles.forEach(({ key }) => {
+    configForm.tempBindings[key] = (config.temp_bindings || {})[key] || (config.temp_bindings || {}).calibration_load || ''
+  })
 }
 
 const resetConfig = () => {
@@ -1986,6 +2046,11 @@ const saveConfig = async () => {
       const raw = (configForm.adcLabels as Record<string, string>)[key] || ''
       adcLabels[key] = raw.trim() || adcLabelDefaults[key]
     })
+    const tempBindings: Record<string, string> = {}
+    tempBindingRoles.forEach(({ key }) => {
+      const address = (configForm.tempBindings[key] || '').trim()
+      if (address) tempBindings[key] = address
+    })
     const displayName = configForm.displayName.trim()
     const res = await apiFetch<DeviceConfig>(`/api/devices/${deviceId.value}`, {
       method: 'PATCH',
@@ -1994,6 +2059,7 @@ const saveConfig = async () => {
         temp_labels: tempLabels,
         temp_addresses: tempAddresses,
         temp_label_map: tempLabelMap,
+        temp_bindings: tempBindings,
         adc_labels: adcLabels,
       },
     })

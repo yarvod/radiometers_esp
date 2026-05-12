@@ -47,6 +47,7 @@ class DeviceRepository(ABC):
         temp_labels: list[str] | None,
         temp_addresses: list[str] | None,
         temp_label_map: dict[str, str] | None,
+        temp_bindings: dict[str, str] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
         raise NotImplementedError

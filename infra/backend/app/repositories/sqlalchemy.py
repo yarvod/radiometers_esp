@@ -62,6 +62,7 @@ def to_device(model: DeviceModel) -> Device:
         temp_labels=list(model.temp_labels or []),
         temp_addresses=list(model.temp_addresses or []),
         temp_label_map=dict(model.temp_label_map or {}),
+        temp_bindings=dict(model.temp_bindings or {}),
         adc_labels=dict(model.adc_labels or {}),
     )
 
@@ -315,6 +316,7 @@ class SqlDeviceRepository(DeviceRepository):
             temp_labels=[],
             temp_addresses=[],
             temp_label_map={},
+            temp_bindings={},
             adc_labels={},
         )
         self._session.add(model)
@@ -331,6 +333,7 @@ class SqlDeviceRepository(DeviceRepository):
                 temp_labels=[],
                 temp_addresses=[],
                 temp_label_map={},
+                temp_bindings={},
                 adc_labels={},
             )
             self._session.add(model)
@@ -346,6 +349,7 @@ class SqlDeviceRepository(DeviceRepository):
         temp_labels: list[str] | None,
         temp_addresses: list[str] | None,
         temp_label_map: dict[str, str] | None,
+        temp_bindings: dict[str, str] | None,
         adc_labels: dict[str, str] | None,
     ) -> Device:
         result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
@@ -357,6 +361,7 @@ class SqlDeviceRepository(DeviceRepository):
                 temp_labels=temp_labels or [],
                 temp_addresses=temp_addresses or [],
                 temp_label_map=temp_label_map or {},
+                temp_bindings=temp_bindings or {},
                 adc_labels=adc_labels or {},
             )
             self._session.add(model)
@@ -369,6 +374,8 @@ class SqlDeviceRepository(DeviceRepository):
                 model.temp_addresses = temp_addresses
             if temp_label_map is not None:
                 model.temp_label_map = temp_label_map
+            if temp_bindings is not None:
+                model.temp_bindings = temp_bindings
             if adc_labels is not None:
                 model.adc_labels = adc_labels
         await self._session.flush()

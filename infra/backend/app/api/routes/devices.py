@@ -75,6 +75,7 @@ async def update_device(
         payload.temp_labels,
         payload.temp_addresses,
         payload.temp_label_map,
+        payload.temp_bindings,
         payload.adc_labels,
     )
     return DeviceConfigOut.model_validate(device, from_attributes=True)
