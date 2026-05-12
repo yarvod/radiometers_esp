@@ -1804,6 +1804,25 @@ static std::string UploadHeapDiag() {
   return std::string(buf);
 }
 
+static bool HasHeapForTlsUpload() {
+  const uint32_t free_heap = static_cast<uint32_t>(esp_get_free_heap_size());
+  const uint32_t largest = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  const uint32_t min_largest = static_cast<uint32_t>(CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN + 1024);
+  const uint32_t min_free = static_cast<uint32_t>(CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN + CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN + 8192);
+  if (largest >= min_largest && free_heap >= min_free) {
+    return true;
+  }
+  char msg[128];
+  std::snprintf(msg, sizeof(msg), "TLS upload deferred: heap=%u largest=%u need largest>=%u free>=%u",
+                static_cast<unsigned>(free_heap),
+                static_cast<unsigned>(largest),
+                static_cast<unsigned>(min_largest),
+                static_cast<unsigned>(min_free));
+  ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, msg);
+  ESP_LOGW(TAG, "%s", msg);
+  return false;
+}
+
 static bool UploadFileToMinio(const std::string& path) {
   if (!app_config.minio_enabled) {
     ErrorManagerClear(ErrorCode::kMinioUpload);
@@ -1830,6 +1849,9 @@ static bool UploadFileToMinio(const std::string& path) {
   if (host.empty()) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Invalid MinIO endpoint");
     ESP_LOGE(TAG, "Invalid MinIO endpoint: %s", endpoint.c_str());
+    return false;
+  }
+  if (use_https && !HasHeapForTlsUpload()) {
     return false;
   }
   const std::string url = endpoint + "/" + app_config.minio_bucket + "/" + object_key;
@@ -2039,6 +2061,7 @@ static void CleanupUploadedDirIfNeeded(int max_percent);
 static bool UploadPendingOnce() {
   constexpr int kMaxSdUsagePercent = 60;
   constexpr int kMaxUploadsPerCycle = 1;
+  constexpr int kMaxUploadAttemptsPerCycle = 1;
   UpdateState([](SharedState& s) {
     s.minio_upload_attempts++;
     s.minio_last_attempt_ms = esp_timer_get_time() / 1000ULL;
@@ -2074,10 +2097,12 @@ static bool UploadPendingOnce() {
   }
 
   int uploaded = 0;
+  int attempts = 0;
   for (const auto& f : files) {
-    if (uploaded >= kMaxUploadsPerCycle) {
+    if (uploaded >= kMaxUploadsPerCycle || attempts >= kMaxUploadAttemptsPerCycle) {
       break;
     }
+    attempts++;
     if (UploadFileToMinio(f)) {
       SdLockGuard guard(pdMS_TO_TICKS(200));
       if (!guard.locked() || !MountLogSd()) {
