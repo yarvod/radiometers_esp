@@ -14,12 +14,14 @@
 namespace {
 
 constexpr char TAG_ERROR[] = "ERROR_MANAGER";
+constexpr uint64_t kRepeatActivePublishMs = 10ULL * 60ULL * 1000ULL;
 
 struct ErrorEntry {
   bool active = false;
   ErrorSeverity severity = ErrorSeverity::kInfo;
   std::string message;
   uint64_t changed_ms = 0;
+  uint64_t published_ms = 0;
 };
 
 struct ErrorMeta {
@@ -106,17 +108,24 @@ void SetErrorState(ErrorCode code, ErrorSeverity severity, const std::string& me
   if (idx >= entries.size()) {
     return;
   }
-  bool changed = false;
+  bool should_publish = false;
+  const uint64_t now_ms = esp_timer_get_time() / 1000ULL;
   if (error_mutex && xSemaphoreTake(error_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     ErrorEntry& entry = entries[idx];
-    changed = !entry.active || entry.severity != severity || entry.message != message;
+    const bool changed = !entry.active || entry.severity != severity || entry.message != message;
+    const bool repeat_due = entry.active && entry.published_ms > 0 &&
+                            now_ms - entry.published_ms >= kRepeatActivePublishMs;
     entry.active = true;
     entry.severity = severity;
     entry.message = message;
-    entry.changed_ms = esp_timer_get_time() / 1000ULL;
+    entry.changed_ms = now_ms;
+    should_publish = publish && (changed || repeat_due);
+    if (should_publish) {
+      entry.published_ms = now_ms;
+    }
     xSemaphoreGive(error_mutex);
   }
-  if (changed && publish) {
+  if (should_publish) {
     PublishEvent(code, severity, message, true);
   }
   UpdateLedPattern();
@@ -137,6 +146,7 @@ void ClearErrorState(ErrorCode code, bool publish) {
     message = entry.message;
     entry.active = false;
     entry.changed_ms = esp_timer_get_time() / 1000ULL;
+    entry.published_ms = entry.changed_ms;
     xSemaphoreGive(error_mutex);
   }
   if (was_active && publish) {

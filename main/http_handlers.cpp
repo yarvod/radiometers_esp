@@ -183,6 +183,10 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "sdRootDataFiles", snapshot.sd_data_root_files);
   cJSON_AddNumberToObject(root, "sdToUploadFiles", snapshot.sd_to_upload_files);
   cJSON_AddNumberToObject(root, "sdUploadedFiles", snapshot.sd_uploaded_files);
+  cJSON_AddNumberToObject(root, "heapFreeBytes", static_cast<double>(snapshot.heap_free_bytes));
+  cJSON_AddNumberToObject(root, "heapLargestFreeBlockBytes", static_cast<double>(snapshot.heap_largest_free_block_bytes));
+  cJSON_AddNumberToObject(root, "minioUploadAttempts", snapshot.minio_upload_attempts);
+  cJSON_AddNumberToObject(root, "minioLastAttemptMs", static_cast<double>(snapshot.minio_last_attempt_ms));
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddBoolToObject(root, "externalPowerOn", snapshot.external_power_on);

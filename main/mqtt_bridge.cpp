@@ -388,6 +388,8 @@ void BuildMqttState(char* out, size_t out_len) {
                ",\"ethLink\":%s,\"ethIpUp\":%s,"
                "\"sdTotalBytes\":%llu,\"sdUsedBytes\":%llu,\"sdRootDataFiles\":%d,"
                "\"sdToUploadFiles\":%d,\"sdUploadedFiles\":%d,"
+               "\"heapFreeBytes\":%u,\"heapLargestFreeBlockBytes\":%u,"
+               "\"minioUploadAttempts\":%u,\"minioLastAttemptMs\":%llu,"
                "\"timestamp\":%llu,\"usbMode\":",
                state.eth_link_up ? "true" : "false",
                state.eth_ip_up ? "true" : "false",
@@ -396,6 +398,10 @@ void BuildMqttState(char* out, size_t out_len) {
                state.sd_data_root_files,
                state.sd_to_upload_files,
                state.sd_uploaded_files,
+               static_cast<unsigned>(state.heap_free_bytes),
+               static_cast<unsigned>(state.heap_largest_free_block_bytes),
+               static_cast<unsigned>(state.minio_upload_attempts),
+               static_cast<unsigned long long>(state.minio_last_attempt_ms),
                static_cast<unsigned long long>(state.last_update_ms));
     JsonAppendEscaped(&b, state.usb_msc_mode ? "msc" : "cdc");
     JsonAppend(&b, ",\"usbMscBuilt\":%s", CONFIG_TINYUSB_MSC_ENABLED ? "true" : "false");

@@ -367,6 +367,10 @@ const char INDEX_HTML[] = R"rawliteral(
             <h3>System</h3>
             <div class="form-group">
               <div>External modules power: <span id="externalPowerState">--</span></div>
+              <div>Heap free: <span id="heapFreeBytes">--</span> bytes</div>
+              <div>Heap largest block: <span id="heapLargestFreeBlockBytes">--</span> bytes</div>
+              <div>MinIO upload attempts: <span id="minioUploadAttempts">--</span></div>
+              <div>MinIO last attempt: <span id="minioLastAttempt">--</span></div>
             </div>
             <div class="form-group">
               <label for="externalPowerOffMs">Power cycle off time, ms</label>
@@ -936,6 +940,18 @@ const char INDEX_HTML[] = R"rawliteral(
       }
       const extPowerEl = document.getElementById('externalPowerState');
       if (extPowerEl) extPowerEl.textContent = data.externalPowerOn ? 'ON' : 'OFF';
+      const heapFreeEl = document.getElementById('heapFreeBytes');
+      if (heapFreeEl) heapFreeEl.textContent = data.heapFreeBytes ?? '--';
+      const heapLargestEl = document.getElementById('heapLargestFreeBlockBytes');
+      if (heapLargestEl) heapLargestEl.textContent = data.heapLargestFreeBlockBytes ?? '--';
+      const minioAttemptsEl = document.getElementById('minioUploadAttempts');
+      if (minioAttemptsEl) minioAttemptsEl.textContent = data.minioUploadAttempts ?? '--';
+      const minioLastEl = document.getElementById('minioLastAttempt');
+      if (minioLastEl) {
+        minioLastEl.textContent = Number.isFinite(data.minioLastAttemptMs)
+          ? `${Math.round(data.minioLastAttemptMs / 1000)}s since boot`
+          : '--';
+      }
 
       const mask = Number.isFinite(data.pidSensorMask) ? data.pidSensorMask : 0;
       if (!pidEditing) {

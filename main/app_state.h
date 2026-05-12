@@ -134,6 +134,10 @@ struct SharedState {
   int sd_data_root_files;
   int sd_to_upload_files;
   int sd_uploaded_files;
+  uint32_t heap_free_bytes;
+  uint32_t heap_largest_free_block_bytes;
+  uint32_t minio_upload_attempts;
+  uint64_t minio_last_attempt_ms;
 };
 
 enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };

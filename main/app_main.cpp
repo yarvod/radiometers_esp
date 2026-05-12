@@ -37,6 +37,7 @@
 #include "esp_http_server.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_system.h"
@@ -753,6 +754,10 @@ static void NetworkMonitorTask(void*) {
   const int interval_ms = 15000;
   const int check_timeout_ms = 1500;
   while (true) {
+    UpdateState([](SharedState& s) {
+      s.heap_free_bytes = static_cast<uint32_t>(esp_get_free_heap_size());
+      s.heap_largest_free_block_bytes = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    });
     EnsureConfiguredNetworkProgress();
     if (app_config.net_mode == NetMode::kWifiEth) {
       bool wifi_up = false;
@@ -1791,6 +1796,14 @@ static std::string ExtractHost(const std::string& endpoint) {
   return host;
 }
 
+static std::string UploadHeapDiag() {
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "heap=%u largest=%u",
+                static_cast<unsigned>(esp_get_free_heap_size()),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  return std::string(buf);
+}
+
 static bool UploadFileToMinio(const std::string& path) {
   if (!app_config.minio_enabled) {
     ErrorManagerClear(ErrorCode::kMinioUpload);
@@ -1969,9 +1982,13 @@ static bool UploadFileToMinio(const std::string& path) {
   esp_http_client_set_header(client, "x-amz-date", amz_date);
   esp_http_client_set_header(client, "Authorization", authorization.c_str());
 
-  if (esp_http_client_open(client, file_size) != ESP_OK) {
-    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP open failed");
-    ESP_LOGE(TAG, "Failed to open HTTP connection to %s", url.c_str());
+  const esp_err_t open_err = esp_http_client_open(client, file_size);
+  if (open_err != ESP_OK) {
+    const std::string heap_diag = UploadHeapDiag();
+    const std::string diag = std::string("HTTP open failed: ") + esp_err_to_name(open_err) + " " + heap_diag;
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, diag);
+    ESP_LOGE(TAG, "Failed to open HTTP connection to %s: %s (%s)",
+             url.c_str(), esp_err_to_name(open_err), heap_diag.c_str());
     esp_http_client_cleanup(client);
     return false;
   }
@@ -2022,6 +2039,12 @@ static void CleanupUploadedDirIfNeeded(int max_percent);
 static bool UploadPendingOnce() {
   constexpr int kMaxSdUsagePercent = 60;
   constexpr int kMaxUploadsPerCycle = 1;
+  UpdateState([](SharedState& s) {
+    s.minio_upload_attempts++;
+    s.minio_last_attempt_ms = esp_timer_get_time() / 1000ULL;
+    s.heap_free_bytes = static_cast<uint32_t>(esp_get_free_heap_size());
+    s.heap_largest_free_block_bytes = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  });
   std::vector<std::string> files;
   {
     SdLockGuard guard(pdMS_TO_TICKS(50));

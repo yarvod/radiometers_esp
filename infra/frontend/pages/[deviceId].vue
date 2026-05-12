@@ -132,6 +132,10 @@
         <p class="muted">Полная перезагрузка устройства (использовать при зависаниях).</p>
         <div class="status-row">
           <span class="chip" :class="{ online: externalPowerOn, subtle: !externalPowerOn }">EXT_PWR_ON: {{ externalPowerOn ? 'ON' : 'OFF' }}</span>
+          <span class="chip subtle">Heap: {{ heapFreeLabel }}</span>
+          <span class="chip subtle">Largest: {{ heapLargestLabel }}</span>
+          <span class="chip subtle">MinIO tries: {{ minioUploadAttempts }}</span>
+          <span class="chip subtle">Last MinIO: {{ minioLastAttemptLabel }}</span>
         </div>
         <div class="form-group">
           <label>Пауза перед включением EXT_PWR_ON, мс</label>
@@ -993,6 +997,14 @@ const sdUsageLabel = computed(() => {
 const sdRootFiles = computed(() => device.value?.state?.sdRootDataFiles ?? 0)
 const sdToUploadFiles = computed(() => device.value?.state?.sdToUploadFiles ?? 0)
 const sdUploadedFiles = computed(() => device.value?.state?.sdUploadedFiles ?? 0)
+const heapFreeLabel = computed(() => formatBytes(Number(device.value?.state?.heapFreeBytes ?? 0)))
+const heapLargestLabel = computed(() => formatBytes(Number(device.value?.state?.heapLargestFreeBlockBytes ?? 0)))
+const minioUploadAttempts = computed(() => device.value?.state?.minioUploadAttempts ?? 0)
+const minioLastAttemptLabel = computed(() => {
+  const ms = Number(device.value?.state?.minioLastAttemptMs ?? 0)
+  if (!Number.isFinite(ms) || ms <= 0) return '--'
+  return `${Math.round(ms / 1000)}s after boot`
+})
 
 const parseLocalInput = (value: string) => {
   if (!value) return null
