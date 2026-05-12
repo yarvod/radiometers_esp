@@ -293,7 +293,14 @@ const coefficient = (t1: number, t2: number, adcA: number | null, adcB: number |
   if (Math.abs(denominator) < 1e-12) return { slope: null, intercept: null, noiseTemp: null }
   const slope = (t2 - t1) / denominator
   const intercept = t1 - slope * Number(adcA)
-  return { slope, intercept, noiseTemp: -intercept }
+  const hot = t1 >= t2
+    ? { temp: t1, adc: Number(adcA), coldTemp: t2, coldAdc: Number(adcB) }
+    : { temp: t2, adc: Number(adcB), coldTemp: t1, coldAdc: Number(adcA) }
+  const yFactor = Math.abs(hot.coldAdc) >= 1e-12 ? hot.adc / hot.coldAdc : Number.NaN
+  const noiseTemp = Number.isFinite(yFactor) && Math.abs(yFactor - 1) >= 1e-12
+    ? (hot.temp - hot.coldTemp * yFactor) / (yFactor - 1)
+    : null
+  return { slope, intercept, noiseTemp }
 }
 
 const avg1 = computed(() => average(samples1.value))

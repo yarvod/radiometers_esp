@@ -55,9 +55,9 @@ class RadiometerCalibrationService:
         adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
         adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
         adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
-        adc1_noise_temp = self._noise_temperature(adc1_intercept)
-        adc2_noise_temp = self._noise_temperature(adc2_intercept)
-        adc3_noise_temp = self._noise_temperature(adc3_intercept)
+        adc1_noise_temp = self._noise_temperature(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
+        adc2_noise_temp = self._noise_temperature(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
+        adc3_noise_temp = self._noise_temperature(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
 
         calibration = RadiometerCalibration(
             id=str(uuid.uuid4()),
@@ -124,9 +124,9 @@ class RadiometerCalibrationService:
         adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
         adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
         adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
-        adc1_noise_temp = self._noise_temperature(adc1_intercept)
-        adc2_noise_temp = self._noise_temperature(adc2_intercept)
-        adc3_noise_temp = self._noise_temperature(adc3_intercept)
+        adc1_noise_temp = self._noise_temperature(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
+        adc2_noise_temp = self._noise_temperature(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
+        adc3_noise_temp = self._noise_temperature(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
 
         calibration = RadiometerCalibration(
             id=existing.id,
@@ -180,7 +180,19 @@ class RadiometerCalibrationService:
         return slope, intercept
 
     @staticmethod
-    def _noise_temperature(intercept: float | None) -> float | None:
-        if intercept is None or not math.isfinite(intercept):
+    def _noise_temperature(t1: float, t2: float, adc1: float | None, adc2: float | None) -> float | None:
+        if adc1 is None or adc2 is None:
             return None
-        return -intercept
+        if not all(math.isfinite(value) for value in (t1, t2, adc1, adc2)):
+            return None
+        if t1 >= t2:
+            th, tc, adc_hot, adc_cold = t1, t2, adc1, adc2
+        else:
+            th, tc, adc_hot, adc_cold = t2, t1, adc2, adc1
+        if abs(adc_cold) < 1e-12:
+            return None
+        y_factor = adc_hot / adc_cold
+        denominator = y_factor - 1.0
+        if not math.isfinite(y_factor) or abs(denominator) < 1e-12:
+            return None
+        return (th - tc * y_factor) / denominator
