@@ -79,6 +79,9 @@ class MeasurementPoint:
     brightness_temp1: Optional[float] = None
     brightness_temp2: Optional[float] = None
     brightness_temp3: Optional[float] = None
+    cal_brightness_temp1: Optional[float] = None
+    cal_brightness_temp2: Optional[float] = None
+    cal_brightness_temp3: Optional[float] = None
 
 
 @dataclass

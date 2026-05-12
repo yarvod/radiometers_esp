@@ -616,6 +616,9 @@ type MeasurementPoint = {
   brightness_temp1: number | null
   brightness_temp2: number | null
   brightness_temp3: number | null
+  cal_brightness_temp1: number | null
+  cal_brightness_temp2: number | null
+  cal_brightness_temp3: number | null
 }
 
 type MeasurementsResponse = {
@@ -1290,7 +1293,29 @@ const loadTempLabel = computed(() => {
 })
 
 const buildLoadCheckDatasets = () => {
-  const datasets = buildBrightnessDatasets()
+  const calOptions: AdcSeriesOption[] = [
+    {
+      key: 'cal_brightness_temp1',
+      label: `${adcLabelMap.value.adc1 || 'ADC1'} Tk по Cal`,
+      color: '#16a085',
+      extract: (row) => row.cal_brightness_temp1 ?? null,
+    },
+    {
+      key: 'cal_brightness_temp2',
+      label: `${adcLabelMap.value.adc2 || 'ADC2'} Tk по Cal`,
+      color: '#c0392b',
+      extract: (row) => row.cal_brightness_temp2 ?? null,
+    },
+    {
+      key: 'cal_brightness_temp3',
+      label: `${adcLabelMap.value.adc3 || 'ADC3'} Tk по Cal`,
+      color: '#8e44ad',
+      extract: (row) => row.cal_brightness_temp3 ?? null,
+    },
+  ]
+  const datasets = calOptions
+    .map((series) => buildDataset(series.label, historyData.value.map((row) => series.extract(row)), series.color))
+    .filter((dataset) => dataset.data.some((value) => Number.isFinite(value)))
   const idx = loadTempIndex.value
   if (idx >= 0) {
     const data = historyData.value.map((row) => {

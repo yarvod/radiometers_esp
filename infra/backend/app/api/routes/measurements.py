@@ -43,10 +43,16 @@ def apply_brightness_temperatures(
         cal = ordered[cal_idx]
         if cal.adc1_slope is not None and cal.adc1_intercept is not None:
             point.brightness_temp1 = cal.adc1_slope * point.adc1 + cal.adc1_intercept
+            if point.adc1_cal is not None:
+                point.cal_brightness_temp1 = cal.adc1_slope * point.adc1_cal + cal.adc1_intercept
         if cal.adc2_slope is not None and cal.adc2_intercept is not None:
             point.brightness_temp2 = cal.adc2_slope * point.adc2 + cal.adc2_intercept
+            if point.adc2_cal is not None:
+                point.cal_brightness_temp2 = cal.adc2_slope * point.adc2_cal + cal.adc2_intercept
         if cal.adc3_slope is not None and cal.adc3_intercept is not None:
             point.brightness_temp3 = cal.adc3_slope * point.adc3 + cal.adc3_intercept
+            if point.adc3_cal is not None:
+                point.cal_brightness_temp3 = cal.adc3_slope * point.adc3_cal + cal.adc3_intercept
 
 
 @router.get("", response_model=MeasurementsResponse)
