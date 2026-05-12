@@ -2,7 +2,7 @@
 export default defineNuxtConfig({
   devtools: { enabled: false },
   modules: ['@pinia/nuxt'],
-  css: ['~/assets/main.css'],
+  css: ['leaflet/dist/leaflet.css', '~/assets/main.css'],
   app: {
     head: {
       title: 'Radiometer',

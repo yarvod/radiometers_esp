@@ -359,6 +359,12 @@ input { width: 100%; box-sizing: border-box; }
 .stations-page .search-icon { font-size: 14px; }
 .stations-page .search-input { border: none; background: transparent; padding: 6px 0; min-width: 220px; border-radius: 6px; }
 .stations-page .search-input:focus { outline: none; box-shadow: none; }
+.stations-page .stations-map-modal { width: min(1120px, 96vw); }
+.stations-page .stations-map { height: min(680px, 72vh); min-height: 420px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #eef2f7; }
+.stations-page .station-map-marker { width: 22px; height: 22px; border-radius: 999px; background: rgba(37, 99, 235, 0.16); border: 1px solid rgba(37, 99, 235, 0.35); display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 24px rgba(30, 64, 175, 0.28); }
+.stations-page .station-map-marker span { width: 10px; height: 10px; border-radius: 999px; background: #2563eb; border: 2px solid #fff; display: block; }
+.stations-page .leaflet-container { font-family: inherit; }
+.stations-page .leaflet-popup-content { margin: 10px 12px; font-size: 13px; line-height: 1.4; }
 
 .schedule-page { gap: 16px; }
 .schedule-page .header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

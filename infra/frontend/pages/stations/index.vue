@@ -10,6 +10,7 @@
           <label class="muted small">Дата/время (UTC)</label>
           <input type="datetime-local" v-model="refreshForm.datetimeLocal" step="10800" />
         </div>
+        <button class="btn ghost" @click="openMapModal" :disabled="mapLoading">Посмотреть на карте</button>
         <button class="btn primary" @click="refreshStations" :disabled="refreshing">Обновить список</button>
       </div>
     </div>
@@ -85,10 +86,25 @@
         </div>
       </div>
     </div>
+
+    <div v-if="mapModalOpen" class="modal-backdrop" @click.self="closeMapModal">
+      <div class="modal stations-map-modal">
+        <div class="modal-head">
+          <div>
+            <h3>Станции на карте</h3>
+            <p class="muted">{{ mapStatus || `Показано станций: ${mapStationPoints.length}` }}</p>
+          </div>
+          <button class="btn ghost" @click="closeMapModal">Закрыть</button>
+        </div>
+        <div ref="mapEl" class="stations-map"></div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import type { Map as LeafletMap, Marker } from 'leaflet'
+
 definePageMeta({ layout: 'admin' })
 useHead({ title: 'Станции зондирования' })
 
@@ -104,11 +120,21 @@ const refreshing = ref(false)
 const refreshForm = reactive({ datetimeLocal: '' })
 const searchQuery = ref('')
 const searchTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const mapModalOpen = ref(false)
+const mapLoading = ref(false)
+const mapStatus = ref('')
+const mapStations = ref<any[]>([])
+const mapEl = ref<HTMLElement | null>(null)
+let mapInstance: LeafletMap | null = null
+let mapMarkers: Marker[] = []
 
 const page = computed(() => Math.floor(offset.value / limit.value) + 1)
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / limit.value)))
 const rangeStart = computed(() => (total.value === 0 ? 0 : offset.value + 1))
 const rangeEnd = computed(() => Math.min(total.value, offset.value + stations.value.length))
+const mapStationPoints = computed(() =>
+  mapStations.value.filter((station) => isValidCoord(station.lat, station.lon))
+)
 
 function floorTo12HoursUtc(date: Date) {
   const copy = new Date(date)
@@ -150,6 +176,17 @@ function formatCoords(lat?: number, lon?: number) {
   return `${lat.toFixed(4)}, ${lon.toFixed(4)}`
 }
 
+function isValidCoord(lat?: number, lon?: number) {
+  return Number.isFinite(lat) && Number.isFinite(lon) && lat! >= -90 && lat! <= 90 && lon! >= -180 && lon! <= 180
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => {
+    const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }
+    return map[char] || char
+  })
+}
+
 async function loadStations() {
   loading.value = true
   try {
@@ -164,6 +201,96 @@ async function loadStations() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadMapStations() {
+  mapLoading.value = true
+  mapStatus.value = 'Загружаем станции для карты…'
+  try {
+    const queryParam = searchQuery.value.trim()
+    const suffix = queryParam ? `&query=${encodeURIComponent(queryParam)}` : ''
+    const collected: any[] = []
+    let nextOffset = 0
+    let expectedTotal = 0
+    do {
+      const res = await apiFetch<any>(`/api/stations?limit=500&offset=${nextOffset}${suffix}`)
+      const items = res.items || []
+      collected.push(...items)
+      expectedTotal = res.total || collected.length
+      nextOffset += items.length
+      if (items.length === 0) break
+    } while (collected.length < expectedTotal)
+    mapStations.value = collected
+    const skipped = collected.length - mapStationPoints.value.length
+    mapStatus.value = skipped > 0 ? `Без координат: ${skipped}` : ''
+  } catch (e: any) {
+    mapStatus.value = e?.data?.detail || e?.message || 'Не удалось загрузить станции для карты'
+    mapStations.value = []
+  } finally {
+    mapLoading.value = false
+  }
+}
+
+async function openMapModal() {
+  mapModalOpen.value = true
+  await loadMapStations()
+  await nextTick()
+  renderMap()
+}
+
+function closeMapModal() {
+  mapModalOpen.value = false
+  destroyMap()
+}
+
+function destroyMap() {
+  mapMarkers = []
+  if (mapInstance) {
+    mapInstance.remove()
+    mapInstance = null
+  }
+}
+
+async function renderMap() {
+  if (!process.client || !mapModalOpen.value || !mapEl.value) return
+  destroyMap()
+  const points = mapStationPoints.value
+  if (points.length === 0) {
+    mapStatus.value = mapStatus.value || 'У станций нет координат для отображения'
+    return
+  }
+  const L = await import('leaflet')
+  const centerLat = points.reduce((sum, station) => sum + station.lat, 0) / points.length
+  const centerLon = points.reduce((sum, station) => sum + station.lon, 0) / points.length
+  mapInstance = L.map(mapEl.value, {
+    center: [centerLat, centerLon],
+    zoom: points.length === 1 ? 6 : 3,
+    scrollWheelZoom: true,
+  })
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '&copy; OpenStreetMap',
+  }).addTo(mapInstance)
+  const bounds = L.latLngBounds([])
+  const stationIcon = L.divIcon({
+    className: 'station-map-marker',
+    html: '<span></span>',
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  })
+  points.forEach((station) => {
+    const label = `${station.station_id}${station.name ? ` · ${station.name}` : ''}`
+    const marker = L.marker([station.lat, station.lon], { icon: stationIcon })
+      .bindPopup(`<strong>${escapeHtml(station.station_id)}</strong><br>${escapeHtml(station.name || 'Без названия')}`)
+      .bindTooltip(escapeHtml(label), { direction: 'top', offset: [0, -12] })
+      .addTo(mapInstance!)
+    mapMarkers.push(marker)
+    bounds.extend([station.lat, station.lon])
+  })
+  if (points.length > 1) {
+    mapInstance.fitBounds(bounds, { padding: [36, 36], maxZoom: 8 })
+  }
+  setTimeout(() => mapInstance?.invalidateSize(), 50)
 }
 
 async function refreshStations() {
@@ -206,6 +333,10 @@ function openStation(id: string) {
 onMounted(() => {
   refreshForm.datetimeLocal = toUtcInputValue(floorTo12HoursUtc(new Date()))
   loadStations()
+})
+
+onBeforeUnmount(() => {
+  destroyMap()
 })
 
 watch(
