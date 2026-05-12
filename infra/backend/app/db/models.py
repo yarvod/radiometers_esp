@@ -115,6 +115,9 @@ class RadiometerCalibrationModel(Base):
     adc1_intercept: Mapped[float | None] = mapped_column(Float, nullable=True)
     adc2_intercept: Mapped[float | None] = mapped_column(Float, nullable=True)
     adc3_intercept: Mapped[float | None] = mapped_column(Float, nullable=True)
+    adc1_noise_temp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    adc2_noise_temp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    adc3_noise_temp: Mapped[float | None] = mapped_column(Float, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="radiometer_calibrations")

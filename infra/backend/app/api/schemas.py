@@ -110,6 +110,9 @@ class RadiometerCalibrationOut(BaseModel):
     adc1_intercept: Optional[float] = None
     adc2_intercept: Optional[float] = None
     adc3_intercept: Optional[float] = None
+    adc1_noise_temp: Optional[float] = None
+    adc2_noise_temp: Optional[float] = None
+    adc3_noise_temp: Optional[float] = None
     comment: Optional[str] = None
 
 

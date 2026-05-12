@@ -55,6 +55,9 @@ class RadiometerCalibrationService:
         adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
         adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
         adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
+        adc1_noise_temp = self._noise_temperature(adc1_intercept)
+        adc2_noise_temp = self._noise_temperature(adc2_intercept)
+        adc3_noise_temp = self._noise_temperature(adc3_intercept)
 
         calibration = RadiometerCalibration(
             id=str(uuid.uuid4()),
@@ -77,6 +80,9 @@ class RadiometerCalibrationService:
             adc1_intercept=adc1_intercept,
             adc2_intercept=adc2_intercept,
             adc3_intercept=adc3_intercept,
+            adc1_noise_temp=adc1_noise_temp,
+            adc2_noise_temp=adc2_noise_temp,
+            adc3_noise_temp=adc3_noise_temp,
             comment=comment.strip() if comment and comment.strip() else None,
         )
         return await self._calibrations.create(calibration)
@@ -118,6 +124,9 @@ class RadiometerCalibrationService:
         adc1_slope, adc1_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc1_1, adc1_2)
         adc2_slope, adc2_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc2_1, adc2_2)
         adc3_slope, adc3_intercept = self._linear_coefficients(t_black_body_1, t_black_body_2, adc3_1, adc3_2)
+        adc1_noise_temp = self._noise_temperature(adc1_intercept)
+        adc2_noise_temp = self._noise_temperature(adc2_intercept)
+        adc3_noise_temp = self._noise_temperature(adc3_intercept)
 
         calibration = RadiometerCalibration(
             id=existing.id,
@@ -140,6 +149,9 @@ class RadiometerCalibrationService:
             adc1_intercept=adc1_intercept,
             adc2_intercept=adc2_intercept,
             adc3_intercept=adc3_intercept,
+            adc1_noise_temp=adc1_noise_temp,
+            adc2_noise_temp=adc2_noise_temp,
+            adc3_noise_temp=adc3_noise_temp,
             comment=comment.strip() if comment and comment.strip() else None,
         )
         return await self._calibrations.update(calibration)
@@ -166,3 +178,9 @@ class RadiometerCalibrationService:
         slope = (t2 - t1) / denominator
         intercept = t1 - slope * adc1
         return slope, intercept
+
+    @staticmethod
+    def _noise_temperature(intercept: float | None) -> float | None:
+        if intercept is None or not math.isfinite(intercept):
+            return None
+        return -intercept

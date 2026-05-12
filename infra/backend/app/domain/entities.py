@@ -102,6 +102,9 @@ class RadiometerCalibration:
     adc1_intercept: Optional[float]
     adc2_intercept: Optional[float]
     adc3_intercept: Optional[float]
+    adc1_noise_temp: Optional[float]
+    adc2_noise_temp: Optional[float]
+    adc3_noise_temp: Optional[float]
     comment: Optional[str]
 
 

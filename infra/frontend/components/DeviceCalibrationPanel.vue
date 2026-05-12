@@ -45,14 +45,17 @@
             <td>
               <div>k={{ fmt(item.adc1_slope, 6) }}</div>
               <div>b={{ fmt(item.adc1_intercept, 3) }}</div>
+              <div>Tш={{ fmt(item.adc1_noise_temp, 1) }} K</div>
             </td>
             <td>
               <div>k={{ fmt(item.adc2_slope, 6) }}</div>
               <div>b={{ fmt(item.adc2_intercept, 3) }}</div>
+              <div>Tш={{ fmt(item.adc2_noise_temp, 1) }} K</div>
             </td>
             <td>
               <div>k={{ fmt(item.adc3_slope, 6) }}</div>
               <div>b={{ fmt(item.adc3_intercept, 3) }}</div>
+              <div>Tш={{ fmt(item.adc3_noise_temp, 1) }} K</div>
             </td>
             <td>{{ fmt(item.t_adc1, 1) }} / {{ fmt(item.t_adc2, 1) }} / {{ fmt(item.t_adc3, 1) }}</td>
             <td>{{ item.comment || '—' }}</td>
@@ -138,9 +141,9 @@
         </div>
 
         <div class="preview">
-          <span class="chip subtle">{{ adcLabel('adc1', 'ADC1') }} k={{ fmt(coefficients.adc1.slope, 6) }} b={{ fmt(coefficients.adc1.intercept, 3) }}</span>
-          <span class="chip subtle">{{ adcLabel('adc2', 'ADC2') }} k={{ fmt(coefficients.adc2.slope, 6) }} b={{ fmt(coefficients.adc2.intercept, 3) }}</span>
-          <span class="chip subtle">{{ adcLabel('adc3', 'ADC3') }} k={{ fmt(coefficients.adc3.slope, 6) }} b={{ fmt(coefficients.adc3.intercept, 3) }}</span>
+          <span class="chip subtle">{{ adcLabel('adc1', 'ADC1') }} k={{ fmt(coefficients.adc1.slope, 6) }} b={{ fmt(coefficients.adc1.intercept, 3) }} Tш={{ fmt(coefficients.adc1.noiseTemp, 1) }} K</span>
+          <span class="chip subtle">{{ adcLabel('adc2', 'ADC2') }} k={{ fmt(coefficients.adc2.slope, 6) }} b={{ fmt(coefficients.adc2.intercept, 3) }} Tш={{ fmt(coefficients.adc2.noiseTemp, 1) }} K</span>
+          <span class="chip subtle">{{ adcLabel('adc3', 'ADC3') }} k={{ fmt(coefficients.adc3.slope, 6) }} b={{ fmt(coefficients.adc3.intercept, 3) }} Tш={{ fmt(coefficients.adc3.noiseTemp, 1) }} K</span>
         </div>
 
         <div class="form-group">
@@ -184,6 +187,9 @@ type Calibration = {
   adc1_intercept: number | null
   adc2_intercept: number | null
   adc3_intercept: number | null
+  adc1_noise_temp: number | null
+  adc2_noise_temp: number | null
+  adc3_noise_temp: number | null
   comment: string | null
 }
 
@@ -281,12 +287,13 @@ const average = (samples: AdcSample[]) => {
 
 const coefficient = (t1: number, t2: number, adcA: number | null, adcB: number | null) => {
   if (!Number.isFinite(t1) || !Number.isFinite(t2) || !Number.isFinite(adcA) || !Number.isFinite(adcB)) {
-    return { slope: null, intercept: null }
+    return { slope: null, intercept: null, noiseTemp: null }
   }
   const denominator = Number(adcB) - Number(adcA)
-  if (Math.abs(denominator) < 1e-12) return { slope: null, intercept: null }
+  if (Math.abs(denominator) < 1e-12) return { slope: null, intercept: null, noiseTemp: null }
   const slope = (t2 - t1) / denominator
-  return { slope, intercept: t1 - slope * Number(adcA) }
+  const intercept = t1 - slope * Number(adcA)
+  return { slope, intercept, noiseTemp: -intercept }
 }
 
 const avg1 = computed(() => average(samples1.value))

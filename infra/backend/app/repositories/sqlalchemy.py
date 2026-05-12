@@ -173,6 +173,9 @@ def to_radiometer_calibration(model: RadiometerCalibrationModel) -> RadiometerCa
         adc1_intercept=model.adc1_intercept,
         adc2_intercept=model.adc2_intercept,
         adc3_intercept=model.adc3_intercept,
+        adc1_noise_temp=model.adc1_noise_temp,
+        adc2_noise_temp=model.adc2_noise_temp,
+        adc3_noise_temp=model.adc3_noise_temp,
         comment=model.comment,
     )
 
@@ -591,6 +594,9 @@ class SqlRadiometerCalibrationRepository(RadiometerCalibrationRepository):
             adc1_intercept=calibration.adc1_intercept,
             adc2_intercept=calibration.adc2_intercept,
             adc3_intercept=calibration.adc3_intercept,
+            adc1_noise_temp=calibration.adc1_noise_temp,
+            adc2_noise_temp=calibration.adc2_noise_temp,
+            adc3_noise_temp=calibration.adc3_noise_temp,
             comment=calibration.comment,
         )
         self._session.add(model)
@@ -634,6 +640,9 @@ class SqlRadiometerCalibrationRepository(RadiometerCalibrationRepository):
         model.adc1_intercept = calibration.adc1_intercept
         model.adc2_intercept = calibration.adc2_intercept
         model.adc3_intercept = calibration.adc3_intercept
+        model.adc1_noise_temp = calibration.adc1_noise_temp
+        model.adc2_noise_temp = calibration.adc2_noise_temp
+        model.adc3_noise_temp = calibration.adc3_noise_temp
         model.comment = calibration.comment
         await self._session.flush()
         return to_radiometer_calibration(model)
