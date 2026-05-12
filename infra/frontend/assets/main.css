@@ -467,6 +467,12 @@ input { width: 100%; box-sizing: border-box; }
 .config-row { display: grid; grid-template-columns: 80px 1fr 1fr; gap: 10px; align-items: center; }
 .config-row.header { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.config-binding-list { display: flex; flex-direction: column; gap: 10px; }
+.config-binding-row { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); align-items: center; gap: 12px; font-weight: 700; }
+.config-binding-row select { min-width: 0; width: 100%; }
+@media (max-width: 720px) {
+  .config-binding-row { grid-template-columns: 1fr; gap: 6px; }
+}
 .device-page .chart-stack { display: flex; flex-direction: column; gap: 20px; }
 .device-page .chart-box { background: transparent; border: none; padding: 0; height: 320px; display: flex; flex-direction: column; gap: 8px; }
 .device-page .chart-box h4 { margin: 0; font-size: 16px; color: #1f2933; }

@@ -86,8 +86,6 @@ class DeviceService:
                 "radiometer_adc2",
                 "radiometer_adc3",
                 "calibration_load",
-                "calibration_load_1",
-                "calibration_load_2",
             }
             temp_bindings = {
                 str(role).strip(): str(address).strip()

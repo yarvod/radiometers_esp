@@ -356,6 +356,7 @@ class MeasurementsResponse(BaseModel):
     adc_labels: dict[str, str] = Field(default_factory=dict)
     temp_addresses: list[str] = Field(default_factory=list)
     temp_label_map: dict[str, str] = Field(default_factory=dict)
+    temp_bindings: dict[str, str] = Field(default_factory=dict)
     brightness_temp_labels: dict[str, str] = Field(default_factory=dict)
 
 

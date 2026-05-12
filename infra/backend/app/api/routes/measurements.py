@@ -78,6 +78,7 @@ async def list_measurements(
     config_temp_labels = list(device.temp_labels) if device else []
     config_temp_addresses = list(device.temp_addresses) if device else []
     config_temp_label_map = dict(device.temp_label_map) if device else {}
+    config_temp_bindings = dict(device.temp_bindings) if device else {}
     legacy_labels_by_address = {
         address: label
         for address, label in zip(config_temp_addresses, config_temp_labels)
@@ -113,6 +114,7 @@ async def list_measurements(
         adc_labels=adc_labels,
         temp_addresses=config_temp_addresses,
         temp_label_map=config_temp_label_map,
+        temp_bindings=config_temp_bindings,
         brightness_temp_labels=brightness_temp_labels,
     )
 

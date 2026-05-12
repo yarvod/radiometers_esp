@@ -423,6 +423,12 @@
             <canvas ref="brightnessChartEl"></canvas>
           </div>
         </div>
+        <div class="chart-box">
+          <h4>Контроль теплой нагрузки</h4>
+          <div class="chart-body">
+            <canvas ref="loadCheckChartEl"></canvas>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -467,9 +473,9 @@
       </div>
       <div class="form-group">
         <label>Привязка температур</label>
-        <div class="config-grid">
-          <label class="compact" v-for="binding in tempBindingRoles" :key="binding.key">
-            {{ tempBindingLabel(binding.key) }}
+        <div class="config-binding-list">
+          <label class="config-binding-row" v-for="binding in tempBindingRoles" :key="binding.key">
+            <span>{{ tempBindingLabel(binding.key) }}</span>
             <select v-model="configForm.tempBindings[binding.key]" @change="configDirty = true">
               <option value="">Не задано</option>
               <option
@@ -623,6 +629,7 @@ type MeasurementsResponse = {
   temp_label_map: Record<string, string>
   adc_labels: Record<string, string>
   temp_addresses: string[]
+  temp_bindings: Record<string, string>
   brightness_temp_labels: Record<string, string>
 }
 
@@ -708,8 +715,7 @@ const configForm = reactive({
     radiometer_adc1: '',
     radiometer_adc2: '',
     radiometer_adc3: '',
-    calibration_load_1: '',
-    calibration_load_2: '',
+    calibration_load: '',
   } as Record<string, string>,
 })
 
@@ -833,16 +839,13 @@ const tempBindingRoles = [
   { key: 'radiometer_adc1' },
   { key: 'radiometer_adc2' },
   { key: 'radiometer_adc3' },
-  { key: 'calibration_load_1' },
-  { key: 'calibration_load_2' },
+  { key: 'calibration_load' },
 ]
 const tempBindingLabel = (key: string) => {
   if (key === 'radiometer_adc1') return `Температура ${adcLabel('adc1', 'ADC1')}`
   if (key === 'radiometer_adc2') return `Температура ${adcLabel('adc2', 'ADC2')}`
   if (key === 'radiometer_adc3') return `Температура ${adcLabel('adc3', 'ADC3')}`
-  if (key === 'calibration_load_1') return 'Калибровочная нагрузка 1'
-  if (key === 'calibration_load_2') return 'Калибровочная нагрузка 2'
-  return 'Калибровочная нагрузка'
+  return 'Теплая калибровочная нагрузка'
 }
 const tempSensorOptions = computed(() => {
   const seen = new Set<string>()
@@ -895,6 +898,8 @@ const historySelection = reactive({
 })
 const historyData = ref<MeasurementPoint[]>([])
 const historyTempLabels = ref<string[]>([])
+const historyTempAddresses = ref<string[]>([])
+const historyTempBindings = ref<Record<string, string>>({})
 const historyBrightnessLabels = ref<Record<string, string>>({})
 const historyLoading = ref(false)
 const historyStatus = ref('')
@@ -927,9 +932,11 @@ const errorRangeLabel = computed(() => {
 const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
 const brightnessChartEl = ref<HTMLCanvasElement | null>(null)
+const loadCheckChartEl = ref<HTMLCanvasElement | null>(null)
 let tempChart: any = null
 let adcChart: any = null
 let brightnessChart: any = null
+let loadCheckChart: any = null
 let ChartCtor: any = null
 
 const maskToIndices = (mask: number, count: number) => {
@@ -1268,17 +1275,49 @@ const buildBrightnessDatasets = () => {
     .filter((dataset) => dataset.data.some((value) => Number.isFinite(value)))
 }
 
+const loadTempAddress = computed(() => historyTempBindings.value.calibration_load || deviceConfig.value?.temp_bindings?.calibration_load || '')
+const loadTempIndex = computed(() => {
+  const address = loadTempAddress.value
+  if (!address) return -1
+  const addresses = historyTempAddresses.value.length ? historyTempAddresses.value : (deviceConfig.value?.temp_addresses || [])
+  return addresses.findIndex((item) => item === address)
+})
+const loadTempLabel = computed(() => {
+  const idx = loadTempIndex.value
+  if (idx < 0) return 'T нагрузки, K'
+  const label = historyTempLabels.value[idx] || deviceConfig.value?.temp_labels?.[idx] || `t${idx + 1}`
+  return `${label}, K`
+})
+
+const buildLoadCheckDatasets = () => {
+  const datasets = buildBrightnessDatasets()
+  const idx = loadTempIndex.value
+  if (idx >= 0) {
+    const data = historyData.value.map((row) => {
+      const value = row.temps?.[idx]
+      return Number.isFinite(value) ? Number(value) + 273.15 : null
+    })
+    const loadDataset = buildDataset(loadTempLabel.value, data, '#111827')
+    loadDataset.borderWidth = 3
+    loadDataset.borderDash = [6, 4]
+    datasets.unshift(loadDataset)
+  }
+  return datasets
+}
+
 const renderCharts = () => {
   if (!ChartCtor) return
-  if (!tempChartEl.value || !adcChartEl.value || !brightnessChartEl.value) return
+  if (!tempChartEl.value || !adcChartEl.value || !brightnessChartEl.value || !loadCheckChartEl.value) return
 
   const labels = historyLabels.value
   const tempDatasets = buildTempDatasets()
   const adcDatasets = buildAdcDatasets()
   const brightnessDatasets = buildBrightnessDatasets()
+  const loadCheckDatasets = buildLoadCheckDatasets()
   const tempHidden = new Map<string, boolean>()
   const adcHidden = new Map<string, boolean>()
   const brightnessHidden = new Map<string, boolean>()
+  const loadCheckHidden = new Map<string, boolean>()
   if (tempChart?.data?.datasets) {
     tempChart.data.datasets.forEach((dataset: any) => {
       if (dataset?.label) tempHidden.set(dataset.label, !!dataset.hidden)
@@ -1294,6 +1333,11 @@ const renderCharts = () => {
       if (dataset?.label) brightnessHidden.set(dataset.label, !!dataset.hidden)
     })
   }
+  if (loadCheckChart?.data?.datasets) {
+    loadCheckChart.data.datasets.forEach((dataset: any) => {
+      if (dataset?.label) loadCheckHidden.set(dataset.label, !!dataset.hidden)
+    })
+  }
   tempDatasets.forEach((dataset) => {
     if (tempHidden.has(dataset.label)) dataset.hidden = tempHidden.get(dataset.label)
   })
@@ -1302,6 +1346,9 @@ const renderCharts = () => {
   })
   brightnessDatasets.forEach((dataset) => {
     if (brightnessHidden.has(dataset.label)) dataset.hidden = brightnessHidden.get(dataset.label)
+  })
+  loadCheckDatasets.forEach((dataset) => {
+    if (loadCheckHidden.has(dataset.label)) dataset.hidden = loadCheckHidden.get(dataset.label)
   })
 
   if (!tempChart) {
@@ -1386,6 +1433,34 @@ const renderCharts = () => {
     brightnessChart.data.labels = labels
     brightnessChart.data.datasets = brightnessDatasets
     brightnessChart.update('none')
+  }
+
+  if (!loadCheckChart) {
+    loadCheckChart = new ChartCtor(loadCheckChartEl.value, {
+      type: 'line',
+      data: { labels, datasets: loadCheckDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            position: 'top',
+            align: 'start',
+            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
+          },
+        },
+        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
+          y: { ticks: { maxTicksLimit: 6 } },
+        },
+      },
+    })
+  } else {
+    loadCheckChart.data.labels = labels
+    loadCheckChart.data.datasets = loadCheckDatasets
+    loadCheckChart.update('none')
   }
 }
 
@@ -1540,8 +1615,11 @@ watch(
     historySelection.tempIndices,
     historySelection.adcSeries,
     historyTempOptions.value.map((item) => item.label),
+    historyTempAddresses.value,
+    historyTempBindings.value,
     adcSeriesOptions.value.map((item) => item.label),
     historyBrightnessLabels.value,
+    loadTempIndex.value,
   ],
   () => {
     renderCharts()
@@ -1912,6 +1990,8 @@ async function loadHistory() {
     const response = await apiFetch<MeasurementsResponse>(`/api/measurements?${params.toString()}`)
     historyData.value = response.points
     historyTempLabels.value = response.temp_labels || []
+    historyTempAddresses.value = response.temp_addresses || []
+    historyTempBindings.value = response.temp_bindings || {}
     historyBrightnessLabels.value = response.brightness_temp_labels || {}
     const hasKnownTempAddresses = !!deviceConfig.value?.temp_addresses?.some(Boolean)
     if (deviceConfig.value && response.temp_label_map) {
@@ -1993,7 +2073,7 @@ const seedConfigForm = () => {
   configForm.tempRows = rows
   Object.assign(configForm.adcLabels, adcLabelDefaults, config.adc_labels || {})
   tempBindingRoles.forEach(({ key }) => {
-    configForm.tempBindings[key] = (config.temp_bindings || {})[key] || (config.temp_bindings || {}).calibration_load || ''
+    configForm.tempBindings[key] = (config.temp_bindings || {})[key] || ''
   })
 }
 
@@ -2118,6 +2198,10 @@ onBeforeUnmount(() => {
   if (brightnessChart) {
     brightnessChart.destroy()
     brightnessChart = null
+  }
+  if (loadCheckChart) {
+    loadCheckChart.destroy()
+    loadCheckChart = null
   }
 })
 

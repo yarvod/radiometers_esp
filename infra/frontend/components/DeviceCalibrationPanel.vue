@@ -104,8 +104,7 @@
           <span class="chip subtle">{{ boundTempText('radiometer_adc1', adcLabel('adc1', 'ADC1')) }}</span>
           <span class="chip subtle">{{ boundTempText('radiometer_adc2', adcLabel('adc2', 'ADC2')) }}</span>
           <span class="chip subtle">{{ boundTempText('radiometer_adc3', adcLabel('adc3', 'ADC3')) }}</span>
-          <span class="chip subtle">{{ boundLoadTempText(1) }}</span>
-          <span class="chip subtle">{{ boundLoadTempText(2) }}</span>
+          <span class="chip subtle">{{ boundTempText('calibration_load', 'Теплая нагрузка') }}</span>
         </div>
 
         <div class="calibration-steps">
@@ -119,7 +118,6 @@
               <input type="number" step="0.01" v-model.number="form.t_black_body_1" />
             </div>
             <div class="actions">
-              <button class="btn ghost" type="button" @click="applyBoundLoadTemp(1)">Взять T нагрузки</button>
               <button class="btn primary" :disabled="logging || isSampling" @click="startSample(1)">Начать</button>
               <button class="btn warning ghost" :disabled="samplingPhase !== 1" @click="stopSample">Стоп</button>
             </div>
@@ -140,7 +138,7 @@
               <input type="number" step="0.01" v-model.number="form.t_black_body_2" />
             </div>
             <div class="actions">
-              <button class="btn ghost" type="button" @click="applyBoundLoadTemp(2)">Взять T нагрузки</button>
+              <button class="btn ghost" type="button" @click="applyBoundLoadTemp">Взять T теплой нагрузки</button>
               <button class="btn primary" :disabled="logging || isSampling" @click="startSample(2)">Начать</button>
               <button class="btn warning ghost" :disabled="samplingPhase !== 2" @click="stopSample">Стоп</button>
             </div>
@@ -292,10 +290,6 @@ const boundTempC = (role: string) => {
   const value = sensor ? Number(sensor.value) : Number.NaN
   return Number.isFinite(value) ? value : null
 }
-const boundLoadRole = (phase: 1 | 2) => {
-  const specific = props.tempBindings?.[`calibration_load_${phase}`]
-  return specific ? `calibration_load_${phase}` : 'calibration_load'
-}
 const boundTempText = (role: string, label: string) => {
   const address = props.tempBindings?.[role] || ''
   if (!address) return `${label}: датчик не задан`
@@ -304,7 +298,6 @@ const boundTempText = (role: string, label: string) => {
   if (value === null) return `${label}: ${sensor?.label || address} нет данных`
   return `${label}: ${sensor?.label || address} ${value.toFixed(1)} C`
 }
-const boundLoadTempText = (phase: 1 | 2) => boundTempText(boundLoadRole(phase), `Нагрузка ${phase}`)
 const applyBoundRadiometerTemps = () => {
   const adc1 = boundTempC('radiometer_adc1')
   const adc2 = boundTempC('radiometer_adc2')
@@ -313,15 +306,14 @@ const applyBoundRadiometerTemps = () => {
   if (adc2 !== null) form.t_adc2 = Number(adc2.toFixed(1))
   if (adc3 !== null) form.t_adc3 = Number(adc3.toFixed(1))
 }
-const applyBoundLoadTemp = (phase: 1 | 2) => {
-  const loadC = boundTempC(boundLoadRole(phase))
+const applyBoundLoadTemp = () => {
+  const loadC = boundTempC('calibration_load')
   if (loadC === null) {
-    modalStatus.value = `Датчик нагрузки ${phase} не задан или нет данных`
+    modalStatus.value = 'Датчик теплой нагрузки не задан или нет данных'
     return
   }
   const loadK = Number((loadC + 273.15).toFixed(2))
-  if (phase === 1) form.t_black_body_1 = loadK
-  if (phase === 2) form.t_black_body_2 = loadK
+  form.t_black_body_2 = loadK
 }
 
 const fmt = (value: number | null | undefined, digits = 3) => {
@@ -488,7 +480,7 @@ const startSample = async (phase: 1 | 2) => {
   if (phase === 1) samples1.value = []
   if (phase === 2) samples2.value = []
   applyBoundRadiometerTemps()
-  applyBoundLoadTemp(phase)
+  if (phase === 2) applyBoundLoadTemp()
   const target = phase === 1 ? samples1 : samples2
   const durationMs = Math.max(1, Number(form.durationSec) || 1) * 1000
   const intervalMs = 500
