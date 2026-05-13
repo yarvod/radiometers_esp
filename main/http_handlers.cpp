@@ -2456,6 +2456,179 @@ esp_err_t FlashClearUploadedHandler(httpd_req_t* req) {
   return ESP_OK;
 }
 
+struct UploadQueueTransferResult {
+  int scanned = 0;
+  int moved = 0;
+  int skipped = 0;
+  int failed = 0;
+};
+
+static std::string ToUploadDirForBackend(StorageBackend backend) {
+  return backend == StorageBackend::kInternalFlash
+             ? std::string(INTERNAL_FLASH_MOUNT_POINT) + "/to_upload"
+             : std::string(TO_UPLOAD_DIR);
+}
+
+static const char* StorageName(StorageBackend backend) {
+  return backend == StorageBackend::kInternalFlash ? "internal_flash" : "sd";
+}
+
+static bool CopyFileThenRemove(const std::string& src, const std::string& dst) {
+  FILE* in = fopen(src.c_str(), "rb");
+  if (!in) {
+    ESP_LOGW(TAG, "Transfer open source failed %s errno=%d", src.c_str(), errno);
+    return false;
+  }
+  FILE* out = fopen(dst.c_str(), "wb");
+  if (!out) {
+    ESP_LOGW(TAG, "Transfer open destination failed %s errno=%d", dst.c_str(), errno);
+    fclose(in);
+    return false;
+  }
+  char buf[1024];
+  bool ok = true;
+  size_t n = 0;
+  while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+    if (fwrite(buf, 1, n, out) != n) {
+      ok = false;
+      break;
+    }
+  }
+  if (ferror(in)) ok = false;
+  if (fflush(out) != 0) ok = false;
+  fclose(out);
+  fclose(in);
+  if (!ok) {
+    remove(dst.c_str());
+    return false;
+  }
+  if (remove(src.c_str()) != 0) {
+    ESP_LOGW(TAG, "Transfer remove source failed %s errno=%d", src.c_str(), errno);
+    return false;
+  }
+  return true;
+}
+
+static esp_err_t SendTransferResult(httpd_req_t* req,
+                                    StorageBackend src_backend,
+                                    StorageBackend dst_backend,
+                                    const UploadQueueTransferResult& result) {
+  cJSON* resp = cJSON_CreateObject();
+  cJSON_AddStringToObject(resp, "status", "ok");
+  cJSON_AddStringToObject(resp, "source", StorageName(src_backend));
+  cJSON_AddStringToObject(resp, "destination", StorageName(dst_backend));
+  cJSON_AddNumberToObject(resp, "scanned", result.scanned);
+  cJSON_AddNumberToObject(resp, "moved", result.moved);
+  cJSON_AddNumberToObject(resp, "skipped", result.skipped);
+  cJSON_AddNumberToObject(resp, "failed", result.failed);
+  const char* json = cJSON_PrintUnformatted(resp);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json ? json : "{}");
+  cJSON_free((void*)json);
+  cJSON_Delete(resp);
+  return ESP_OK;
+}
+
+static esp_err_t TransferUploadQueueHandler(httpd_req_t* req, StorageBackend src_backend, StorageBackend dst_backend) {
+  if (src_backend == dst_backend) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Source and destination are the same");
+    return ESP_FAIL;
+  }
+  if (log_config.active || CopyState().logging || log_file != nullptr) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stop logging before transfer");
+    return ESP_FAIL;
+  }
+  if (usb_mode == UsbMode::kMsc && (src_backend == StorageBackend::kSd || dst_backend == StorageBackend::kSd)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "USB MSC mode owns SD card");
+    return ESP_FAIL;
+  }
+
+  int max_files = 10;
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len > 0) {
+    std::string body(buf_len, '\0');
+    int received = httpd_req_recv(req, body.data(), buf_len);
+    if (received <= 0) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+      return ESP_FAIL;
+    }
+    body.resize(received);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+      return ESP_FAIL;
+    }
+    cJSON* max_item = cJSON_GetObjectItem(root, "maxFiles");
+    if (max_item && cJSON_IsNumber(max_item)) {
+      max_files = max_item->valueint;
+    }
+    cJSON_Delete(root);
+  }
+  max_files = std::clamp(max_files > 0 ? max_files : 10, 1, 25);
+
+  SdLockGuard guard(pdMS_TO_TICKS(10000));
+  if (!guard.locked()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Storage busy");
+    return ESP_FAIL;
+  }
+  if (!MountLogSd()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD mount failed");
+    return ESP_FAIL;
+  }
+  if (!MountInternalFlashFs()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal flash mount failed");
+    return ESP_FAIL;
+  }
+
+  const std::string src_dir = ToUploadDirForBackend(src_backend);
+  const std::string dst_dir = ToUploadDirForBackend(dst_backend);
+  (void)EnsureDirExists(src_dir.c_str());
+  if (!EnsureDirExists(dst_dir.c_str())) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Destination to_upload unavailable");
+    return ESP_FAIL;
+  }
+
+  UploadQueueTransferResult result;
+  DIR* dir = opendir(src_dir.c_str());
+  if (!dir) {
+    return SendTransferResult(req, src_backend, dst_backend, result);
+  }
+
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr && result.scanned < max_files) {
+    if (ent->d_name[0] == '.') continue;
+    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+    const std::string src = src_dir + "/" + ent->d_name;
+    const std::string dst = dst_dir + "/" + ent->d_name;
+    struct stat src_st {};
+    if (stat(src.c_str(), &src_st) != 0 || !S_ISREG(src_st.st_mode)) {
+      continue;
+    }
+    result.scanned++;
+    struct stat dst_st {};
+    if (stat(dst.c_str(), &dst_st) == 0) {
+      result.skipped++;
+      continue;
+    }
+    if (CopyFileThenRemove(src, dst)) {
+      result.moved++;
+    } else {
+      result.failed++;
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  closedir(dir);
+  return SendTransferResult(req, src_backend, dst_backend, result);
+}
+
+esp_err_t TransferFlashToSdHandler(httpd_req_t* req) {
+  return TransferUploadQueueHandler(req, StorageBackend::kInternalFlash, StorageBackend::kSd);
+}
+
+esp_err_t TransferSdToFlashHandler(httpd_req_t* req) {
+  return TransferUploadQueueHandler(req, StorageBackend::kSd, StorageBackend::kInternalFlash);
+}
+
 esp_err_t PidApplyHandler(httpd_req_t* req) {
   const size_t buf_len = std::min<size_t>(req->content_len, 128);
   if (buf_len == 0) {
@@ -2914,7 +3087,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 45;
+  config.max_uri_handlers = 47;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -2960,6 +3133,8 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t flash_download_uri = {.uri = "/flash/download", .method = HTTP_GET, .handler = FlashDownloadHandler, .user_ctx = nullptr};
   httpd_uri_t flash_delete_uri = {.uri = "/flash/delete", .method = HTTP_POST, .handler = FlashDeleteHandler, .user_ctx = nullptr};
   httpd_uri_t flash_clear_uploaded_uri = {.uri = "/flash/clear_uploaded", .method = HTTP_POST, .handler = FlashClearUploadedHandler, .user_ctx = nullptr};
+  httpd_uri_t transfer_flash_to_sd_uri = {.uri = "/storage/transfer_flash_to_sd", .method = HTTP_POST, .handler = TransferFlashToSdHandler, .user_ctx = nullptr};
+  httpd_uri_t transfer_sd_to_flash_uri = {.uri = "/storage/transfer_sd_to_flash", .method = HTTP_POST, .handler = TransferSdToFlashHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -2999,6 +3174,8 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &flash_download_uri);
   httpd_register_uri_handler(http_server, &flash_delete_uri);
   httpd_register_uri_handler(http_server, &flash_clear_uploaded_uri);
+  httpd_register_uri_handler(http_server, &transfer_flash_to_sd_uri);
+  httpd_register_uri_handler(http_server, &transfer_sd_to_flash_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }

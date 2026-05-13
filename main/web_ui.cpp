@@ -408,6 +408,7 @@ const char INDEX_HTML[] = R"rawliteral(
             <label class="checkbox-label"><input type="checkbox" id="selectAllFlashFiles"> Выбрать все</label>
             <div class="file-buttons">
               <button class="btn" onclick="loadFlash()">Обновить</button>
+              <button class="btn" onclick="transferFlashToSd()">to_upload → SD</button>
               <button class="btn btn-stop" onclick="clearFlashUploadedFiles()">Очистить uploaded</button>
               <button class="btn btn-stop" id="deleteSelectedFlashBtn" disabled>Удалить выбранные</button>
               <button class="btn" onclick="syncConfigInternalFlash()">Sync config to ESP flash</button>
@@ -442,6 +443,7 @@ const char INDEX_HTML[] = R"rawliteral(
             <label class="checkbox-label"><input type="checkbox" id="selectAllFiles"> Выбрать все</label>
             <div class="file-buttons">
               <button class="btn" onclick="loadFiles()">Обновить список</button>
+              <button class="btn" onclick="transferSdToFlash()">to_upload → Flash</button>
               <button class="btn btn-stop" onclick="clearUploadedFiles()">Очистить uploaded</button>
               <button class="btn btn-stop" id="deleteSelectedBtn" disabled>Удалить выбранные</button>
             </div>
@@ -1215,6 +1217,47 @@ const char INDEX_HTML[] = R"rawliteral(
         setSystemStatus(error.message || 'Storage remount failed');
         refreshData();
       });
+    }
+
+    function transferUploadQueue(target) {
+      const toSd = target === 'sd';
+      const label = toSd ? 'из flash в SD' : 'из SD во flash';
+      if (!confirm(`Перенести файлы из to_upload ${label}? Логирование должно быть остановлено.`)) {
+        return Promise.resolve();
+      }
+      setSystemStatus(`Перенос to_upload ${label}...`);
+      return fetch(toSd ? '/storage/transfer_flash_to_sd' : '/storage/transfer_sd_to_flash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxFiles: 10 }),
+      }).then(async response => {
+        const text = await response.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+        if (!response.ok) {
+          throw new Error(data?.error || data?.message || text || 'Transfer failed');
+        }
+        return data;
+      }).then(data => {
+        setSystemStatus(`Перенос завершен: moved=${data.moved || 0}, skipped=${data.skipped || 0}, failed=${data.failed || 0}`);
+        alert(`Перенос: moved=${data.moved || 0}, skipped=${data.skipped || 0}, failed=${data.failed || 0}`);
+        loadFiles();
+        loadFlash();
+        refreshData();
+      }).catch(error => {
+        console.error('Error:', error);
+        setSystemStatus(error.message || 'Transfer failed');
+        alert(error.message || 'Transfer failed');
+        refreshData();
+      });
+    }
+
+    function transferFlashToSd() {
+      return transferUploadQueue('sd');
+    }
+
+    function transferSdToFlash() {
+      return transferUploadQueue('flash');
     }
     
     function enableStepper() {
