@@ -5,13 +5,14 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.domain.entities import MeasurementPoint, RadiometerCalibration, Sounding
+from app.domain.entities import MeasurementPoint, Sounding
 from app.repositories.interfaces import (
     DeviceRepository,
     RadiometerCalibrationRepository,
     SoundingRepository,
     StationRepository,
 )
+from app.services.brightness import apply_brightness_temperatures
 from app.services.measurements import MeasurementService
 
 
@@ -111,7 +112,12 @@ class AtmosphereService:
         )
         measurement_points = list(points)
         calibrations = list(await self._calibrations.list(device_id=device_id, limit=10000, offset=0))
-        self._apply_brightness_temperatures(measurement_points, calibrations)
+        apply_brightness_temperatures(
+            measurement_points,
+            calibrations,
+            temp_addresses=list(device.temp_addresses or []) if device else [],
+            temp_bindings=dict(device.temp_bindings or {}) if device else {},
+        )
 
         station_ids = [str(item) for item in config.get("station_ids", [])]
         if not station_ids:
@@ -389,24 +395,3 @@ class AtmosphereService:
                 a1, b1 = vals1[season]
                 return a0 + (a1 - a0) * k, b0 + (b1 - b0) * k
         return None
-
-    @staticmethod
-    def _apply_brightness_temperatures(
-        points: list[MeasurementPoint],
-        calibrations: list[RadiometerCalibration],
-    ) -> None:
-        if not points or not calibrations:
-            return
-        ordered = sorted(calibrations, key=lambda item: item.created_at.replace(tzinfo=None))
-        cal_idx = 0
-        for point in points:
-            ts = point.timestamp.replace(tzinfo=None)
-            while cal_idx + 1 < len(ordered) and ordered[cal_idx + 1].created_at.replace(tzinfo=None) <= ts:
-                cal_idx += 1
-            cal = ordered[cal_idx]
-            if cal.adc1_slope is not None and cal.adc1_intercept is not None:
-                point.brightness_temp1 = cal.adc1_slope * point.adc1 + cal.adc1_intercept
-            if cal.adc2_slope is not None and cal.adc2_intercept is not None:
-                point.brightness_temp2 = cal.adc2_slope * point.adc2 + cal.adc2_intercept
-            if cal.adc3_slope is not None and cal.adc3_intercept is not None:
-                point.brightness_temp3 = cal.adc3_slope * point.adc3 + cal.adc3_intercept
