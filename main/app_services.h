@@ -110,6 +110,7 @@ std::string ActiveToUploadDir();
 std::string ActiveUploadedDir();
 bool BuildActiveStorageFilenamePath(const std::string& name, std::string* out_full);
 bool BuildActiveStorageRelativePath(const std::string& rel_path, std::string* out_full);
+bool EnsureDirExists(const char* path);
 bool EnsureUploadDirs();
 bool StartUploadedClearTask(int max_files, std::string* out_status);
 bool QueueCurrentLogForUpload();

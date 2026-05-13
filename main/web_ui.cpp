@@ -405,8 +405,11 @@ const char INDEX_HTML[] = R"rawliteral(
         <div class="files-panel">
           <h3>Внутренняя flash ESP</h3>
           <div class="form-group file-actions">
+            <label class="checkbox-label"><input type="checkbox" id="selectAllFlashFiles"> Выбрать все</label>
             <div class="file-buttons">
               <button class="btn" onclick="loadFlash()">Обновить</button>
+              <button class="btn btn-stop" onclick="clearFlashUploadedFiles()">Очистить uploaded</button>
+              <button class="btn btn-stop" id="deleteSelectedFlashBtn" disabled>Удалить выбранные</button>
               <button class="btn" onclick="syncConfigInternalFlash()">Sync config to ESP flash</button>
             </div>
           </div>
@@ -416,8 +419,19 @@ const char INDEX_HTML[] = R"rawliteral(
             <div>Internal FS: <span id="flashInternalFsBytes">--</span></div>
             <div>NVS entries: <span id="flashNvsEntries">--</span></div>
           </div>
+          <div class="file-nav">
+            <div>
+              <button class="btn btn-small" onclick="flashGoUp()">⬆️ ..</button>
+              <span id="flashPathLabel"></span>
+            </div>
+            <div class="file-pages">
+              <button class="btn btn-small" onclick="flashPagePrev()">←</button>
+              <span id="flashPageInfo"></span>
+              <button class="btn btn-small" onclick="flashPageNext()">→</button>
+            </div>
+          </div>
           <div id="flashList"></div>
-          <div class="note">config.txt хранится в NVS как резервная копия. FAT-раздел /flashfs используется только если выбран Internal flash.</div>
+          <div class="note">config.txt хранится в NVS как резервная копия. FAT-раздел /flashfs используется только если выбран Internal flash. Удаление директорий не рекурсивное.</div>
         </div>
       </div>
 
@@ -500,7 +514,9 @@ const char INDEX_HTML[] = R"rawliteral(
     let pidEntries = [];
     const pidSelection = new Set();
     const selectedFiles = new Set();
+    const selectedFlashFiles = new Set();
     let cachedFiles = [];
+    let cachedFlashFiles = [];
     const monitorState = {
       enabled: false,
       durationMs: 60000,
@@ -512,6 +528,7 @@ const char INDEX_HTML[] = R"rawliteral(
       }
     };
     const filesState = { path: '', page: 0, pageSize: 10, total: 0, totalPages: 0 };
+    const flashState = { path: '', page: 0, pageSize: 10, total: 0, totalPages: 0 };
 
     function getBaseName(path) {
       if (!path) return '';
@@ -1610,11 +1627,147 @@ const char INDEX_HTML[] = R"rawliteral(
       });
     }
 
+    function refreshFlashSelectionState() {
+      const available = new Set(cachedFlashFiles.filter(item => {
+        const path = getFilePath(item);
+        const name = getBaseName(path);
+        return path && name !== 'config.txt' && (item?.type ?? 'file') === 'file';
+      }).map(getFilePath));
+      Array.from(selectedFlashFiles).forEach(path => {
+        if (!available.has(path)) {
+          selectedFlashFiles.delete(path);
+        }
+      });
+    }
+
+    function updateFlashSelectionControls() {
+      const selectAll = document.getElementById('selectAllFlashFiles');
+      const deleteBtn = document.getElementById('deleteSelectedFlashBtn');
+      const selectableCount = cachedFlashFiles.filter(item => {
+        const path = getFilePath(item);
+        const name = getBaseName(path);
+        return path && name !== 'config.txt' && (item?.type ?? 'file') === 'file';
+      }).length;
+      const selectedCount = selectedFlashFiles.size;
+      if (selectAll) {
+        selectAll.checked = selectableCount > 0 && selectedCount === selectableCount;
+        selectAll.indeterminate = selectedCount > 0 && selectedCount < selectableCount;
+      }
+      if (deleteBtn) {
+        deleteBtn.disabled = selectedCount === 0;
+      }
+    }
+
+    function toggleFlashSelection(path, checked) {
+      const base = getBaseName(path);
+      if (!path || base === 'config.txt') return;
+      if (checked) {
+        selectedFlashFiles.add(path);
+      } else {
+        selectedFlashFiles.delete(path);
+      }
+      updateFlashSelectionControls();
+    }
+
+    function toggleSelectAllFlash(checked) {
+      cachedFlashFiles.forEach(item => {
+        const path = getFilePath(item);
+        const base = getBaseName(path);
+        if (!path || base === 'config.txt' || (item?.type ?? 'file') !== 'file') return;
+        if (checked) {
+          selectedFlashFiles.add(path);
+        } else {
+          selectedFlashFiles.delete(path);
+        }
+      });
+      document.querySelectorAll('#flashList .file-checkbox:not(:disabled)').forEach(cb => { cb.checked = checked; });
+      updateFlashSelectionControls();
+    }
+
+    function sendFlashDeleteRequest(files) {
+      const unique = Array.from(new Set(files.filter(name => {
+        const base = getBaseName(name);
+        return name && base !== 'config.txt';
+      })));
+      if (unique.length === 0) {
+        alert('Нет выбранных файлов flash для удаления');
+        return Promise.resolve();
+      }
+      if (!confirm(`Удалить ${unique.length} файл(ов) из внутренней flash?`)) {
+        return Promise.resolve();
+      }
+      return fetch('/flash/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: unique }),
+      }).then(async res => {
+        const text = await res.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+        if (!res.ok) {
+          throw new Error(data?.error || data?.message || text || 'Не удалось удалить файлы flash');
+        }
+        return data;
+      }).then(result => {
+        selectedFlashFiles.clear();
+        loadFlash(flashState.path, flashState.page);
+        const deleted = Array.isArray(result.deleted) ? result.deleted : [];
+        const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+        const failed = Array.isArray(result.failed) ? result.failed : [];
+        let msg = '';
+        if (deleted.length) msg += `Удалены: ${deleted.join(', ')}. `;
+        if (skipped.length) msg += `Пропущены: ${skipped.join(', ')}. `;
+        if (failed.length) msg += `Ошибки: ${failed.join(', ')}.`;
+        if (msg.trim()) alert(msg.trim());
+      }).catch(err => {
+        alert(err.message || 'Не удалось удалить файлы flash');
+      });
+    }
+
+    function deleteSelectedFlashFiles() {
+      return sendFlashDeleteRequest(Array.from(selectedFlashFiles));
+    }
+
+    function deleteSingleFlashFile(path) {
+      return sendFlashDeleteRequest([path]);
+    }
+
+    function clearFlashUploadedFiles() {
+      if (!confirm('Удалить все файлы из /flashfs/uploaded? Файлы из /flashfs/to_upload не будут тронуты.')) {
+        return Promise.resolve();
+      }
+      return fetch('/flash/clear_uploaded', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxFiles: 1000 }),
+      }).then(async res => {
+        const text = await res.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+        if (!res.ok) {
+          throw new Error(data?.error || data?.message || text || 'Не удалось очистить flash uploaded');
+        }
+        alert(`flash uploaded: удалено ${data.deleted || 0}, ошибок ${data.failed || 0}, просмотрено ${data.scanned || 0}`);
+        setTimeout(() => loadFlash(flashState.path, flashState.page), 1500);
+        refreshData();
+      }).catch(err => {
+        alert(err.message || 'Не удалось очистить flash uploaded');
+      });
+    }
+
     function formatBytes(bytes) {
       if (!Number.isFinite(bytes)) return '--';
       if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
       if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
       return `${bytes} B`;
+    }
+
+    function updateFlashNav() {
+      const pathLabel = document.getElementById('flashPathLabel');
+      const pageInfo = document.getElementById('flashPageInfo');
+      const cleanPath = flashState.path || '/';
+      if (pathLabel) pathLabel.textContent = cleanPath;
+      if (pageInfo) pageInfo.textContent = `${flashState.page + 1}/${Math.max(flashState.totalPages || 1, 1)}`;
     }
 
     function renderFlash(data) {
@@ -1640,25 +1793,48 @@ const char INDEX_HTML[] = R"rawliteral(
           nvsEl.textContent = '--';
         }
       }
-      if (!listEl) return;
       const entries = Array.isArray(data?.entries) ? data.entries : [];
+      flashState.path = data?.path || '';
+      flashState.page = Number.isFinite(data?.page) ? data.page : 0;
+      flashState.pageSize = Number.isFinite(data?.pageSize) ? data.pageSize : 10;
+      flashState.total = Number.isFinite(data?.total) ? data.total : entries.length;
+      flashState.totalPages = Number.isFinite(data?.totalPages) ? data.totalPages : 1;
+      cachedFlashFiles = entries;
+      refreshFlashSelectionState();
+      updateFlashNav();
+      if (!listEl) return;
       if (!entries.length) {
         listEl.innerHTML = '<div>Нет данных по flash</div>';
+        updateFlashSelectionControls();
         return;
       }
       listEl.innerHTML = '';
       entries.forEach(item => {
+        const path = getFilePath(item);
+        const base = getBaseName(path);
+        const isDir = item.type === 'dir';
+        const isPartition = item.type === 'partition';
+        const isDeletable = item.type === 'file' && base !== 'config.txt';
         const row = document.createElement('div');
         row.className = 'file-row';
 
         const info = document.createElement('div');
         info.className = 'file-info';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'file-checkbox';
+        checkbox.disabled = !isDeletable;
+        checkbox.checked = selectedFlashFiles.has(path);
+        checkbox.onchange = () => toggleFlashSelection(path, checkbox.checked);
+        info.appendChild(checkbox);
+
         const name = document.createElement('span');
         name.className = 'file-name';
-        if (item.type === 'partition') {
+        if (isPartition) {
           const offset = Number.isFinite(item.offset) ? ` @0x${Number(item.offset).toString(16)}` : '';
           name.textContent = `🧩 ${item.name} [${item.partType || '?'}:${item.subtype || '?'}]${offset} (${formatBytes(item.size)})`;
-        } else if (item.type === 'dir') {
+        } else if (isDir) {
           name.textContent = `📁 ${item.name} — ${item.area || 'internal FAT'}`;
         } else {
           name.textContent = `📄 ${item.name} (${formatBytes(item.size)}) — ${item.area || 'NVS'}`;
@@ -1666,29 +1842,74 @@ const char INDEX_HTML[] = R"rawliteral(
         info.appendChild(name);
 
         const actions = document.createElement('div');
-        if (item.downloadable) {
+        if (isDir) {
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn btn-small';
+          openBtn.textContent = 'Открыть';
+          openBtn.onclick = () => loadFlash(path, 0);
+          actions.appendChild(openBtn);
+        } else if (item.downloadable) {
           const dlBtn = document.createElement('button');
           dlBtn.className = 'btn btn-small';
           dlBtn.textContent = 'Скачать';
-          dlBtn.onclick = () => { window.open('/flash/download?path=' + encodeURIComponent(item.path || item.name), '_blank'); };
+          dlBtn.onclick = () => { window.open('/flash/download?path=' + encodeURIComponent(path), '_blank'); };
           actions.appendChild(dlBtn);
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn btn-small btn-stop';
+          delBtn.textContent = 'Удалить';
+          delBtn.disabled = !isDeletable;
+          delBtn.onclick = () => deleteSingleFlashFile(path);
+          actions.appendChild(delBtn);
         }
 
         row.appendChild(info);
         row.appendChild(actions);
         listEl.appendChild(row);
       });
+      updateFlashSelectionControls();
     }
 
-    function loadFlash() {
+    function loadFlash(path = flashState.path, page = flashState.page) {
       const listEl = document.getElementById('flashList');
       if (listEl) listEl.innerHTML = 'Загружаю...';
-      fetch('/flash/list')
+      if (typeof path === 'string') flashState.path = path;
+      if (Number.isFinite(page)) flashState.page = Math.max(0, page);
+      const params = new URLSearchParams();
+      if (flashState.path) params.append('path', flashState.path);
+      params.append('page', flashState.page);
+      params.append('pageSize', flashState.pageSize);
+      fetch('/flash/list?' + params.toString())
         .then(res => res.json())
         .then(data => renderFlash(data))
         .catch(() => {
+          cachedFlashFiles = [];
+          selectedFlashFiles.clear();
           if (listEl) listEl.innerHTML = 'Ошибка загрузки flash';
+          updateFlashSelectionControls();
         });
+    }
+
+    function flashGoUp() {
+      const path = flashState.path || '';
+      const idx = path.lastIndexOf('/');
+      flashState.path = idx > 0 ? path.slice(0, idx) : '';
+      flashState.page = 0;
+      selectedFlashFiles.clear();
+      loadFlash();
+    }
+
+    function flashPagePrev() {
+      if (flashState.page > 0) {
+        flashState.page -= 1;
+        loadFlash();
+      }
+    }
+
+    function flashPageNext() {
+      if (flashState.page + 1 < flashState.totalPages) {
+        flashState.page += 1;
+        loadFlash();
+      }
     }
 
     function updateFileNav() {
@@ -1842,6 +2063,14 @@ const char INDEX_HTML[] = R"rawliteral(
     const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
     if (deleteSelectedBtn) {
       deleteSelectedBtn.addEventListener('click', deleteSelectedFiles);
+    }
+    const selectAllFlashEl = document.getElementById('selectAllFlashFiles');
+    if (selectAllFlashEl) {
+      selectAllFlashEl.addEventListener('change', (e) => toggleSelectAllFlash(e.target.checked));
+    }
+    const deleteSelectedFlashBtn = document.getElementById('deleteSelectedFlashBtn');
+    if (deleteSelectedFlashBtn) {
+      deleteSelectedFlashBtn.addEventListener('click', deleteSelectedFlashFiles);
     }
     const startMonitorBtn = document.getElementById('monitorStartBtn');
     const stopMonitorBtn = document.getElementById('monitorStopBtn');

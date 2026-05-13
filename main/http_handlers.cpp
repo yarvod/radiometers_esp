@@ -2024,8 +2024,55 @@ static const char* PartitionSubtypeName(esp_partition_type_t type, esp_partition
   return "unknown";
 }
 
+static bool ValidateInternalFlashRelPath(const std::string& raw, std::string* rel_out, std::string* full_out) {
+  std::string rel = raw;
+  if (!rel.empty() && rel[0] == '/') rel.erase(rel.begin());
+  if (rel.size() > 256) return false;
+  if (rel.find("..") != std::string::npos || rel.find("//") != std::string::npos) return false;
+  for (char c : rel) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '/' || c == ' ' ||
+          c == '(' || c == ')')) {
+      return false;
+    }
+  }
+  if (rel_out) *rel_out = rel;
+  if (full_out) {
+    *full_out = std::string(INTERNAL_FLASH_MOUNT_POINT);
+    if (!rel.empty()) {
+      *full_out += "/";
+      *full_out += rel;
+    }
+  }
+  return true;
+}
+
 esp_err_t FlashListHandler(httpd_req_t* req) {
   cJSON* root = cJSON_CreateObject();
+  std::string rel_path;
+  int page = 0;
+  int page_size = 10;
+  int qs_len = httpd_req_get_url_query_len(req) + 1;
+  if (qs_len > 1) {
+    std::string qs(qs_len, '\0');
+    if (httpd_req_get_url_query_str(req, qs.data(), qs_len) == ESP_OK) {
+      char buf[256] = {};
+      if (httpd_query_key_value(qs.c_str(), "path", buf, sizeof(buf)) == ESP_OK) {
+        std::string decoded;
+        if (!UrlDecode(buf, &decoded) || !ValidateInternalFlashRelPath(decoded, &rel_path, nullptr)) {
+          httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
+          cJSON_Delete(root);
+          return ESP_FAIL;
+        }
+      }
+      if (httpd_query_key_value(qs.c_str(), "page", buf, sizeof(buf)) == ESP_OK) {
+        page = std::max(0, atoi(buf));
+      }
+      if (httpd_query_key_value(qs.c_str(), "pageSize", buf, sizeof(buf)) == ESP_OK) {
+        int p = atoi(buf);
+        if (p > 0 && p <= 100) page_size = p;
+      }
+    }
+  }
 
   uint32_t flash_size = 0;
   if (esp_flash_get_size(nullptr, &flash_size) == ESP_OK) {
@@ -2044,17 +2091,22 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
   }
   cJSON_AddStringToObject(root, "storageBackend", StorageBackendToString(app_config.storage_backend).c_str());
 
-  cJSON* entries = cJSON_CreateArray();
+  struct FlashEntry {
+    std::string name;
+    std::string type;
+    std::string path;
+    std::string area;
+    std::string part_type;
+    std::string subtype;
+    uint64_t size = 0;
+    uint32_t offset = 0;
+    bool downloadable = false;
+  };
+  std::vector<FlashEntry> all_entries;
   std::string internal_config;
-  if (ReadConfigTextFromInternalFlash(&internal_config)) {
-    cJSON* obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "name", "config.txt");
-    cJSON_AddStringToObject(obj, "type", "file");
-    cJSON_AddStringToObject(obj, "path", "config.txt");
-    cJSON_AddStringToObject(obj, "area", "NVS cfg/config_txt");
-    cJSON_AddNumberToObject(obj, "size", static_cast<double>(internal_config.size()));
-    cJSON_AddBoolToObject(obj, "downloadable", true);
-    cJSON_AddItemToArray(entries, obj);
+  if (rel_path.empty() && ReadConfigTextFromInternalFlash(&internal_config)) {
+    all_entries.push_back({"config.txt", "file", "config.txt", "NVS cfg/config_txt", "", "",
+                           static_cast<uint64_t>(internal_config.size()), 0, true});
   }
 
   bool internal_fs_mounted = false;
@@ -2071,13 +2123,17 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
         cJSON_AddNumberToObject(root, "internalFsUsedBytes", static_cast<double>(total > avail ? total - avail : 0));
       }
 
-      DIR* dir = opendir(INTERNAL_FLASH_MOUNT_POINT);
+      std::string full_dir;
+      if (!ValidateInternalFlashRelPath(rel_path, nullptr, &full_dir)) {
+        full_dir = INTERNAL_FLASH_MOUNT_POINT;
+      }
+      DIR* dir = opendir(full_dir.c_str());
       if (dir) {
         struct dirent* ent = nullptr;
         while ((ent = readdir(dir)) != nullptr) {
           if (ent->d_name[0] == '.') continue;
           if (ent->d_type != DT_REG && ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN) continue;
-          std::string full = std::string(INTERNAL_FLASH_MOUNT_POINT) + "/" + ent->d_name;
+          std::string full = full_dir + "/" + ent->d_name;
           struct stat st {};
           uint64_t size = 0;
           bool is_dir = ent->d_type == DT_DIR;
@@ -2085,14 +2141,9 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
             size = static_cast<uint64_t>(st.st_size);
             is_dir = S_ISDIR(st.st_mode);
           }
-          cJSON* obj = cJSON_CreateObject();
-          cJSON_AddStringToObject(obj, "name", ent->d_name);
-          cJSON_AddStringToObject(obj, "type", is_dir ? "dir" : "file");
-          cJSON_AddStringToObject(obj, "path", ent->d_name);
-          cJSON_AddStringToObject(obj, "area", "internal FAT /flashfs");
-          cJSON_AddNumberToObject(obj, "size", static_cast<double>(size));
-          cJSON_AddBoolToObject(obj, "downloadable", !is_dir);
-          cJSON_AddItemToArray(entries, obj);
+          std::string child_path = rel_path.empty() ? ent->d_name : (rel_path + "/" + ent->d_name);
+          all_entries.push_back({ent->d_name, is_dir ? "dir" : "file", child_path, "internal FAT /flashfs", "", "",
+                                 size, 0, !is_dir});
         }
         closedir(dir);
       }
@@ -2101,28 +2152,52 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "internalFsMounted", internal_fs_mounted);
 
   uint64_t partition_bytes = 0;
-  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
-  while (it != nullptr) {
-    const esp_partition_t* part = esp_partition_get(it);
-    if (part) {
-      partition_bytes += part->size;
-      cJSON* obj = cJSON_CreateObject();
-      cJSON_AddStringToObject(obj, "name", part->label);
-      cJSON_AddStringToObject(obj, "type", "partition");
-      cJSON_AddStringToObject(obj, "path", part->label);
-      cJSON_AddStringToObject(obj, "partType", PartitionTypeName(part->type));
-      cJSON_AddStringToObject(obj, "subtype", PartitionSubtypeName(part->type, part->subtype));
-      cJSON_AddNumberToObject(obj, "offset", part->address);
-      cJSON_AddNumberToObject(obj, "size", static_cast<double>(part->size));
-      cJSON_AddBoolToObject(obj, "downloadable", false);
-      cJSON_AddItemToArray(entries, obj);
+  {
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+    while (it != nullptr) {
+      const esp_partition_t* part = esp_partition_get(it);
+      if (part) {
+        partition_bytes += part->size;
+        if (rel_path.empty()) {
+          all_entries.push_back({part->label, "partition", part->label, "", PartitionTypeName(part->type),
+                                 PartitionSubtypeName(part->type, part->subtype), part->size, part->address, false});
+        }
+      }
+      it = esp_partition_next(it);
     }
-    it = esp_partition_next(it);
   }
-  if (it) {
-    esp_partition_iterator_release(it);
+  std::sort(all_entries.begin(), all_entries.end(), [](const FlashEntry& a, const FlashEntry& b) {
+    if (a.type != b.type) return a.type < b.type;
+    return a.name < b.name;
+  });
+  const int total = static_cast<int>(all_entries.size());
+  const int total_pages = (total + page_size - 1) / page_size;
+  int start = page * page_size;
+  if (start >= total) {
+    page = 0;
+    start = 0;
   }
+  cJSON_AddStringToObject(root, "path", rel_path.c_str());
+  cJSON_AddNumberToObject(root, "page", page);
+  cJSON_AddNumberToObject(root, "pageSize", page_size);
+  cJSON_AddNumberToObject(root, "total", total);
+  cJSON_AddNumberToObject(root, "totalPages", total_pages);
   cJSON_AddNumberToObject(root, "partitionBytes", static_cast<double>(partition_bytes));
+  cJSON* entries = cJSON_CreateArray();
+  for (int i = start; i < total && i < start + page_size; ++i) {
+    const FlashEntry& e = all_entries[i];
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "name", e.name.c_str());
+    cJSON_AddStringToObject(obj, "type", e.type.c_str());
+    cJSON_AddStringToObject(obj, "path", e.path.c_str());
+    if (!e.area.empty()) cJSON_AddStringToObject(obj, "area", e.area.c_str());
+    if (!e.part_type.empty()) cJSON_AddStringToObject(obj, "partType", e.part_type.c_str());
+    if (!e.subtype.empty()) cJSON_AddStringToObject(obj, "subtype", e.subtype.c_str());
+    if (e.offset > 0) cJSON_AddNumberToObject(obj, "offset", e.offset);
+    cJSON_AddNumberToObject(obj, "size", static_cast<double>(e.size));
+    cJSON_AddBoolToObject(obj, "downloadable", e.downloadable);
+    cJSON_AddItemToArray(entries, obj);
+  }
   cJSON_AddItemToObject(root, "entries", entries);
 
   const char* json = cJSON_PrintUnformatted(root);
@@ -2206,6 +2281,178 @@ esp_err_t FlashDownloadHandler(httpd_req_t* req) {
   }
   fclose(f);
   httpd_resp_send_chunk(req, nullptr, 0);
+  return ESP_OK;
+}
+
+static esp_err_t SendFlashDeleteResult(httpd_req_t* req,
+                                       const std::vector<std::string>& deleted,
+                                       const std::vector<std::string>& skipped,
+                                       const std::vector<std::string>& failed) {
+  cJSON* resp = cJSON_CreateObject();
+  auto add_array = [&](const char* key, const std::vector<std::string>& values) {
+    cJSON* arr = cJSON_CreateArray();
+    for (const auto& v : values) {
+      cJSON_AddItemToArray(arr, cJSON_CreateString(v.c_str()));
+    }
+    cJSON_AddItemToObject(resp, key, arr);
+  };
+  add_array("deleted", deleted);
+  add_array("skipped", skipped);
+  add_array("failed", failed);
+  const char* json = cJSON_PrintUnformatted(resp);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json ? json : "{}");
+  cJSON_free((void*)json);
+  cJSON_Delete(resp);
+  return ESP_OK;
+}
+
+esp_err_t FlashDeleteHandler(httpd_req_t* req) {
+  std::vector<std::string> requested_files;
+  const bool saw_body = req->content_len > 0;
+  bool has_body_files = false;
+  if (saw_body) {
+    const size_t buf_len = std::min<size_t>(req->content_len, 2048);
+    std::string body(buf_len, '\0');
+    int received = httpd_req_recv(req, body.data(), buf_len);
+    if (received <= 0) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+      return ESP_FAIL;
+    }
+    body.resize(received);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root) {
+      auto collect = [&](cJSON* arr) {
+        if (!arr || !cJSON_IsArray(arr)) return;
+        has_body_files = true;
+        cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, arr) {
+          if (cJSON_IsString(item) && item->valuestring) {
+            requested_files.emplace_back(item->valuestring);
+          }
+        }
+      };
+      if (cJSON_IsArray(root)) {
+        collect(root);
+      } else {
+        collect(cJSON_GetObjectItem(root, "files"));
+      }
+      cJSON_Delete(root);
+    }
+  }
+  if (saw_body && !has_body_files) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON body");
+    return ESP_FAIL;
+  }
+  if (requested_files.empty()) {
+    return SendFlashDeleteResult(req, {}, {}, {});
+  }
+
+  std::vector<std::string> deleted;
+  std::vector<std::string> skipped;
+  std::vector<std::string> failed;
+  std::set<std::string> seen;
+  SdLockGuard guard(pdMS_TO_TICKS(2000));
+  if (!guard.locked() || !MountInternalFlashFs()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal flash busy");
+    return ESP_FAIL;
+  }
+
+  for (const auto& raw : requested_files) {
+    if (!seen.insert(raw).second) continue;
+    std::string rel;
+    std::string full;
+    if (!ValidateInternalFlashRelPath(raw, &rel, &full) || rel.empty()) {
+      failed.push_back(raw + " (invalid)");
+      continue;
+    }
+    const std::string base = rel.substr(rel.find_last_of('/') == std::string::npos ? 0 : rel.find_last_of('/') + 1);
+    if (base == "config.txt") {
+      skipped.push_back(raw + " (protected)");
+      continue;
+    }
+    if (full == current_log_path) {
+      skipped.push_back(raw + " (active log)");
+      continue;
+    }
+    struct stat st {};
+    if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+      skipped.push_back(raw + " (not a file)");
+      continue;
+    }
+    if (remove(full.c_str()) == 0) {
+      deleted.push_back(raw);
+    } else {
+      failed.push_back(raw + " (delete failed)");
+    }
+  }
+  return SendFlashDeleteResult(req, deleted, skipped, failed);
+}
+
+esp_err_t FlashClearUploadedHandler(httpd_req_t* req) {
+  int max_files = 1000;
+  const size_t buf_len = std::min<size_t>(req->content_len, 64);
+  if (buf_len > 0) {
+    std::string body(buf_len, '\0');
+    int received = httpd_req_recv(req, body.data(), buf_len);
+    if (received <= 0) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+      return ESP_FAIL;
+    }
+    body.resize(received);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+      return ESP_FAIL;
+    }
+    cJSON* max_item = cJSON_GetObjectItem(root, "maxFiles");
+    if (max_item && cJSON_IsNumber(max_item)) {
+      max_files = max_item->valueint;
+    }
+    cJSON_Delete(root);
+  }
+  max_files = std::clamp(max_files > 0 ? max_files : 1000, 1, 1000);
+
+  int scanned = 0;
+  int deleted_count = 0;
+  int failed_count = 0;
+  SdLockGuard guard(pdMS_TO_TICKS(2000));
+  if (!guard.locked() || !MountInternalFlashFs()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal flash busy");
+    return ESP_FAIL;
+  }
+  const std::string uploaded_dir = std::string(INTERNAL_FLASH_MOUNT_POINT) + "/uploaded";
+  (void)EnsureDirExists(uploaded_dir.c_str());
+  DIR* dir = opendir(uploaded_dir.c_str());
+  if (dir) {
+    struct dirent* ent = nullptr;
+    while ((ent = readdir(dir)) != nullptr && scanned < max_files) {
+      if (ent->d_name[0] == '.') continue;
+      if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+      const std::string full = uploaded_dir + "/" + ent->d_name;
+      struct stat st {};
+      if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+      scanned++;
+      if (remove(full.c_str()) == 0) {
+        deleted_count++;
+      } else {
+        failed_count++;
+      }
+    }
+    closedir(dir);
+  }
+
+  cJSON* resp = cJSON_CreateObject();
+  cJSON_AddStringToObject(resp, "status", "flash_uploaded_cleared");
+  cJSON_AddNumberToObject(resp, "scanned", scanned);
+  cJSON_AddNumberToObject(resp, "deleted", deleted_count);
+  cJSON_AddNumberToObject(resp, "failed", failed_count);
+  cJSON_AddNumberToObject(resp, "maxFiles", max_files);
+  const char* json = cJSON_PrintUnformatted(resp);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json ? json : "{}");
+  cJSON_free((void*)json);
+  cJSON_Delete(resp);
   return ESP_OK;
 }
 
@@ -2667,7 +2914,7 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 43;
+  config.max_uri_handlers = 45;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -2711,6 +2958,8 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t uploaded_clear_uri = {.uri = "/fs/clear_uploaded", .method = HTTP_POST, .handler = UploadedClearHandler, .user_ctx = nullptr};
   httpd_uri_t flash_list_uri = {.uri = "/flash/list", .method = HTTP_GET, .handler = FlashListHandler, .user_ctx = nullptr};
   httpd_uri_t flash_download_uri = {.uri = "/flash/download", .method = HTTP_GET, .handler = FlashDownloadHandler, .user_ctx = nullptr};
+  httpd_uri_t flash_delete_uri = {.uri = "/flash/delete", .method = HTTP_POST, .handler = FlashDeleteHandler, .user_ctx = nullptr};
+  httpd_uri_t flash_clear_uploaded_uri = {.uri = "/flash/clear_uploaded", .method = HTTP_POST, .handler = FlashClearUploadedHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -2748,6 +2997,8 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &uploaded_clear_uri);
   httpd_register_uri_handler(http_server, &flash_list_uri);
   httpd_register_uri_handler(http_server, &flash_download_uri);
+  httpd_register_uri_handler(http_server, &flash_delete_uri);
+  httpd_register_uri_handler(http_server, &flash_clear_uploaded_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }
