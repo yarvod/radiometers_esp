@@ -60,6 +60,7 @@
 #include "sd_maintenance.h"
 #include "gps_unicore.h"
 #include "nvs.h"
+#include "esp_partition.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
 #include "tinyusb.h"
@@ -1311,7 +1312,9 @@ bool EnsureDirExists(const char* path) {
 }
 
 bool EnsureUploadDirs() {
-  return EnsureDirExists(TO_UPLOAD_DIR) && EnsureDirExists(UPLOADED_DIR);
+  const std::string to_upload = ActiveToUploadDir();
+  const std::string uploaded = ActiveUploadedDir();
+  return EnsureDirExists(to_upload.c_str()) && EnsureDirExists(uploaded.c_str());
 }
 
 static std::string Basename(const std::string& path) {
@@ -1362,7 +1365,9 @@ static int CountFilesInDir(const char* dir_path, bool only_data_logs) {
 
 static int MoveRootDataFilesToUploadLocked(const std::string& active_path) {
   if (!EnsureUploadDirs()) return 0;
-  DIR* dir = opendir(CONFIG_MOUNT_POINT);
+  const char* mount_point = ActiveStorageMountPoint();
+  const std::string to_upload = ActiveToUploadDir();
+  DIR* dir = opendir(mount_point);
   if (!dir) return 0;
   const std::string active_name = Basename(active_path);
   int moved = 0;
@@ -1372,8 +1377,8 @@ static int MoveRootDataFilesToUploadLocked(const std::string& active_path) {
     if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
     if (!IsDataLogFilename(ent->d_name)) continue;
     if (!active_name.empty() && active_name == ent->d_name) continue;
-    const std::string src = std::string(CONFIG_MOUNT_POINT) + "/" + ent->d_name;
-    if (MoveFileToDir(src, TO_UPLOAD_DIR, nullptr)) {
+    const std::string src = std::string(mount_point) + "/" + ent->d_name;
+    if (MoveFileToDir(src, to_upload.c_str(), nullptr)) {
       moved++;
     }
   }
@@ -1404,14 +1409,17 @@ static void UpdateSdStatsLocked() {
 }
 
 static int DeleteUploadedFilesBatchLocked(int max_files, ClearUploadedFilesResult* result) {
-  if (!MountLogSd() || !EnsureUploadDirs()) {
+  if (!MountActiveStorage() || !EnsureUploadDirs()) {
     result->mount_failed = true;
     return -1;
   }
 
-  DIR* dir = opendir(UPLOADED_DIR);
+  const std::string uploaded = ActiveUploadedDir();
+  DIR* dir = opendir(uploaded.c_str());
   if (!dir) {
-    UpdateSdStatsLocked();
+    if (app_config.storage_backend == StorageBackend::kSd) {
+      UpdateSdStatsLocked();
+    }
     return 0;
   }
 
@@ -1420,7 +1428,7 @@ static int DeleteUploadedFilesBatchLocked(int max_files, ClearUploadedFilesResul
   while ((ent = readdir(dir)) != nullptr && scanned_in_batch < max_files) {
     if (ent->d_name[0] == '.') continue;
     if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
-    const std::string full = std::string(UPLOADED_DIR) + "/" + ent->d_name;
+    const std::string full = uploaded + "/" + ent->d_name;
     struct stat st {};
     if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
       continue;
@@ -1435,7 +1443,9 @@ static int DeleteUploadedFilesBatchLocked(int max_files, ClearUploadedFilesResul
     }
   }
   closedir(dir);
-  UpdateSdStatsLocked();
+  if (app_config.storage_backend == StorageBackend::kSd) {
+    UpdateSdStatsLocked();
+  }
   return scanned_in_batch;
 }
 
@@ -1509,10 +1519,10 @@ bool StartUploadedClearTask(int max_files, std::string* out_status) {
 bool QueueCurrentLogForUpload() {
   SdLockGuard guard;
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "SD mutex unavailable, cannot queue log");
+    ESP_LOGW(TAG, "Storage mutex unavailable, cannot queue log");
     return false;
   }
-  if (!MountLogSd()) {
+  if (!MountActiveStorage()) {
     return false;
   }
   if (log_file) {
@@ -1524,12 +1534,15 @@ bool QueueCurrentLogForUpload() {
     return false;
   }
   std::string new_path;
-  if (!MoveFileToDir(current_log_path, TO_UPLOAD_DIR, &new_path)) {
+  const std::string to_upload = ActiveToUploadDir();
+  if (!MoveFileToDir(current_log_path, to_upload.c_str(), &new_path)) {
     return false;
   }
   current_log_path.clear();
   (void)MoveRootDataFilesToUploadLocked("");
-  UpdateSdStatsLocked();
+  if (app_config.storage_backend == StorageBackend::kSd) {
+    UpdateSdStatsLocked();
+  }
   ESP_LOGI(TAG, "Queued log for upload: %s", new_path.c_str());
   return true;
 }
@@ -1562,7 +1575,9 @@ static std::string BuildGnssLogFilename(const GpsDateTime* frame_time) {
 
 static int MoveRootGpsFilesToUploadLocked(const std::string& active_path) {
   if (!EnsureUploadDirs()) return 0;
-  DIR* dir = opendir(CONFIG_MOUNT_POINT);
+  const char* mount_point = ActiveStorageMountPoint();
+  const std::string to_upload = ActiveToUploadDir();
+  DIR* dir = opendir(mount_point);
   if (!dir) return 0;
   const std::string active_name = Basename(active_path);
   int moved = 0;
@@ -1572,8 +1587,8 @@ static int MoveRootGpsFilesToUploadLocked(const std::string& active_path) {
     if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
     if (!IsGpsLogFilename(ent->d_name)) continue;
     if (!active_name.empty() && active_name == ent->d_name) continue;
-    const std::string src = std::string(CONFIG_MOUNT_POINT) + "/" + ent->d_name;
-    if (MoveFileToDir(src, TO_UPLOAD_DIR, nullptr)) {
+    const std::string src = std::string(mount_point) + "/" + ent->d_name;
+    if (MoveFileToDir(src, to_upload.c_str(), nullptr)) {
       moved++;
     }
   }
@@ -1607,7 +1622,8 @@ static bool QueueCurrentGnssLogForUploadLocked() {
   }
 
   const std::string queued_name = Basename(current_gnss_log_path);
-  if (!MoveFileToDir(current_gnss_log_path, TO_UPLOAD_DIR, nullptr)) {
+  const std::string to_upload = ActiveToUploadDir();
+  if (!MoveFileToDir(current_gnss_log_path, to_upload.c_str(), nullptr)) {
     return false;
   }
   current_gnss_log_path.clear();
@@ -1620,7 +1636,7 @@ static bool EnsureRtcmLogFileLocked(const GpsDateTime* frame_time) {
   if (current_gnss_log_path.empty() || gps_log_file_start_us == 0) {
     (void)MoveRootGpsFilesToUploadLocked("");
     const std::string filename = BuildGnssLogFilename(frame_time);
-    current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
+    current_gnss_log_path = std::string(ActiveStorageMountPoint()) + "/" + filename;
     gps_log_file_start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
   }
@@ -1648,7 +1664,7 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
       return false;
     }
     const std::string filename = BuildGnssLogFilename(frame.timestamp.valid ? &frame.timestamp : nullptr);
-    current_gnss_log_path = std::string(CONFIG_MOUNT_POINT) + "/" + filename;
+    current_gnss_log_path = std::string(ActiveStorageMountPoint()) + "/" + filename;
     gps_log_file_start_us = now_us;
     ESP_LOGI(TAG, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
   }
@@ -1668,7 +1684,9 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
     ok = false;
   }
   if (ok) {
-    UpdateSdStatsLocked();
+    if (app_config.storage_backend == StorageBackend::kSd) {
+      UpdateSdStatsLocked();
+    }
     ESP_LOGD(TAG, "GNSS frame %u appended to RTCM3 log %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
   } else {
     ESP_LOGE(TAG, "Failed to append GNSS frame %u to RTCM3 log", static_cast<unsigned>(frame.frame_index));
@@ -1698,13 +1716,13 @@ static void GpsLogTask(void*) {
   gps_client.configurePeriodicOutput(app_config.gps_rtcm_types, app_config.gps_mode);
   {
     SdLockGuard guard(pdMS_TO_TICKS(1000));
-    if (guard.locked() && MountLogSd()) {
+    if (guard.locked() && MountActiveStorage()) {
       (void)MoveRootGpsFilesToUploadLocked("");
-      if (!log_file) {
+      if (app_config.storage_backend == StorageBackend::kSd && !log_file) {
         UnmountLogSd();
       }
     } else {
-      ESP_LOGW(TAG, "SD unavailable, RTCM3 log file will be created on first write");
+      ESP_LOGW(TAG, "Storage unavailable, RTCM3 log file will be created on first write");
     }
   }
   while (true) {
@@ -1738,7 +1756,7 @@ static void GpsLogTask(void*) {
     gps_client.stopFrameOutput();
     WarnMissingGnssFrameData(frame);
     if (!HasAnyGnssFrameData(frame)) {
-      ESP_LOGW(TAG, "GNSS frame %u is empty, skip SD write", static_cast<unsigned>(frame.frame_index));
+      ESP_LOGW(TAG, "GNSS frame %u is empty, skip storage write", static_cast<unsigned>(frame.frame_index));
       frame_index++;
       const int64_t elapsed_us = esp_timer_get_time() - cycle_start_us;
       const int64_t interval_us = 30'000'000;
@@ -1753,16 +1771,16 @@ static void GpsLogTask(void*) {
     {
       SdLockGuard guard(pdMS_TO_TICKS(1000));
       if (!guard.locked()) {
-        ESP_LOGW(TAG, "SD mutex unavailable, skip GNSS frame write");
+        ESP_LOGW(TAG, "Storage mutex unavailable, skip GNSS frame write");
         frame_index++;
         vTaskDelay(kInterval);
         continue;
       }
 
       const bool already_mounted = log_sd_mounted;
-      if (MountLogSd()) {
+      if (MountActiveStorage()) {
         (void)WriteGnssFrameLocked(frame);
-        if (!already_mounted && !log_file) {
+        if (app_config.storage_backend == StorageBackend::kSd && !already_mounted && !log_file) {
           UnmountLogSd();
         }
       }
@@ -2177,16 +2195,17 @@ static bool UploadPendingOnce() {
   {
     SdLockGuard guard(pdMS_TO_TICKS(50));
     if (!guard.locked()) {
-      ESP_LOGW(TAG, "SD mutex busy, skip upload cycle");
+      ESP_LOGW(TAG, "Storage mutex busy, skip upload cycle");
       return false;
     }
-    if (!MountLogSd()) {
+    if (!MountActiveStorage()) {
       return false;
     }
     if (!EnsureUploadDirs()) {
       return false;
     }
-    DIR* dir = opendir(TO_UPLOAD_DIR);
+    const std::string to_upload = ActiveToUploadDir();
+    DIR* dir = opendir(to_upload.c_str());
     if (!dir) {
       ESP_LOGI(TAG, "No upload dir, nothing to sync");
       return false;
@@ -2195,7 +2214,7 @@ static bool UploadPendingOnce() {
     while ((ent = readdir(dir)) != nullptr) {
       if (ent->d_name[0] == '.') continue;
       if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
-      std::string full = std::string(TO_UPLOAD_DIR) + "/" + ent->d_name;
+      std::string full = to_upload + "/" + ent->d_name;
       files.push_back(full);
     }
     closedir(dir);
@@ -2210,11 +2229,12 @@ static bool UploadPendingOnce() {
     attempts++;
     if (UploadFileToMinio(f)) {
       SdLockGuard guard(pdMS_TO_TICKS(200));
-      if (!guard.locked() || !MountLogSd()) {
-        ESP_LOGW(TAG, "SD busy, cannot move uploaded file %s", f.c_str());
+      if (!guard.locked() || !MountActiveStorage()) {
+        ESP_LOGW(TAG, "Storage busy, cannot move uploaded file %s", f.c_str());
         continue;
       }
-      if (MoveFileToDir(f, UPLOADED_DIR, nullptr)) {
+      const std::string uploaded_dir = ActiveUploadedDir();
+      if (MoveFileToDir(f, uploaded_dir.c_str(), nullptr)) {
         uploaded++;
       }
     }
@@ -2226,7 +2246,7 @@ static bool UploadPendingOnce() {
   CleanupUploadedDirIfNeeded(kMaxSdUsagePercent);
   {
     SdLockGuard guard(pdMS_TO_TICKS(50));
-    if (guard.locked() && MountLogSd()) {
+    if (guard.locked() && app_config.storage_backend == StorageBackend::kSd && MountLogSd()) {
       UpdateSdStatsLocked();
     }
   }
@@ -2239,19 +2259,30 @@ static bool UploadPendingOnce() {
 static void CleanupUploadedDirIfNeeded(int max_percent) {
   SdLockGuard guard(pdMS_TO_TICKS(200));
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "SD mutex unavailable, skip cleanup");
+    ESP_LOGW(TAG, "Storage mutex unavailable, skip cleanup");
     return;
   }
-  if (!MountLogSd()) {
+  if (!MountActiveStorage()) {
     return;
   }
-  int deleted = PurgeUploadedFiles(CONFIG_MOUNT_POINT, UPLOADED_DIR, max_percent);
+  const std::string uploaded = ActiveUploadedDir();
+  int deleted = PurgeUploadedFiles(ActiveStorageMountPoint(), uploaded.c_str(), max_percent);
   if (deleted > 0) {
     ESP_LOGI(TAG, "Deleted %d uploaded file(s) to free space", deleted);
   }
 }
 
 static void UpdateSdStats() {
+  if (app_config.storage_backend == StorageBackend::kInternalFlash) {
+    UpdateState([](SharedState& s) {
+      s.sd_total_bytes = 0;
+      s.sd_used_bytes = 0;
+      s.sd_data_root_files = 0;
+      s.sd_to_upload_files = 0;
+      s.sd_uploaded_files = 0;
+    });
+    return;
+  }
   if (usb_mode == UsbMode::kMsc) {
     UpdateState([](SharedState& s) {
       s.sd_total_bytes = 0;
@@ -2313,10 +2344,10 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
   WaitForTempSensors(3000);
   SdLockGuard guard;
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "SD mutex unavailable, cannot open log file");
+    ESP_LOGW(TAG, "Storage mutex unavailable, cannot open log file");
     return false;
   }
-  if (!MountLogSd()) {
+  if (!MountActiveStorage()) {
     return false;
   }
   if (log_file) {
@@ -2326,7 +2357,7 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
 
   const std::string filename = BuildLogFilename(postfix);
   std::string full_path;
-  if (!SanitizeFilename(filename, &full_path)) {
+  if (!BuildActiveStorageFilenamePath(filename, &full_path)) {
     ESP_LOGW(TAG, "Bad filename for logging: %s", filename.c_str());
     return false;
   }
@@ -2362,7 +2393,9 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
     s.log_filename = filename;
   });
   current_log_path = full_path;
-  UpdateSdStatsLocked();
+  if (app_config.storage_backend == StorageBackend::kSd) {
+    UpdateSdStatsLocked();
+  }
   return true;
 }
 
@@ -2437,6 +2470,8 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
   bool log_use_motor_val = false;
   bool log_duration_set = false;
   float log_duration_val = log_config.duration_s;
+  bool storage_backend_set = false;
+  StorageBackend storage_backend_val = config->storage_backend;
   bool stepper_speed_set = false;
   int stepper_speed_val = config->stepper_speed_us;
   bool stepper_home_offset_set = false;
@@ -2565,6 +2600,12 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
     } else if (key == "logging_duration_s") {
       log_duration_val = std::strtof(value.c_str(), nullptr);
       log_duration_set = (log_duration_val > 0.0f);
+    } else if (key == "storage_backend") {
+      if (ParseStorageBackend(value, &storage_backend_val)) {
+        storage_backend_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid storage_backend in config.txt");
+      }
     } else if (key == "stepper_speed_us") {
       stepper_speed_val = std::atoi(value.c_str());
       if (stepper_speed_val > 0) {
@@ -2665,6 +2706,9 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
     config->logging_duration_s = log_duration_val;
     log_config.duration_s = log_duration_val;
   }
+  if (storage_backend_set) {
+    config->storage_backend = storage_backend_val;
+  }
   if (stepper_speed_set) {
     config->stepper_speed_us = stepper_speed_val;
     UpdateState([&](SharedState& s) { s.stepper_speed_us = stepper_speed_val; });
@@ -2742,7 +2786,7 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
     pid_config.from_file = true;
   }
   return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || log_use_motor_set ||
-         log_duration_set || stepper_speed_set || stepper_home_offset_set || motor_hall_active_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
+         log_duration_set || storage_backend_set || stepper_speed_set || stepper_home_offset_set || motor_hall_active_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
          minio_bucket_set || minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || mqtt_enabled_set ||
          net_mode_set || net_priority_set || gps_rtcm_types_set || gps_mode_set || pid_config.from_file;
 }
@@ -3801,6 +3845,12 @@ extern "C" void app_main(void) {
   InitGpios();
   ErrorManagerInit();
   ErrorManagerSetPublisher(&PublishErrorPayload);
+  if (app_config.storage_backend == StorageBackend::kInternalFlash) {
+    SdLockGuard guard(pdMS_TO_TICKS(2000));
+    if (!guard.locked() || !MountInternalFlashFs()) {
+      ESP_LOGW(TAG, "Internal flash storage is selected but not mounted yet");
+    }
+  }
 
   if (usb_mode == UsbMode::kMsc) {
     esp_err_t msc_err = InitSdCardForMsc(&sd_card);
@@ -3924,6 +3974,7 @@ extern "C" void app_main(void) {
     if (!StartLoggingToFile(postfix, usb_mode)) {
       ESP_LOGW(TAG, "Auto-start logging failed");
       app_config.logging_active = false;
+      (void)SaveConfigToSdCard(app_config, pid_config, usb_mode);
     } else {
       app_config.logging_active = true;
       app_config.logging_postfix = postfix;

@@ -15,6 +15,7 @@ AppConfig app_config{
     false,              // usb_mass_storage
     false,              // usb_mass_storage_from_file
     false,              // logging_active
+    StorageBackend::kSd,// storage_backend
     "",                 // logging_postfix
     false,              // logging_use_motor
     1.0f,               // logging_duration_s

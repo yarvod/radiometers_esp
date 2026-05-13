@@ -134,6 +134,7 @@ const char INDEX_HTML[] = R"rawliteral(
         <button class="tab-button" data-tab="tab-gps">GPS</button>
         <button class="tab-button" data-tab="tab-system">System</button>
         <button class="tab-button" data-tab="tab-files">Files</button>
+        <button class="tab-button" data-tab="tab-flash">Flash</button>
       </div>
 
       <div id="tab-measurement" class="tab-content active">
@@ -367,15 +368,29 @@ const char INDEX_HTML[] = R"rawliteral(
             <h3>System</h3>
             <div class="form-group">
               <div>External modules power: <span id="externalPowerState">--</span></div>
+              <div>Storage backend: <span id="storageBackendLabel">--</span></div>
+              <div>SD mounted: <span id="sdMountedLabel">--</span></div>
+              <div>Internal flash mounted: <span id="internalFlashMountedLabel">--</span></div>
+              <div>Active storage mounted: <span id="activeStorageMountedLabel">--</span></div>
               <div>Heap free: <span id="heapFreeBytes">--</span> bytes</div>
               <div>Heap largest block: <span id="heapLargestFreeBlockBytes">--</span> bytes</div>
               <div>MinIO upload attempts: <span id="minioUploadAttempts">--</span></div>
               <div>MinIO last attempt: <span id="minioLastAttempt">--</span></div>
             </div>
             <div class="form-group">
+              <label for="storageBackend">Storage for logs/uploads</label>
+              <select id="storageBackend">
+                <option value="sd">SD card</option>
+                <option value="internal_flash">Internal flash</option>
+              </select>
+              <div class="note">Internal flash is a fallback when SD is unavailable; it has limited write endurance and space.</div>
+            </div>
+            <div class="form-group">
               <label for="externalPowerOffMs">Power cycle off time, ms</label>
               <input type="number" id="externalPowerOffMs" value="1000" min="100" max="30000" step="100">
             </div>
+            <button class="btn" onclick="applyStorageBackend()">Apply Storage</button>
+            <button class="btn" onclick="remountStorage()">Remount Active Storage</button>
             <button class="btn" onclick="setExternalPower(true)">External Power ON</button>
             <button class="btn btn-stop" onclick="setExternalPower(false)">External Power OFF</button>
             <button class="btn" onclick="cycleExternalPower()">Power Cycle</button>
@@ -383,6 +398,26 @@ const char INDEX_HTML[] = R"rawliteral(
             <button class="btn btn-stop" onclick="restartDevice()">Restart ESP32</button>
             <div class="note" id="systemActionStatus">Config is normally saved to SD and ESP internal flash. Use sync if SD config was edited manually.</div>
           </div>
+        </div>
+      </div>
+
+      <div id="tab-flash" class="tab-content">
+        <div class="files-panel">
+          <h3>Внутренняя flash ESP</h3>
+          <div class="form-group file-actions">
+            <div class="file-buttons">
+              <button class="btn" onclick="loadFlash()">Обновить</button>
+              <button class="btn" onclick="syncConfigInternalFlash()">Sync config to ESP flash</button>
+            </div>
+          </div>
+          <div class="flash-summary">
+            <div>Flash total: <span id="flashTotalBytes">--</span></div>
+            <div>Partition bytes: <span id="flashPartitionBytes">--</span></div>
+            <div>Internal FS: <span id="flashInternalFsBytes">--</span></div>
+            <div>NVS entries: <span id="flashNvsEntries">--</span></div>
+          </div>
+          <div id="flashList"></div>
+          <div class="note">config.txt хранится в NVS как резервная копия. FAT-раздел /flashfs используется только если выбран Internal flash.</div>
         </div>
       </div>
 
@@ -887,7 +922,25 @@ const char INDEX_HTML[] = R"rawliteral(
         if (mqttEnabledEl && document.activeElement !== mqttEnabledEl) {
           mqttEnabledEl.checked = !!data.mqttEnabled;
         }
+        const storageBackendEl = document.getElementById('storageBackend');
+        if (storageBackendEl && document.activeElement !== storageBackendEl) {
+          storageBackendEl.value = data.storageBackend || 'sd';
+        }
         measurementsInitialized = true;
+      }
+      const storageBackendLabelEl = document.getElementById('storageBackendLabel');
+      if (storageBackendLabelEl) {
+        storageBackendLabelEl.textContent = data.storageBackend === 'internal_flash' ? 'Internal flash' : 'SD card';
+      }
+      const sdMountedEl = document.getElementById('sdMountedLabel');
+      if (sdMountedEl) sdMountedEl.textContent = data.sdMounted ? 'Yes' : 'No';
+      const internalMountedEl = document.getElementById('internalFlashMountedLabel');
+      if (internalMountedEl) internalMountedEl.textContent = data.internalFlashMounted ? 'Yes' : 'No';
+      const activeMountedEl = document.getElementById('activeStorageMountedLabel');
+      if (activeMountedEl) activeMountedEl.textContent = data.activeStorageMounted ? 'Yes' : 'No';
+      const storageBackendSelectEl = document.getElementById('storageBackend');
+      if (storageBackendSelectEl && document.activeElement !== storageBackendSelectEl) {
+        storageBackendSelectEl.value = data.storageBackend || 'sd';
       }
       document.getElementById('stepperStatus').textContent =
         (data.stepperEnabled ? 'Enabled' : 'Disabled') + (data.stepperHomeStatus ? ` / ${data.stepperHomeStatus}` : '');
@@ -1084,11 +1137,67 @@ const char INDEX_HTML[] = R"rawliteral(
         })
         .then(() => {
           setSystemStatus('Config synced to ESP internal flash');
+          loadFlash();
         })
         .catch(error => {
           console.error('Error:', error);
           setSystemStatus('Config sync to ESP flash failed');
         });
+    }
+
+    function applyStorageBackend() {
+      const backend = document.getElementById('storageBackend')?.value || 'sd';
+      setSystemStatus('Applying storage backend...');
+      fetch('/storage/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend })
+      })
+      .then(async response => {
+        const text = await response.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+        if (!response.ok) {
+          throw new Error(data?.error || data?.message || text || 'Storage apply failed');
+        }
+        return data;
+      })
+      .then(data => {
+        const label = data.backend === 'internal_flash' ? 'Internal flash' : 'SD card';
+        setSystemStatus(data.restartRequired ? `Storage backend: ${label}; restart required to mount it` : `Storage backend: ${label}`);
+        refreshData();
+        loadFlash();
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        setSystemStatus(error.message || 'Storage apply failed');
+        refreshData();
+      });
+    }
+
+    function remountStorage() {
+      setSystemStatus('Remounting active storage...');
+      fetch('/storage/remount', { method: 'POST' })
+      .then(async response => {
+        const text = await response.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { message: text }; }
+        if (!response.ok) {
+          throw new Error(data?.error || data?.message || text || 'Storage remount failed');
+        }
+        return data;
+      })
+      .then(data => {
+        const label = data.backend === 'internal_flash' ? 'Internal flash' : 'SD card';
+        setSystemStatus(`Storage remounted: ${label}`);
+        refreshData();
+        loadFlash();
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        setSystemStatus(error.message || 'Storage remount failed');
+        refreshData();
+      });
     }
     
     function enableStepper() {
@@ -1501,6 +1610,87 @@ const char INDEX_HTML[] = R"rawliteral(
       });
     }
 
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes)) return '--';
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${bytes} B`;
+    }
+
+    function renderFlash(data) {
+      const listEl = document.getElementById('flashList');
+      const totalEl = document.getElementById('flashTotalBytes');
+      const partitionEl = document.getElementById('flashPartitionBytes');
+      const internalFsEl = document.getElementById('flashInternalFsBytes');
+      const nvsEl = document.getElementById('flashNvsEntries');
+      if (totalEl) totalEl.textContent = formatBytes(data?.flashTotalBytes);
+      if (partitionEl) partitionEl.textContent = formatBytes(data?.partitionBytes);
+      if (internalFsEl) {
+        if (data?.internalFsMounted && Number.isFinite(data?.internalFsTotalBytes)) {
+          internalFsEl.textContent = `${formatBytes(data.internalFsUsedBytes || 0)} / ${formatBytes(data.internalFsTotalBytes)}`;
+        } else {
+          internalFsEl.textContent = 'not mounted';
+        }
+      }
+      if (nvsEl) {
+        const nvs = data?.nvs || {};
+        if (Number.isFinite(nvs.usedEntries) && Number.isFinite(nvs.totalEntries)) {
+          nvsEl.textContent = `${nvs.usedEntries}/${nvs.totalEntries} used, ${nvs.freeEntries ?? '--'} free`;
+        } else {
+          nvsEl.textContent = '--';
+        }
+      }
+      if (!listEl) return;
+      const entries = Array.isArray(data?.entries) ? data.entries : [];
+      if (!entries.length) {
+        listEl.innerHTML = '<div>Нет данных по flash</div>';
+        return;
+      }
+      listEl.innerHTML = '';
+      entries.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'file-row';
+
+        const info = document.createElement('div');
+        info.className = 'file-info';
+        const name = document.createElement('span');
+        name.className = 'file-name';
+        if (item.type === 'partition') {
+          const offset = Number.isFinite(item.offset) ? ` @0x${Number(item.offset).toString(16)}` : '';
+          name.textContent = `🧩 ${item.name} [${item.partType || '?'}:${item.subtype || '?'}]${offset} (${formatBytes(item.size)})`;
+        } else if (item.type === 'dir') {
+          name.textContent = `📁 ${item.name} — ${item.area || 'internal FAT'}`;
+        } else {
+          name.textContent = `📄 ${item.name} (${formatBytes(item.size)}) — ${item.area || 'NVS'}`;
+        }
+        info.appendChild(name);
+
+        const actions = document.createElement('div');
+        if (item.downloadable) {
+          const dlBtn = document.createElement('button');
+          dlBtn.className = 'btn btn-small';
+          dlBtn.textContent = 'Скачать';
+          dlBtn.onclick = () => { window.open('/flash/download?path=' + encodeURIComponent(item.path || item.name), '_blank'); };
+          actions.appendChild(dlBtn);
+        }
+
+        row.appendChild(info);
+        row.appendChild(actions);
+        listEl.appendChild(row);
+      });
+    }
+
+    function loadFlash() {
+      const listEl = document.getElementById('flashList');
+      if (listEl) listEl.innerHTML = 'Загружаю...';
+      fetch('/flash/list')
+        .then(res => res.json())
+        .then(data => renderFlash(data))
+        .catch(() => {
+          if (listEl) listEl.innerHTML = 'Ошибка загрузки flash';
+        });
+    }
+
     function updateFileNav() {
       const pathLabel = document.getElementById('filePathLabel');
       const pageInfo = document.getElementById('filePageInfo');
@@ -1665,6 +1855,7 @@ const char INDEX_HTML[] = R"rawliteral(
     // Initial load
     refreshData();
     loadFiles();
+    loadFlash();
   </script>
 </body>
 </html>

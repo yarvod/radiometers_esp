@@ -29,6 +29,8 @@ idf_component_register(
         esp_tinyusb
         sdmmc
         fatfs
+        spi_flash
+        wear_levelling
         onewire_bus
     mqtt
     INCLUDE_DIRS "."

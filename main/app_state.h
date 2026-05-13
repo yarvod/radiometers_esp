@@ -16,6 +16,8 @@
 constexpr int MAX_TEMP_SENSORS = 16;
 inline constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
 inline constexpr char CONFIG_FILE_PATH[] = "/sdcard/config.txt";
+inline constexpr char INTERNAL_FLASH_MOUNT_POINT[] = "/flashfs";
+inline constexpr char INTERNAL_FLASH_PARTITION_LABEL[] = "storage";
 inline constexpr char CONFIG_NVS_NAMESPACE[] = "cfg";
 inline constexpr char CONFIG_NVS_KEY[] = "config_txt";
 inline constexpr char DEFAULT_WIFI_SSID[] = "Altai INASAN";
@@ -28,6 +30,7 @@ inline constexpr char UPLOADED_DIR[] = "/sdcard/uploaded";
 
 enum class NetMode : uint8_t { kWifiOnly = 0, kEthOnly = 1, kWifiEth = 2 };
 enum class NetPriority : uint8_t { kWifi = 0, kEth = 1 };
+enum class StorageBackend : uint8_t { kSd = 0, kInternalFlash = 1 };
 
 struct AppConfig {
   std::string wifi_ssid;
@@ -37,6 +40,7 @@ struct AppConfig {
   bool usb_mass_storage;
   bool usb_mass_storage_from_file;
   bool logging_active;
+  StorageBackend storage_backend;
   std::string logging_postfix;
   bool logging_use_motor;
   float logging_duration_s;

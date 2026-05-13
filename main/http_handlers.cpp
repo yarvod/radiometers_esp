@@ -20,20 +20,29 @@
 #include "web_ui.h"
 #include "mqtt_bridge.h"
 #include "error_manager.h"
+#include "sd_maintenance.h"
 #include "hw_pins.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "nvs.h"
+#include "nvs_flash.h"
+#include "esp_flash.h"
+#include "esp_partition.h"
 #include "esp_rom_sys.h"
+#include "wear_levelling.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdmmc_cmd.h"
 #include "tusb_msc_storage.h"
 #include "sdkconfig.h"
+
+static bool internal_flash_fs_mounted = false;
+static wl_handle_t internal_flash_wl_handle = WL_INVALID_HANDLE;
 
 static bool UrlDecode(const char* src, std::string* out) {
   if (!src || !out) return false;
@@ -183,6 +192,11 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "sdRootDataFiles", snapshot.sd_data_root_files);
   cJSON_AddNumberToObject(root, "sdToUploadFiles", snapshot.sd_to_upload_files);
   cJSON_AddNumberToObject(root, "sdUploadedFiles", snapshot.sd_uploaded_files);
+  cJSON_AddStringToObject(root, "storageBackend", StorageBackendToString(app_config.storage_backend).c_str());
+  cJSON_AddBoolToObject(root, "sdMounted", log_sd_mounted);
+  cJSON_AddBoolToObject(root, "internalFlashMounted", internal_flash_fs_mounted);
+  cJSON_AddBoolToObject(root, "activeStorageMounted",
+                        app_config.storage_backend == StorageBackend::kInternalFlash ? internal_flash_fs_mounted : log_sd_mounted);
   cJSON_AddNumberToObject(root, "heapFreeBytes", static_cast<double>(snapshot.heap_free_bytes));
   cJSON_AddNumberToObject(root, "heapLargestFreeBlockBytes", static_cast<double>(snapshot.heap_largest_free_block_bytes));
   cJSON_AddNumberToObject(root, "minioUploadAttempts", snapshot.minio_upload_attempts);
@@ -773,6 +787,112 @@ void UnmountLogSd() {
   }
 }
 
+bool MountInternalFlashFs() {
+  if (internal_flash_fs_mounted) {
+    return true;
+  }
+  const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                                         ESP_PARTITION_SUBTYPE_DATA_FAT,
+                                                         INTERNAL_FLASH_PARTITION_LABEL);
+  if (!part) {
+    ESP_LOGE(TAG, "Internal flash FAT partition '%s' not found", INTERNAL_FLASH_PARTITION_LABEL);
+    return false;
+  }
+
+  esp_vfs_fat_mount_config_t mount_config = {};
+  mount_config.max_files = 3;
+  mount_config.format_if_mount_failed = true;
+  mount_config.allocation_unit_size = 32768;
+
+  esp_err_t ret = esp_vfs_fat_spiflash_mount_rw_wl(INTERNAL_FLASH_MOUNT_POINT,
+                                                    INTERNAL_FLASH_PARTITION_LABEL,
+                                                    &mount_config,
+                                                    &internal_flash_wl_handle);
+  if (ret != ESP_OK) {
+    internal_flash_wl_handle = WL_INVALID_HANDLE;
+    ESP_LOGE(TAG, "Internal flash FS mount failed: %s (heap=%u largest=%u)",
+             esp_err_to_name(ret),
+             static_cast<unsigned>(esp_get_free_heap_size()),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    return false;
+  }
+  internal_flash_fs_mounted = true;
+  ESP_LOGI(TAG, "Internal flash FS mounted at %s", INTERNAL_FLASH_MOUNT_POINT);
+  return true;
+}
+
+static void UnmountInternalFlashFs() {
+  if (!internal_flash_fs_mounted || internal_flash_wl_handle == WL_INVALID_HANDLE) {
+    return;
+  }
+  esp_err_t ret = esp_vfs_fat_spiflash_unmount_rw_wl(INTERNAL_FLASH_MOUNT_POINT, internal_flash_wl_handle);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "Internal flash FS unmount failed: %s", esp_err_to_name(ret));
+    return;
+  }
+  internal_flash_wl_handle = WL_INVALID_HANDLE;
+  internal_flash_fs_mounted = false;
+  ESP_LOGI(TAG, "Internal flash FS unmounted");
+}
+
+const char* ActiveStorageMountPoint() {
+  return app_config.storage_backend == StorageBackend::kInternalFlash
+             ? INTERNAL_FLASH_MOUNT_POINT
+             : CONFIG_MOUNT_POINT;
+}
+
+std::string ActiveToUploadDir() {
+  return std::string(ActiveStorageMountPoint()) + "/to_upload";
+}
+
+std::string ActiveUploadedDir() {
+  return std::string(ActiveStorageMountPoint()) + "/uploaded";
+}
+
+bool MountActiveStorage() {
+  if (app_config.storage_backend == StorageBackend::kInternalFlash) {
+    return MountInternalFlashFs();
+  }
+  return MountLogSd();
+}
+
+static bool ValidateStorageFilename(const std::string& name) {
+  if (name.empty() || name.size() > 255) return false;
+  for (char c : name) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool BuildActiveStorageFilenamePath(const std::string& name, std::string* out_full) {
+  if (!ValidateStorageFilename(name)) return false;
+  if (out_full) {
+    *out_full = std::string(ActiveStorageMountPoint()) + "/" + name;
+  }
+  return true;
+}
+
+bool BuildActiveStorageRelativePath(const std::string& rel_path_raw, std::string* out_full) {
+  if (rel_path_raw.empty() || rel_path_raw.size() > 256) return false;
+  std::string rel_path = rel_path_raw;
+  if (!rel_path.empty() && rel_path[0] == '/') rel_path.erase(rel_path.begin());
+  if (rel_path.empty() || rel_path.size() > 256) return false;
+  if (rel_path.find("..") != std::string::npos) return false;
+  if (rel_path.find("//") != std::string::npos) return false;
+  for (char c : rel_path) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '/' || c == ' ' ||
+          c == '(' || c == ')')) {
+      return false;
+    }
+  }
+  if (out_full) {
+    *out_full = std::string(ActiveStorageMountPoint()) + "/" + rel_path;
+  }
+  return true;
+}
+
 static void AppendConfigLine(std::string* out, const char* fmt, ...) {
   if (!out || !fmt) return;
   char buf[256];
@@ -814,6 +934,7 @@ static std::string BuildConfigText(const AppConfig& cfg, const PidConfig& pid, U
   AppendConfigLine(&text, "gps_mode = %s\n", cfg.gps_mode.empty() ? "base_time_60" : cfg.gps_mode.c_str());
   AppendConfigLine(&text, "usb_mass_storage = %s\n", current_usb_mode == UsbMode::kMsc ? "true" : "false");
   AppendConfigLine(&text, "logging_active = %s\n", cfg.logging_active ? "true" : "false");
+  AppendConfigLine(&text, "storage_backend = %s\n", StorageBackendToString(cfg.storage_backend).c_str());
   if (!cfg.logging_postfix.empty()) {
     AppendConfigLine(&text, "logging_postfix = %s\n", cfg.logging_postfix.c_str());
   }
@@ -888,6 +1009,31 @@ bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid, UsbMo
 
 bool SyncConfigToInternalFlash() {
   return SaveConfigToInternalFlash(app_config, pid_config, usb_mode);
+}
+
+static bool ReadConfigTextFromInternalFlash(std::string* out) {
+  if (!out) return false;
+  out->clear();
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(CONFIG_NVS_NAMESPACE, NVS_READONLY, &handle);
+  if (err != ESP_OK) {
+    return false;
+  }
+  size_t size = 0;
+  err = nvs_get_blob(handle, CONFIG_NVS_KEY, nullptr, &size);
+  if (err != ESP_OK || size == 0 || size > 8192) {
+    nvs_close(handle);
+    return false;
+  }
+  std::vector<char> buf(size + 1, '\0');
+  err = nvs_get_blob(handle, CONFIG_NVS_KEY, buf.data(), &size);
+  nvs_close(handle);
+  if (err != ESP_OK || size == 0) {
+    return false;
+  }
+  buf[size] = '\0';
+  out->assign(buf.data(), strnlen(buf.data(), size));
+  return !out->empty();
 }
 
 bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode) {
@@ -1832,6 +1978,237 @@ esp_err_t UploadedClearHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, res.json.empty() ? "{}" : res.json.c_str());
 }
 
+static const char* PartitionTypeName(esp_partition_type_t type) {
+  switch (type) {
+    case ESP_PARTITION_TYPE_APP:
+      return "app";
+    case ESP_PARTITION_TYPE_DATA:
+      return "data";
+    case ESP_PARTITION_TYPE_BOOTLOADER:
+      return "bootloader";
+    case ESP_PARTITION_TYPE_PARTITION_TABLE:
+      return "partition_table";
+    default:
+      return "unknown";
+  }
+}
+
+static const char* PartitionSubtypeName(esp_partition_type_t type, esp_partition_subtype_t subtype) {
+  if (type == ESP_PARTITION_TYPE_APP) {
+    if (subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) return "factory";
+    if (subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN && subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MAX) return "ota";
+    if (subtype == ESP_PARTITION_SUBTYPE_APP_TEST) return "test";
+  }
+  if (type == ESP_PARTITION_TYPE_DATA) {
+    switch (subtype) {
+      case ESP_PARTITION_SUBTYPE_DATA_OTA:
+        return "ota";
+      case ESP_PARTITION_SUBTYPE_DATA_PHY:
+        return "phy";
+      case ESP_PARTITION_SUBTYPE_DATA_NVS:
+        return "nvs";
+      case ESP_PARTITION_SUBTYPE_DATA_COREDUMP:
+        return "coredump";
+      case ESP_PARTITION_SUBTYPE_DATA_NVS_KEYS:
+        return "nvs_keys";
+      case ESP_PARTITION_SUBTYPE_DATA_FAT:
+        return "fat";
+      case ESP_PARTITION_SUBTYPE_DATA_SPIFFS:
+        return "spiffs";
+      case ESP_PARTITION_SUBTYPE_DATA_LITTLEFS:
+        return "littlefs";
+      default:
+        break;
+    }
+  }
+  return "unknown";
+}
+
+esp_err_t FlashListHandler(httpd_req_t* req) {
+  cJSON* root = cJSON_CreateObject();
+
+  uint32_t flash_size = 0;
+  if (esp_flash_get_size(nullptr, &flash_size) == ESP_OK) {
+    cJSON_AddNumberToObject(root, "flashTotalBytes", static_cast<double>(flash_size));
+  }
+
+  nvs_stats_t nvs_stats {};
+  if (nvs_get_stats(nullptr, &nvs_stats) == ESP_OK) {
+    cJSON* nvs = cJSON_CreateObject();
+    cJSON_AddNumberToObject(nvs, "usedEntries", nvs_stats.used_entries);
+    cJSON_AddNumberToObject(nvs, "freeEntries", nvs_stats.free_entries);
+    cJSON_AddNumberToObject(nvs, "availableEntries", nvs_stats.available_entries);
+    cJSON_AddNumberToObject(nvs, "totalEntries", nvs_stats.total_entries);
+    cJSON_AddNumberToObject(nvs, "namespaceCount", nvs_stats.namespace_count);
+    cJSON_AddItemToObject(root, "nvs", nvs);
+  }
+  cJSON_AddStringToObject(root, "storageBackend", StorageBackendToString(app_config.storage_backend).c_str());
+
+  cJSON* entries = cJSON_CreateArray();
+  std::string internal_config;
+  if (ReadConfigTextFromInternalFlash(&internal_config)) {
+    cJSON* obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "name", "config.txt");
+    cJSON_AddStringToObject(obj, "type", "file");
+    cJSON_AddStringToObject(obj, "path", "config.txt");
+    cJSON_AddStringToObject(obj, "area", "NVS cfg/config_txt");
+    cJSON_AddNumberToObject(obj, "size", static_cast<double>(internal_config.size()));
+    cJSON_AddBoolToObject(obj, "downloadable", true);
+    cJSON_AddItemToArray(entries, obj);
+  }
+
+  bool internal_fs_mounted = false;
+  {
+    SdLockGuard guard(pdMS_TO_TICKS(500));
+    if (guard.locked() && MountInternalFlashFs()) {
+      internal_fs_mounted = true;
+      struct statvfs fs {};
+      FsOps ops = DefaultFsOps();
+      if (ops.statvfs_fn(INTERNAL_FLASH_MOUNT_POINT, &fs) == 0 && fs.f_blocks > 0) {
+        const uint64_t total = static_cast<uint64_t>(fs.f_blocks) * fs.f_frsize;
+        const uint64_t avail = static_cast<uint64_t>(fs.f_bavail) * fs.f_frsize;
+        cJSON_AddNumberToObject(root, "internalFsTotalBytes", static_cast<double>(total));
+        cJSON_AddNumberToObject(root, "internalFsUsedBytes", static_cast<double>(total > avail ? total - avail : 0));
+      }
+
+      DIR* dir = opendir(INTERNAL_FLASH_MOUNT_POINT);
+      if (dir) {
+        struct dirent* ent = nullptr;
+        while ((ent = readdir(dir)) != nullptr) {
+          if (ent->d_name[0] == '.') continue;
+          if (ent->d_type != DT_REG && ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN) continue;
+          std::string full = std::string(INTERNAL_FLASH_MOUNT_POINT) + "/" + ent->d_name;
+          struct stat st {};
+          uint64_t size = 0;
+          bool is_dir = ent->d_type == DT_DIR;
+          if (stat(full.c_str(), &st) == 0) {
+            size = static_cast<uint64_t>(st.st_size);
+            is_dir = S_ISDIR(st.st_mode);
+          }
+          cJSON* obj = cJSON_CreateObject();
+          cJSON_AddStringToObject(obj, "name", ent->d_name);
+          cJSON_AddStringToObject(obj, "type", is_dir ? "dir" : "file");
+          cJSON_AddStringToObject(obj, "path", ent->d_name);
+          cJSON_AddStringToObject(obj, "area", "internal FAT /flashfs");
+          cJSON_AddNumberToObject(obj, "size", static_cast<double>(size));
+          cJSON_AddBoolToObject(obj, "downloadable", !is_dir);
+          cJSON_AddItemToArray(entries, obj);
+        }
+        closedir(dir);
+      }
+    }
+  }
+  cJSON_AddBoolToObject(root, "internalFsMounted", internal_fs_mounted);
+
+  uint64_t partition_bytes = 0;
+  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+  while (it != nullptr) {
+    const esp_partition_t* part = esp_partition_get(it);
+    if (part) {
+      partition_bytes += part->size;
+      cJSON* obj = cJSON_CreateObject();
+      cJSON_AddStringToObject(obj, "name", part->label);
+      cJSON_AddStringToObject(obj, "type", "partition");
+      cJSON_AddStringToObject(obj, "path", part->label);
+      cJSON_AddStringToObject(obj, "partType", PartitionTypeName(part->type));
+      cJSON_AddStringToObject(obj, "subtype", PartitionSubtypeName(part->type, part->subtype));
+      cJSON_AddNumberToObject(obj, "offset", part->address);
+      cJSON_AddNumberToObject(obj, "size", static_cast<double>(part->size));
+      cJSON_AddBoolToObject(obj, "downloadable", false);
+      cJSON_AddItemToArray(entries, obj);
+    }
+    it = esp_partition_next(it);
+  }
+  if (it) {
+    esp_partition_iterator_release(it);
+  }
+  cJSON_AddNumberToObject(root, "partitionBytes", static_cast<double>(partition_bytes));
+  cJSON_AddItemToObject(root, "entries", entries);
+
+  const char* json = cJSON_PrintUnformatted(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json ? json : "{}");
+  cJSON_free((void*)json);
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
+esp_err_t FlashDownloadHandler(httpd_req_t* req) {
+  int qs_len = httpd_req_get_url_query_len(req) + 1;
+  if (qs_len <= 1) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query");
+    return ESP_FAIL;
+  }
+  std::string qs(qs_len, '\0');
+  if (httpd_req_get_url_query_str(req, qs.data(), qs_len) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad query");
+    return ESP_FAIL;
+  }
+  char path_param[256] = {};
+  if (httpd_query_key_value(qs.c_str(), "path", path_param, sizeof(path_param)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing path");
+    return ESP_FAIL;
+  }
+  std::string decoded;
+  if (!UrlDecode(path_param, &decoded)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid flash object");
+    return ESP_FAIL;
+  }
+  if (decoded == "config.txt") {
+    std::string text;
+    if (!ReadConfigTextFromInternalFlash(&text)) {
+      httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Config not found in internal flash");
+      return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"internal_config.txt\"");
+    return httpd_resp_send(req, text.c_str(), text.size());
+  }
+
+  std::string rel = decoded;
+  if (!rel.empty() && rel[0] == '/') rel.erase(rel.begin());
+  if (rel.empty() || rel.find("..") != std::string::npos || rel.find("//") != std::string::npos) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+    return ESP_FAIL;
+  }
+  for (char c : rel) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '/' || c == ' ' ||
+          c == '(' || c == ')')) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+      return ESP_FAIL;
+    }
+  }
+
+  SdLockGuard guard(pdMS_TO_TICKS(1000));
+  if (!guard.locked() || !MountInternalFlashFs()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal flash busy");
+    return ESP_FAIL;
+  }
+  std::string full_path = std::string(INTERNAL_FLASH_MOUNT_POINT) + "/" + rel;
+  FILE* f = fopen(full_path.c_str(), "rb");
+  if (!f) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/octet-stream");
+  std::string name = rel;
+  const size_t slash = name.find_last_of('/');
+  if (slash != std::string::npos) name = name.substr(slash + 1);
+  std::string disp = "attachment; filename=\"" + name + "\"";
+  httpd_resp_set_hdr(req, "Content-Disposition", disp.c_str());
+  char chunk[1024];
+  size_t n = 0;
+  while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+    if (httpd_resp_send_chunk(req, chunk, n) != ESP_OK) {
+      fclose(f);
+      return ESP_FAIL;
+    }
+  }
+  fclose(f);
+  httpd_resp_send_chunk(req, nullptr, 0);
+  return ESP_OK;
+}
+
 esp_err_t PidApplyHandler(httpd_req_t* req) {
   const size_t buf_len = std::min<size_t>(req->content_len, 128);
   if (buf_len == 0) {
@@ -2193,11 +2570,104 @@ esp_err_t ConfigSyncInternalFlashHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"config_synced_to_internal_flash\"}");
 }
 
+esp_err_t StorageApplyHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 128);
+  if (buf_len == 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  int received = httpd_req_recv(req, body.data(), buf_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+    return ESP_FAIL;
+  }
+  body.resize(received);
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  cJSON* item = cJSON_GetObjectItem(root, "backend");
+  StorageBackend backend = app_config.storage_backend;
+  const bool ok = item && cJSON_IsString(item) && item->valuestring && ParseStorageBackend(item->valuestring, &backend);
+  cJSON_Delete(root);
+  if (!ok) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid storage backend");
+    return ESP_FAIL;
+  }
+  if (log_config.active || CopyState().logging || log_file != nullptr) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stop logging before switching storage");
+    return ESP_FAIL;
+  }
+
+  bool restart_required = false;
+  if (backend == StorageBackend::kInternalFlash) {
+    SdLockGuard guard(pdMS_TO_TICKS(2000));
+    if (!guard.locked()) {
+      restart_required = true;
+    } else if (!MountInternalFlashFs()) {
+      restart_required = true;
+    }
+  }
+
+  app_config.storage_backend = backend;
+  if (!SaveConfigToSdCard(app_config, pid_config, usb_mode)) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save config");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  std::string resp = std::string("{\"status\":\"storage_saved\",\"backend\":\"") +
+                     StorageBackendToString(app_config.storage_backend) + "\",\"restartRequired\":" +
+                     (restart_required ? "true" : "false") + "}";
+  return httpd_resp_sendstr(req, resp.c_str());
+}
+
+esp_err_t StorageRemountHandler(httpd_req_t* req) {
+  if (log_config.active || CopyState().logging || log_file != nullptr) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stop logging before remount");
+    return ESP_FAIL;
+  }
+  if (usb_mode == UsbMode::kMsc && app_config.storage_backend == StorageBackend::kSd) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "USB MSC mode owns SD card");
+    return ESP_FAIL;
+  }
+
+  bool ok = false;
+  {
+    SdLockGuard guard(pdMS_TO_TICKS(3000));
+    if (!guard.locked()) {
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Storage busy");
+      return ESP_FAIL;
+    }
+    if (app_config.storage_backend == StorageBackend::kInternalFlash) {
+      UnmountInternalFlashFs();
+      ok = MountInternalFlashFs();
+    } else {
+      UnmountLogSd();
+      ok = MountLogSd();
+    }
+  }
+
+  if (!ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Remount failed");
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  std::string resp = std::string("{\"status\":\"storage_remounted\",\"backend\":\"") +
+                     StorageBackendToString(app_config.storage_backend) +
+                     "\",\"sdMounted\":" + (log_sd_mounted ? "true" : "false") +
+                     ",\"internalFlashMounted\":" + (internal_flash_fs_mounted ? "true" : "false") + "}";
+  return httpd_resp_sendstr(req, resp.c_str());
+}
+
 httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
-  config.max_uri_handlers = 40;
+  config.max_uri_handlers = 43;
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
@@ -2226,6 +2696,8 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t gps_apply_uri = {.uri = "/gps/apply", .method = HTTP_POST, .handler = GpsApplyHandler, .user_ctx = nullptr};
   httpd_uri_t gps_probe_uri = {.uri = "/gps/probe", .method = HTTP_POST, .handler = GpsProbeHandler, .user_ctx = nullptr};
   httpd_uri_t config_sync_internal_uri = {.uri = "/config/sync_internal_flash", .method = HTTP_POST, .handler = ConfigSyncInternalFlashHandler, .user_ctx = nullptr};
+  httpd_uri_t storage_apply_uri = {.uri = "/storage/apply", .method = HTTP_POST, .handler = StorageApplyHandler, .user_ctx = nullptr};
+  httpd_uri_t storage_remount_uri = {.uri = "/storage/remount", .method = HTTP_POST, .handler = StorageRemountHandler, .user_ctx = nullptr};
   httpd_uri_t heater_set_uri = {.uri = "/heater/set", .method = HTTP_POST, .handler = HeaterSetHandler, .user_ctx = nullptr};
   httpd_uri_t fan_set_uri = {.uri = "/fan/set", .method = HTTP_POST, .handler = FanSetHandler, .user_ctx = nullptr};
   httpd_uri_t log_start_uri = {.uri = "/log/start", .method = HTTP_POST, .handler = LogStartHandler, .user_ctx = nullptr};
@@ -2237,6 +2709,8 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t fs_download_uri = {.uri = "/fs/download", .method = HTTP_GET, .handler = FsDownloadHandler, .user_ctx = nullptr};
   httpd_uri_t fs_delete_uri = {.uri = "/fs/delete", .method = HTTP_POST, .handler = FsDeleteHandler, .user_ctx = nullptr};
   httpd_uri_t uploaded_clear_uri = {.uri = "/fs/clear_uploaded", .method = HTTP_POST, .handler = UploadedClearHandler, .user_ctx = nullptr};
+  httpd_uri_t flash_list_uri = {.uri = "/flash/list", .method = HTTP_GET, .handler = FlashListHandler, .user_ctx = nullptr};
+  httpd_uri_t flash_download_uri = {.uri = "/flash/download", .method = HTTP_GET, .handler = FlashDownloadHandler, .user_ctx = nullptr};
 
   httpd_register_uri_handler(http_server, &root_uri);
   httpd_register_uri_handler(http_server, &data_uri);
@@ -2259,6 +2733,8 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &gps_apply_uri);
   httpd_register_uri_handler(http_server, &gps_probe_uri);
   httpd_register_uri_handler(http_server, &config_sync_internal_uri);
+  httpd_register_uri_handler(http_server, &storage_apply_uri);
+  httpd_register_uri_handler(http_server, &storage_remount_uri);
   httpd_register_uri_handler(http_server, &heater_set_uri);
   httpd_register_uri_handler(http_server, &fan_set_uri);
   httpd_register_uri_handler(http_server, &log_start_uri);
@@ -2270,6 +2746,8 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &fs_download_uri);
   httpd_register_uri_handler(http_server, &fs_delete_uri);
   httpd_register_uri_handler(http_server, &uploaded_clear_uri);
+  httpd_register_uri_handler(http_server, &flash_list_uri);
+  httpd_register_uri_handler(http_server, &flash_download_uri);
   ESP_LOGI(TAG, "HTTP server started");
   return http_server;
 }

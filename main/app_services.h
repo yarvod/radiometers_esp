@@ -103,6 +103,13 @@ bool EnsureTimeSynced(int timeout_ms);
 
 bool MountLogSd();
 void UnmountLogSd();
+bool MountInternalFlashFs();
+bool MountActiveStorage();
+const char* ActiveStorageMountPoint();
+std::string ActiveToUploadDir();
+std::string ActiveUploadedDir();
+bool BuildActiveStorageFilenamePath(const std::string& name, std::string* out_full);
+bool BuildActiveStorageRelativePath(const std::string& rel_path, std::string* out_full);
 bool EnsureUploadDirs();
 bool StartUploadedClearTask(int max_files, std::string* out_status);
 bool QueueCurrentLogForUpload();

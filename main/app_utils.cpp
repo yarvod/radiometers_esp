@@ -83,6 +83,22 @@ bool ParseNetPriority(const std::string& value, NetPriority* out) {
   return false;
 }
 
+bool ParseStorageBackend(const std::string& value, StorageBackend* out) {
+  if (!out) {
+    return false;
+  }
+  const std::string lower = ToLowerAscii(value);
+  if (lower == "sd" || lower == "sdcard" || lower == "sd_card") {
+    *out = StorageBackend::kSd;
+    return true;
+  }
+  if (lower == "flash" || lower == "internal" || lower == "internal_flash" || lower == "internal-flash") {
+    *out = StorageBackend::kInternalFlash;
+    return true;
+  }
+  return false;
+}
+
 std::string NormalizeMqttUri(const std::string& raw) {
   std::string uri = Trim(raw);
   if (uri.size() >= 2 && ((uri.front() == '"' && uri.back() == '"') || (uri.front() == '\'' && uri.back() == '\''))) {
@@ -124,6 +140,16 @@ std::string NetPriorityToString(NetPriority priority) {
     case NetPriority::kWifi:
     default:
       return "wifi";
+  }
+}
+
+std::string StorageBackendToString(StorageBackend backend) {
+  switch (backend) {
+    case StorageBackend::kInternalFlash:
+      return "internal_flash";
+    case StorageBackend::kSd:
+    default:
+      return "sd";
   }
 }
 
