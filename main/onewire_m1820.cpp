@@ -22,6 +22,8 @@ constexpr uint8_t kCmdSkipRom = 0xCC;
 constexpr uint8_t kCmdConvertT = 0x44;
 constexpr uint8_t kCmdReadScratchpad = 0xBE;
 constexpr uint32_t kConversionDelayUs = 11000;  // ~10.6 ms from datasheet
+constexpr int kReadAttempts = 3;
+constexpr int kReadRetryDelayMs = 50;
 
 const char* TAG = "M1820";
 
@@ -245,48 +247,73 @@ bool M1820ReadTemperatures(float* out_values, int max_values, int* out_count) {
     return false;
   }
 
-  for (int i = 0; i < max_values; ++i) {
-    out_values[i] = NAN;
-  }
-
   const int to_read = std::min(g_sensor_count, max_values);
   *out_count = 0;
 
-  // Start conversion for all devices.
-  if (!BusReset()) {
-    return false;
-  }
-  uint8_t convert_cmd[2] = {kCmdSkipRom, kCmdConvertT};
-  if (onewire_bus_write_bytes(g_bus, convert_cmd, sizeof(convert_cmd)) != ESP_OK) {
-    ESP_LOGW(TAG, "Convert command failed");
-    return false;
-  }
-  vTaskDelay(pdMS_TO_TICKS((kConversionDelayUs + 999) / 1000));
-
-  bool any_ok = false;
-  for (int i = 0; i < to_read; ++i) {
-    const uint64_t addr = g_addresses[i];
-    if (addr == 0) continue;
-    uint8_t rom_bytes[8];
-    std::memcpy(rom_bytes, &addr, sizeof(rom_bytes));
-
-    uint8_t data[9] = {};
-    if (!ReadScratchpad(rom_bytes, data, sizeof(data))) {
-      ESP_LOGW(TAG, "Scratchpad read failed for sensor %d", i);
-      continue;
+  for (int attempt = 0; attempt < kReadAttempts; ++attempt) {
+    for (int i = 0; i < max_values; ++i) {
+      out_values[i] = NAN;
     }
-    if (SearchCrc8(data, 8) != data[8]) {
-      ESP_LOGW(TAG, "Scratchpad CRC error for sensor %d", i);
-      continue;
+
+    const bool last_attempt = attempt + 1 == kReadAttempts;
+    bool conversion_started = false;
+    if (BusReset()) {
+      uint8_t convert_cmd[2] = {kCmdSkipRom, kCmdConvertT};
+      if (onewire_bus_write_bytes(g_bus, convert_cmd, sizeof(convert_cmd)) == ESP_OK) {
+        conversion_started = true;
+      } else if (last_attempt) {
+        ESP_LOGW(TAG, "Convert command failed");
+      }
     }
-    int16_t raw = static_cast<int16_t>((static_cast<uint16_t>(data[1]) << 8) | data[0]);
-    float celsius = 40.0f + (static_cast<float>(raw) / 256.0f);
-    out_values[i] = celsius;
-    any_ok = true;
+    if (!conversion_started) {
+      if (!last_attempt) {
+        vTaskDelay(pdMS_TO_TICKS(kReadRetryDelayMs));
+        continue;
+      }
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS((kConversionDelayUs + 999) / 1000));
+
+    bool any_ok = false;
+    for (int i = 0; i < to_read; ++i) {
+      const uint64_t addr = g_addresses[i];
+      if (addr == 0) continue;
+      uint8_t rom_bytes[8];
+      std::memcpy(rom_bytes, &addr, sizeof(rom_bytes));
+
+      uint8_t data[9] = {};
+      if (!ReadScratchpad(rom_bytes, data, sizeof(data))) {
+        if (last_attempt) {
+          ESP_LOGW(TAG, "Scratchpad read failed for sensor %d", i);
+        }
+        continue;
+      }
+      if (SearchCrc8(data, 8) != data[8]) {
+        if (last_attempt) {
+          ESP_LOGW(TAG, "Scratchpad CRC error for sensor %d", i);
+        }
+        continue;
+      }
+      int16_t raw = static_cast<int16_t>((static_cast<uint16_t>(data[1]) << 8) | data[0]);
+      float celsius = 40.0f + (static_cast<float>(raw) / 256.0f);
+      out_values[i] = celsius;
+      any_ok = true;
+    }
+
+    if (any_ok) {
+      *out_count = to_read;
+      if (attempt > 0) {
+        ESP_LOGI(TAG, "M1820 read recovered after retry %d", attempt + 1);
+      }
+      return true;
+    }
+    if (!last_attempt) {
+      vTaskDelay(pdMS_TO_TICKS(kReadRetryDelayMs));
+    }
   }
 
   *out_count = to_read;
-  return any_ok;
+  return false;
 }
 
 int M1820GetAddresses(uint64_t* out_values, int max_values) {
