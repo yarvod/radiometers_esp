@@ -25,6 +25,7 @@ idf_component_register(
         json
         esp_timer
         esp_rom
+        esp_psram
         tinyusb
         esp_tinyusb
         sdmmc

@@ -40,6 +40,9 @@
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#if CONFIG_SPIRAM
+#include "esp_psram.h"
+#endif
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
@@ -1920,27 +1923,79 @@ static std::string ExtractHost(const std::string& endpoint) {
 }
 
 static std::string UploadHeapDiag() {
-  char buf[96];
-  std::snprintf(buf, sizeof(buf), "heap=%u largest=%u",
-                static_cast<unsigned>(esp_get_free_heap_size()),
-                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  char buf[192];
+  std::snprintf(buf, sizeof(buf),
+                "heap=%u min=%u largest=%u internal=%u internal_largest=%u psram=%u psram_largest=%u",
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)));
   return std::string(buf);
 }
 
+static const char* MbedtlsAllocModeName() {
+#if CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC
+  return "internal";
+#elif CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC
+  return "external";
+#elif CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC
+  return "default";
+#elif CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC
+  return "custom";
+#elif CONFIG_MBEDTLS_IRAM_8BIT_MEM_ALLOC
+  return "iram8";
+#else
+  return "unknown";
+#endif
+}
+
+static void LogMemoryStatus(const char* label) {
+  ESP_LOGI(TAG, "Memory %s: %s", label ? label : "-", UploadHeapDiag().c_str());
+#if CONFIG_SPIRAM
+  ESP_LOGI(TAG, "PSRAM %s: initialized=%s size=%u bytes",
+           label ? label : "-",
+           esp_psram_is_initialized() ? "yes" : "no",
+           static_cast<unsigned>(esp_psram_is_initialized() ? esp_psram_get_size() : 0));
+#else
+  ESP_LOGI(TAG, "PSRAM %s: disabled in sdkconfig", label ? label : "-");
+#endif
+}
+
 static bool HasHeapForTlsUpload() {
-  const uint32_t free_heap = static_cast<uint32_t>(esp_get_free_heap_size());
+  const uint32_t free_heap = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
   const uint32_t largest = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-  const uint32_t min_largest = static_cast<uint32_t>(CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN + 1024);
-  const uint32_t min_free = static_cast<uint32_t>(CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN + CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN + 8192);
-  if (largest >= min_largest && free_heap >= min_free) {
+  const uint32_t internal_free = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  const uint32_t internal_largest =
+      static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+#if CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC
+  constexpr uint32_t min_largest = 32 * 1024;
+  constexpr uint32_t min_free = 60 * 1024;
+  constexpr uint32_t min_internal_largest = 32 * 1024;
+  constexpr uint32_t min_internal_free = 60 * 1024;
+#else
+  constexpr uint32_t min_largest = 32 * 1024;
+  constexpr uint32_t min_free = 60 * 1024;
+  constexpr uint32_t min_internal_largest = 10 * 1024;
+  constexpr uint32_t min_internal_free = 24 * 1024;
+#endif
+  if (largest >= min_largest && free_heap >= min_free &&
+      internal_largest >= min_internal_largest && internal_free >= min_internal_free) {
     return true;
   }
-  char msg[128];
-  std::snprintf(msg, sizeof(msg), "TLS upload deferred: heap=%u largest=%u need largest>=%u free>=%u",
+  char msg[224];
+  std::snprintf(msg, sizeof(msg),
+                "TLS upload deferred: heap=%u largest=%u internal=%u internal_largest=%u need heap>=%u largest>=%u internal>=%u internal_largest>=%u",
                 static_cast<unsigned>(free_heap),
                 static_cast<unsigned>(largest),
+                static_cast<unsigned>(internal_free),
+                static_cast<unsigned>(internal_largest),
+                static_cast<unsigned>(min_free),
                 static_cast<unsigned>(min_largest),
-                static_cast<unsigned>(min_free));
+                static_cast<unsigned>(min_internal_free),
+                static_cast<unsigned>(min_internal_largest));
   ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, msg);
   ESP_LOGW(TAG, "%s", msg);
   return false;
@@ -1986,6 +2041,20 @@ static bool UploadFileToMinio(const std::string& path) {
     ESP_LOGE(TAG, "Failed to hash %s", path.c_str());
     return false;
   }
+  ESP_LOGI(TAG,
+           "MinIO upload prepare: file=%s size=%u tls=%s tls_in=%d tls_out=%d dynamic_buffer=%s mbedtls_alloc=%s %s",
+           path.c_str(),
+           static_cast<unsigned>(file_size),
+           use_https ? "yes" : "no",
+           CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN,
+           CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN,
+#if CONFIG_MBEDTLS_DYNAMIC_BUFFER
+           "yes",
+#else
+           "no",
+#endif
+           MbedtlsAllocModeName(),
+           UploadHeapDiag().c_str());
   // Use device_id as bucket if not set
   if (app_config.minio_bucket.empty()) {
     app_config.minio_bucket = SanitizeId(app_config.device_id);
@@ -2036,6 +2105,8 @@ static bool UploadFileToMinio(const std::string& path) {
     cfg.transport_type = use_https ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
     cfg.disable_auto_redirect = true;
     cfg.timeout_ms = 8000;
+    cfg.buffer_size = 1024;
+    cfg.buffer_size_tx = 1024;
     cfg.cert_pem = reinterpret_cast<const char*>(isrgrootx1_pem_start);
     cfg.cert_len = isrgrootx1_pem_end - isrgrootx1_pem_start;
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -2107,6 +2178,8 @@ static bool UploadFileToMinio(const std::string& path) {
   cfg_http.url = url.c_str();
   cfg_http.method = HTTP_METHOD_PUT;
   cfg_http.timeout_ms = 10000;  // avoid long blocking if network is down
+  cfg_http.buffer_size = 1024;
+  cfg_http.buffer_size_tx = 1024;
   cfg_http.transport_type = use_https ? HTTP_TRANSPORT_OVER_SSL : HTTP_TRANSPORT_OVER_TCP;
   cfg_http.disable_auto_redirect = true;
   // Use LetsEncrypt ISRG root
@@ -2127,6 +2200,7 @@ static bool UploadFileToMinio(const std::string& path) {
   esp_http_client_set_header(client, "x-amz-date", amz_date);
   esp_http_client_set_header(client, "Authorization", authorization.c_str());
 
+  ESP_LOGI(TAG, "MinIO HTTP open begin: %s", UploadHeapDiag().c_str());
   const esp_err_t open_err = esp_http_client_open(client, file_size);
   if (open_err != ESP_OK) {
     const std::string heap_diag = UploadHeapDiag();
@@ -2137,6 +2211,7 @@ static bool UploadFileToMinio(const std::string& path) {
     esp_http_client_cleanup(client);
     return false;
   }
+  ESP_LOGI(TAG, "MinIO HTTP open ok: %s", UploadHeapDiag().c_str());
 
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) {
@@ -2146,7 +2221,7 @@ static bool UploadFileToMinio(const std::string& path) {
     esp_http_client_cleanup(client);
     return false;
   }
-  char buf[2048];
+  char buf[1024];
   size_t n = 0;
   bool ok = true;
   while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
@@ -2169,6 +2244,7 @@ static bool UploadFileToMinio(const std::string& path) {
   int status = esp_http_client_get_status_code(client);
   esp_http_client_close(client);
   esp_http_client_cleanup(client);
+  ESP_LOGI(TAG, "MinIO HTTP cleanup done: status=%d %s", status, UploadHeapDiag().c_str());
   if (status >= 200 && status < 300) {
     ErrorManagerClear(ErrorCode::kMinioUpload);
     ESP_LOGI(TAG, "Uploaded %s to MinIO (%d)", path.c_str(), status);
@@ -3824,6 +3900,16 @@ extern "C" void app_main(void) {
   }
   const uint32_t boot_id = LoadAndIncrementBootId();
   ESP_LOGI(TAG, "Boot ID: %u", static_cast<unsigned>(boot_id));
+  LogMemoryStatus("boot");
+  ESP_LOGI(TAG, "TLS config: in=%d out=%d dynamic_buffer=%s mbedtls_alloc=%s",
+           CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN,
+           CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN,
+#if CONFIG_MBEDTLS_DYNAMIC_BUFFER
+           "yes",
+#else
+           "no",
+#endif
+           MbedtlsAllocModeName());
 
   // Optionally disable task watchdog to avoid false positives from tight stepper loop
   esp_task_wdt_deinit();
