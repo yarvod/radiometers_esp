@@ -793,9 +793,14 @@ void StartMqttBridge() {
   cfg.session.disable_clean_session = false;
   cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
   cfg.task.stack_size = 8192;
-  if (parsed_uri.transport == MQTT_TRANSPORT_OVER_SSL || parsed_uri.transport == MQTT_TRANSPORT_OVER_WSS) {
+  if (parsed_uri.transport == MQTT_TRANSPORT_OVER_SSL) {
+    // Direct Mosquitto TLS on 8883 uses the project CA from infra/certs/ca.crt.
     cfg.broker.verification.certificate = reinterpret_cast<const char*>(ca_crt_start);
     cfg.broker.verification.certificate_len = ca_crt_end - ca_crt_start;
+  } else if (parsed_uri.transport == MQTT_TRANSPORT_OVER_WSS) {
+    // WSS goes through nginx and is signed by LetsEncrypt.
+    cfg.broker.verification.certificate = reinterpret_cast<const char*>(isrgrootx1_pem_start);
+    cfg.broker.verification.certificate_len = isrgrootx1_pem_end - isrgrootx1_pem_start;
   }
   mqtt_client = esp_mqtt_client_init(&cfg);
   if (!mqtt_client) {
