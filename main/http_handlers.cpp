@@ -44,6 +44,123 @@
 static bool internal_flash_fs_mounted = false;
 static wl_handle_t internal_flash_wl_handle = WL_INVALID_HANDLE;
 
+template <typename T>
+struct PsramAllocator {
+  using value_type = T;
+
+  PsramAllocator() = default;
+  template <typename U>
+  PsramAllocator(const PsramAllocator<U>&) {}
+
+  T* allocate(std::size_t n) {
+    if (n > static_cast<std::size_t>(-1) / sizeof(T)) {
+      std::abort();
+    }
+    void* p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) {
+      p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_8BIT);
+    }
+    if (!p) {
+      std::abort();
+    }
+    return static_cast<T*>(p);
+  }
+
+  void deallocate(T* p, std::size_t) noexcept {
+    heap_caps_free(p);
+  }
+};
+
+template <typename T, typename U>
+bool operator==(const PsramAllocator<T>&, const PsramAllocator<U>&) {
+  return true;
+}
+
+template <typename T, typename U>
+bool operator!=(const PsramAllocator<T>&, const PsramAllocator<U>&) {
+  return false;
+}
+
+using PsramString = std::basic_string<char, std::char_traits<char>, PsramAllocator<char>>;
+
+template <typename T>
+using PsramVector = std::vector<T, PsramAllocator<T>>;
+
+static PsramString ToPsramString(const char* s) {
+  return PsramString(s ? s : "");
+}
+
+static PsramString ToPsramString(const std::string& s) {
+  return PsramString(s.c_str(), s.size());
+}
+
+static void AppendJsonEscaped(PsramString& out, const char* s) {
+  out.push_back('"');
+  if (s) {
+    for (const char* p = s; *p; ++p) {
+      const unsigned char c = static_cast<unsigned char>(*p);
+      switch (c) {
+        case '"':
+          out += "\\\"";
+          break;
+        case '\\':
+          out += "\\\\";
+          break;
+        case '\b':
+          out += "\\b";
+          break;
+        case '\f':
+          out += "\\f";
+          break;
+        case '\n':
+          out += "\\n";
+          break;
+        case '\r':
+          out += "\\r";
+          break;
+        case '\t':
+          out += "\\t";
+          break;
+        default:
+          if (c < 0x20) {
+            char buf[7];
+            std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+            out += buf;
+          } else {
+            out.push_back(static_cast<char>(c));
+          }
+          break;
+      }
+    }
+  }
+  out.push_back('"');
+}
+
+static void AppendJsonEscaped(PsramString& out, const PsramString& s) {
+  AppendJsonEscaped(out, s.c_str());
+}
+
+static void AppendJsonNumber(PsramString& out, uint64_t value) {
+  char buf[24];
+  std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(value));
+  out += buf;
+}
+
+static void AppendJsonNumber(PsramString& out, int value) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%d", value);
+  out += buf;
+}
+
+static void AppendJsonBool(PsramString& out, bool value) {
+  out += value ? "true" : "false";
+}
+
+static esp_err_t SendPsramJson(httpd_req_t* req, const PsramString& json) {
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, json.c_str(), json.size());
+}
+
 static bool UrlDecode(const char* src, std::string* out) {
   if (!src || !out) return false;
   out->clear();
@@ -1626,11 +1743,12 @@ esp_err_t FsListHandler(httpd_req_t* req) {
   }
 
   struct Entry {
-    std::string name;
+    PsramString name;
     uint64_t size;
     bool is_dir;
   };
-  std::vector<Entry> entries;
+  PsramVector<Entry> entries;
+  entries.reserve(32);
   struct dirent* ent = nullptr;
   while ((ent = readdir(dir)) != nullptr) {
     if (ent->d_name[0] == '.') continue;
@@ -1643,7 +1761,7 @@ esp_err_t FsListHandler(httpd_req_t* req) {
       size = static_cast<uint64_t>(st.st_size);
     }
     bool is_dir = maybe_dir || S_ISDIR(st.st_mode);
-    entries.push_back({ent->d_name, size, is_dir});
+    entries.push_back({ToPsramString(ent->d_name), size, is_dir});
   }
   closedir(dir);
 
@@ -1656,31 +1774,39 @@ esp_err_t FsListHandler(httpd_req_t* req) {
     start = 0;
   }
 
-  cJSON* root = cJSON_CreateObject();
-  cJSON_AddStringToObject(root, "path", rel_path.c_str());
-  cJSON_AddNumberToObject(root, "page", page);
-  cJSON_AddNumberToObject(root, "pageSize", page_size);
-  cJSON_AddNumberToObject(root, "total", total);
-  cJSON_AddNumberToObject(root, "totalPages", total_pages);
-  cJSON* arr = cJSON_CreateArray();
+  PsramString json;
+  json.reserve(256 + static_cast<size_t>(std::min(page_size, total)) * 128);
+  json += "{\"path\":";
+  AppendJsonEscaped(json, rel_path.c_str());
+  json += ",\"page\":";
+  AppendJsonNumber(json, page);
+  json += ",\"pageSize\":";
+  AppendJsonNumber(json, page_size);
+  json += ",\"total\":";
+  AppendJsonNumber(json, total);
+  json += ",\"totalPages\":";
+  AppendJsonNumber(json, total_pages);
+  json += ",\"entries\":[";
   for (int i = start; i < total && i < start + page_size; ++i) {
     const Entry& e = entries[i];
-    cJSON* obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "name", e.name.c_str());
-    cJSON_AddStringToObject(obj, "type", e.is_dir ? "dir" : "file");
-    cJSON_AddNumberToObject(obj, "size", static_cast<double>(e.size));
-    std::string child_path = rel_path.empty() ? e.name : (rel_path + "/" + e.name);
-    cJSON_AddStringToObject(obj, "path", child_path.c_str());
-    cJSON_AddItemToArray(arr, obj);
+    if (i > start) json.push_back(',');
+    PsramString child_path = rel_path.empty() ? e.name : ToPsramString(rel_path);
+    if (!rel_path.empty()) {
+      child_path.push_back('/');
+      child_path += e.name;
+    }
+    json += "{\"name\":";
+    AppendJsonEscaped(json, e.name);
+    json += ",\"type\":";
+    AppendJsonEscaped(json, e.is_dir ? "dir" : "file");
+    json += ",\"size\":";
+    AppendJsonNumber(json, e.size);
+    json += ",\"path\":";
+    AppendJsonEscaped(json, child_path);
+    json.push_back('}');
   }
-  cJSON_AddItemToObject(root, "entries", arr);
-
-  const char* json = cJSON_PrintUnformatted(root);
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, json);
-  cJSON_free((void*)json);
-  cJSON_Delete(root);
-  return ESP_OK;
+  json += "]}";
+  return SendPsramJson(req, json);
 }
 
 esp_err_t FsDownloadHandler(httpd_req_t* req) {
@@ -2047,7 +2173,6 @@ static bool ValidateInternalFlashRelPath(const std::string& raw, std::string* re
 }
 
 esp_err_t FlashListHandler(httpd_req_t* req) {
-  cJSON* root = cJSON_CreateObject();
   std::string rel_path;
   int page = 0;
   int page_size = 10;
@@ -2060,7 +2185,6 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
         std::string decoded;
         if (!UrlDecode(buf, &decoded) || !ValidateInternalFlashRelPath(decoded, &rel_path, nullptr)) {
           httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
-          cJSON_Delete(root);
           return ESP_FAIL;
         }
       }
@@ -2075,41 +2199,35 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
   }
 
   uint32_t flash_size = 0;
-  if (esp_flash_get_size(nullptr, &flash_size) == ESP_OK) {
-    cJSON_AddNumberToObject(root, "flashTotalBytes", static_cast<double>(flash_size));
-  }
+  const bool has_flash_size = esp_flash_get_size(nullptr, &flash_size) == ESP_OK;
 
   nvs_stats_t nvs_stats {};
-  if (nvs_get_stats(nullptr, &nvs_stats) == ESP_OK) {
-    cJSON* nvs = cJSON_CreateObject();
-    cJSON_AddNumberToObject(nvs, "usedEntries", nvs_stats.used_entries);
-    cJSON_AddNumberToObject(nvs, "freeEntries", nvs_stats.free_entries);
-    cJSON_AddNumberToObject(nvs, "availableEntries", nvs_stats.available_entries);
-    cJSON_AddNumberToObject(nvs, "totalEntries", nvs_stats.total_entries);
-    cJSON_AddNumberToObject(nvs, "namespaceCount", nvs_stats.namespace_count);
-    cJSON_AddItemToObject(root, "nvs", nvs);
-  }
-  cJSON_AddStringToObject(root, "storageBackend", StorageBackendToString(app_config.storage_backend).c_str());
+  const bool has_nvs_stats = nvs_get_stats(nullptr, &nvs_stats) == ESP_OK;
 
   struct FlashEntry {
-    std::string name;
-    std::string type;
-    std::string path;
-    std::string area;
-    std::string part_type;
-    std::string subtype;
+    PsramString name;
+    PsramString type;
+    PsramString path;
+    PsramString area;
+    PsramString part_type;
+    PsramString subtype;
     uint64_t size = 0;
     uint32_t offset = 0;
     bool downloadable = false;
   };
-  std::vector<FlashEntry> all_entries;
+  PsramVector<FlashEntry> all_entries;
+  all_entries.reserve(32);
   std::string internal_config;
   if (rel_path.empty() && ReadConfigTextFromInternalFlash(&internal_config)) {
-    all_entries.push_back({"config.txt", "file", "config.txt", "NVS cfg/config_txt", "", "",
+    all_entries.push_back({ToPsramString("config.txt"), ToPsramString("file"), ToPsramString("config.txt"),
+                           ToPsramString("NVS cfg/config_txt"), PsramString(), PsramString(),
                            static_cast<uint64_t>(internal_config.size()), 0, true});
   }
 
   bool internal_fs_mounted = false;
+  bool has_internal_fs_stats = false;
+  uint64_t internal_fs_total = 0;
+  uint64_t internal_fs_used = 0;
   {
     SdLockGuard guard(pdMS_TO_TICKS(500));
     if (guard.locked() && MountInternalFlashFs()) {
@@ -2119,8 +2237,9 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
       if (ops.statvfs_fn(INTERNAL_FLASH_MOUNT_POINT, &fs) == 0 && fs.f_blocks > 0) {
         const uint64_t total = static_cast<uint64_t>(fs.f_blocks) * fs.f_frsize;
         const uint64_t avail = static_cast<uint64_t>(fs.f_bavail) * fs.f_frsize;
-        cJSON_AddNumberToObject(root, "internalFsTotalBytes", static_cast<double>(total));
-        cJSON_AddNumberToObject(root, "internalFsUsedBytes", static_cast<double>(total > avail ? total - avail : 0));
+        internal_fs_total = total;
+        internal_fs_used = total > avail ? total - avail : 0;
+        has_internal_fs_stats = true;
       }
 
       std::string full_dir;
@@ -2142,14 +2261,14 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
             is_dir = S_ISDIR(st.st_mode);
           }
           std::string child_path = rel_path.empty() ? ent->d_name : (rel_path + "/" + ent->d_name);
-          all_entries.push_back({ent->d_name, is_dir ? "dir" : "file", child_path, "internal FAT /flashfs", "", "",
+          all_entries.push_back({ToPsramString(ent->d_name), ToPsramString(is_dir ? "dir" : "file"),
+                                 ToPsramString(child_path), ToPsramString("internal FAT /flashfs"), PsramString(), PsramString(),
                                  size, 0, !is_dir});
         }
         closedir(dir);
       }
     }
   }
-  cJSON_AddBoolToObject(root, "internalFsMounted", internal_fs_mounted);
 
   uint64_t partition_bytes = 0;
   {
@@ -2159,8 +2278,10 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
       if (part) {
         partition_bytes += part->size;
         if (rel_path.empty()) {
-          all_entries.push_back({part->label, "partition", part->label, "", PartitionTypeName(part->type),
-                                 PartitionSubtypeName(part->type, part->subtype), part->size, part->address, false});
+          all_entries.push_back({ToPsramString(part->label), ToPsramString("partition"), ToPsramString(part->label),
+                                 PsramString(), ToPsramString(PartitionTypeName(part->type)),
+                                 ToPsramString(PartitionSubtypeName(part->type, part->subtype)), part->size,
+                                 part->address, false});
         }
       }
       it = esp_partition_next(it);
@@ -2177,35 +2298,103 @@ esp_err_t FlashListHandler(httpd_req_t* req) {
     page = 0;
     start = 0;
   }
-  cJSON_AddStringToObject(root, "path", rel_path.c_str());
-  cJSON_AddNumberToObject(root, "page", page);
-  cJSON_AddNumberToObject(root, "pageSize", page_size);
-  cJSON_AddNumberToObject(root, "total", total);
-  cJSON_AddNumberToObject(root, "totalPages", total_pages);
-  cJSON_AddNumberToObject(root, "partitionBytes", static_cast<double>(partition_bytes));
-  cJSON* entries = cJSON_CreateArray();
+  PsramString json;
+  json.reserve(512 + static_cast<size_t>(std::min(page_size, total)) * 192);
+  json.push_back('{');
+  bool first_field = true;
+  auto comma = [&]() {
+    if (first_field) {
+      first_field = false;
+    } else {
+      json.push_back(',');
+    }
+  };
+  if (has_flash_size) {
+    comma();
+    json += "\"flashTotalBytes\":";
+    AppendJsonNumber(json, static_cast<uint64_t>(flash_size));
+  }
+  if (has_nvs_stats) {
+    comma();
+    json += "\"nvs\":{\"usedEntries\":";
+    AppendJsonNumber(json, static_cast<int>(nvs_stats.used_entries));
+    json += ",\"freeEntries\":";
+    AppendJsonNumber(json, static_cast<int>(nvs_stats.free_entries));
+    json += ",\"availableEntries\":";
+    AppendJsonNumber(json, static_cast<int>(nvs_stats.available_entries));
+    json += ",\"totalEntries\":";
+    AppendJsonNumber(json, static_cast<int>(nvs_stats.total_entries));
+    json += ",\"namespaceCount\":";
+    AppendJsonNumber(json, static_cast<int>(nvs_stats.namespace_count));
+    json.push_back('}');
+  }
+  comma();
+  json += "\"storageBackend\":";
+  AppendJsonEscaped(json, StorageBackendToString(app_config.storage_backend).c_str());
+  if (has_internal_fs_stats) {
+    comma();
+    json += "\"internalFsTotalBytes\":";
+    AppendJsonNumber(json, internal_fs_total);
+    comma();
+    json += "\"internalFsUsedBytes\":";
+    AppendJsonNumber(json, internal_fs_used);
+  }
+  comma();
+  json += "\"internalFsMounted\":";
+  AppendJsonBool(json, internal_fs_mounted);
+  comma();
+  json += "\"path\":";
+  AppendJsonEscaped(json, rel_path.c_str());
+  comma();
+  json += "\"page\":";
+  AppendJsonNumber(json, page);
+  comma();
+  json += "\"pageSize\":";
+  AppendJsonNumber(json, page_size);
+  comma();
+  json += "\"total\":";
+  AppendJsonNumber(json, total);
+  comma();
+  json += "\"totalPages\":";
+  AppendJsonNumber(json, total_pages);
+  comma();
+  json += "\"partitionBytes\":";
+  AppendJsonNumber(json, partition_bytes);
+  comma();
+  json += "\"entries\":[";
   for (int i = start; i < total && i < start + page_size; ++i) {
     const FlashEntry& e = all_entries[i];
-    cJSON* obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "name", e.name.c_str());
-    cJSON_AddStringToObject(obj, "type", e.type.c_str());
-    cJSON_AddStringToObject(obj, "path", e.path.c_str());
-    if (!e.area.empty()) cJSON_AddStringToObject(obj, "area", e.area.c_str());
-    if (!e.part_type.empty()) cJSON_AddStringToObject(obj, "partType", e.part_type.c_str());
-    if (!e.subtype.empty()) cJSON_AddStringToObject(obj, "subtype", e.subtype.c_str());
-    if (e.offset > 0) cJSON_AddNumberToObject(obj, "offset", e.offset);
-    cJSON_AddNumberToObject(obj, "size", static_cast<double>(e.size));
-    cJSON_AddBoolToObject(obj, "downloadable", e.downloadable);
-    cJSON_AddItemToArray(entries, obj);
+    if (i > start) json.push_back(',');
+    json += "{\"name\":";
+    AppendJsonEscaped(json, e.name);
+    json += ",\"type\":";
+    AppendJsonEscaped(json, e.type);
+    json += ",\"path\":";
+    AppendJsonEscaped(json, e.path);
+    if (!e.area.empty()) {
+      json += ",\"area\":";
+      AppendJsonEscaped(json, e.area);
+    }
+    if (!e.part_type.empty()) {
+      json += ",\"partType\":";
+      AppendJsonEscaped(json, e.part_type);
+    }
+    if (!e.subtype.empty()) {
+      json += ",\"subtype\":";
+      AppendJsonEscaped(json, e.subtype);
+    }
+    if (e.offset > 0) {
+      json += ",\"offset\":";
+      AppendJsonNumber(json, static_cast<uint64_t>(e.offset));
+    }
+    json += ",\"size\":";
+    AppendJsonNumber(json, e.size);
+    json += ",\"downloadable\":";
+    AppendJsonBool(json, e.downloadable);
+    json.push_back('}');
   }
-  cJSON_AddItemToObject(root, "entries", entries);
-
-  const char* json = cJSON_PrintUnformatted(root);
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, json ? json : "{}");
-  cJSON_free((void*)json);
-  cJSON_Delete(root);
-  return ESP_OK;
+  json += "]}";
+  return SendPsramJson(req, json);
 }
 
 esp_err_t FlashDownloadHandler(httpd_req_t* req) {
