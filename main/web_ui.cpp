@@ -373,7 +373,12 @@ const char INDEX_HTML[] = R"rawliteral(
               <div>Internal flash mounted: <span id="internalFlashMountedLabel">--</span></div>
               <div>Active storage mounted: <span id="activeStorageMountedLabel">--</span></div>
               <div>Heap free: <span id="heapFreeBytes">--</span> bytes</div>
+              <div>Heap min free: <span id="heapMinFreeBytes">--</span> bytes</div>
               <div>Heap largest block: <span id="heapLargestFreeBlockBytes">--</span> bytes</div>
+              <div>Internal heap free: <span id="heapInternalFreeBytes">--</span> bytes</div>
+              <div>Internal largest block: <span id="heapInternalLargestFreeBlockBytes">--</span> bytes</div>
+              <div>PSRAM heap free: <span id="heapPsramFreeBytes">--</span> bytes</div>
+              <div>PSRAM largest block: <span id="heapPsramLargestFreeBlockBytes">--</span> bytes</div>
               <div>MinIO upload attempts: <span id="minioUploadAttempts">--</span></div>
               <div>MinIO last attempt: <span id="minioLastAttempt">--</span></div>
             </div>
@@ -1013,10 +1018,17 @@ const char INDEX_HTML[] = R"rawliteral(
       }
       const extPowerEl = document.getElementById('externalPowerState');
       if (extPowerEl) extPowerEl.textContent = data.externalPowerOn ? 'ON' : 'OFF';
-      const heapFreeEl = document.getElementById('heapFreeBytes');
-      if (heapFreeEl) heapFreeEl.textContent = data.heapFreeBytes ?? '--';
-      const heapLargestEl = document.getElementById('heapLargestFreeBlockBytes');
-      if (heapLargestEl) heapLargestEl.textContent = data.heapLargestFreeBlockBytes ?? '--';
+      const setMetricText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value ?? '--';
+      };
+      setMetricText('heapFreeBytes', data.heapFreeBytes);
+      setMetricText('heapMinFreeBytes', data.heapMinFreeBytes);
+      setMetricText('heapLargestFreeBlockBytes', data.heapLargestFreeBlockBytes);
+      setMetricText('heapInternalFreeBytes', data.heapInternalFreeBytes);
+      setMetricText('heapInternalLargestFreeBlockBytes', data.heapInternalLargestFreeBlockBytes);
+      setMetricText('heapPsramFreeBytes', data.heapPsramFreeBytes);
+      setMetricText('heapPsramLargestFreeBlockBytes', data.heapPsramLargestFreeBlockBytes);
       const minioAttemptsEl = document.getElementById('minioUploadAttempts');
       if (minioAttemptsEl) minioAttemptsEl.textContent = data.minioUploadAttempts ?? '--';
       const minioLastEl = document.getElementById('minioLastAttempt');

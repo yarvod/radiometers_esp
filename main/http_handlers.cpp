@@ -315,7 +315,14 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "activeStorageMounted",
                         app_config.storage_backend == StorageBackend::kInternalFlash ? internal_flash_fs_mounted : log_sd_mounted);
   cJSON_AddNumberToObject(root, "heapFreeBytes", static_cast<double>(snapshot.heap_free_bytes));
+  cJSON_AddNumberToObject(root, "heapMinFreeBytes", static_cast<double>(snapshot.heap_min_free_bytes));
   cJSON_AddNumberToObject(root, "heapLargestFreeBlockBytes", static_cast<double>(snapshot.heap_largest_free_block_bytes));
+  cJSON_AddNumberToObject(root, "heapInternalFreeBytes", static_cast<double>(snapshot.heap_internal_free_bytes));
+  cJSON_AddNumberToObject(root, "heapInternalLargestFreeBlockBytes",
+                          static_cast<double>(snapshot.heap_internal_largest_free_block_bytes));
+  cJSON_AddNumberToObject(root, "heapPsramFreeBytes", static_cast<double>(snapshot.heap_psram_free_bytes));
+  cJSON_AddNumberToObject(root, "heapPsramLargestFreeBlockBytes",
+                          static_cast<double>(snapshot.heap_psram_largest_free_block_bytes));
   cJSON_AddNumberToObject(root, "minioUploadAttempts", snapshot.minio_upload_attempts);
   cJSON_AddNumberToObject(root, "minioLastAttemptMs", static_cast<double>(snapshot.minio_last_attempt_ms));
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);

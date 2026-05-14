@@ -139,7 +139,12 @@ struct SharedState {
   int sd_to_upload_files;
   int sd_uploaded_files;
   uint32_t heap_free_bytes;
+  uint32_t heap_min_free_bytes;
   uint32_t heap_largest_free_block_bytes;
+  uint32_t heap_internal_free_bytes;
+  uint32_t heap_internal_largest_free_block_bytes;
+  uint32_t heap_psram_free_bytes;
+  uint32_t heap_psram_largest_free_block_bytes;
   uint32_t minio_upload_attempts;
   uint64_t minio_last_attempt_ms;
 };

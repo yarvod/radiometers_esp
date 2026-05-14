@@ -761,8 +761,15 @@ static void NetworkMonitorTask(void*) {
   const int check_timeout_ms = 1500;
   while (true) {
     UpdateState([](SharedState& s) {
-      s.heap_free_bytes = static_cast<uint32_t>(esp_get_free_heap_size());
+      s.heap_free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
+      s.heap_min_free_bytes = static_cast<uint32_t>(heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
       s.heap_largest_free_block_bytes = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+      s.heap_internal_free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+      s.heap_internal_largest_free_block_bytes =
+          static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+      s.heap_psram_free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      s.heap_psram_largest_free_block_bytes =
+          static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     });
     EnsureConfiguredNetworkProgress();
     if (app_config.net_mode == NetMode::kWifiEth) {
@@ -2264,8 +2271,15 @@ static bool UploadPendingOnce() {
   UpdateState([](SharedState& s) {
     s.minio_upload_attempts++;
     s.minio_last_attempt_ms = esp_timer_get_time() / 1000ULL;
-    s.heap_free_bytes = static_cast<uint32_t>(esp_get_free_heap_size());
+    s.heap_free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    s.heap_min_free_bytes = static_cast<uint32_t>(heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     s.heap_largest_free_block_bytes = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    s.heap_internal_free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    s.heap_internal_largest_free_block_bytes =
+        static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    s.heap_psram_free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    s.heap_psram_largest_free_block_bytes =
+        static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   });
   std::vector<std::string> files;
   {

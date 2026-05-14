@@ -75,7 +75,14 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "sdToUploadFiles", snapshot.sd_to_upload_files);
   cJSON_AddNumberToObject(root, "sdUploadedFiles", snapshot.sd_uploaded_files);
   cJSON_AddNumberToObject(root, "heapFreeBytes", static_cast<double>(snapshot.heap_free_bytes));
+  cJSON_AddNumberToObject(root, "heapMinFreeBytes", static_cast<double>(snapshot.heap_min_free_bytes));
   cJSON_AddNumberToObject(root, "heapLargestFreeBlockBytes", static_cast<double>(snapshot.heap_largest_free_block_bytes));
+  cJSON_AddNumberToObject(root, "heapInternalFreeBytes", static_cast<double>(snapshot.heap_internal_free_bytes));
+  cJSON_AddNumberToObject(root, "heapInternalLargestFreeBlockBytes",
+                          static_cast<double>(snapshot.heap_internal_largest_free_block_bytes));
+  cJSON_AddNumberToObject(root, "heapPsramFreeBytes", static_cast<double>(snapshot.heap_psram_free_bytes));
+  cJSON_AddNumberToObject(root, "heapPsramLargestFreeBlockBytes",
+                          static_cast<double>(snapshot.heap_psram_largest_free_block_bytes));
   cJSON_AddNumberToObject(root, "minioUploadAttempts", snapshot.minio_upload_attempts);
   cJSON_AddNumberToObject(root, "minioLastAttemptMs", static_cast<double>(snapshot.minio_last_attempt_ms));
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
