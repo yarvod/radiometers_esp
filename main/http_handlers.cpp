@@ -346,6 +346,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddBoolToObject(root, "logUseMotor", snapshot.log_use_motor);
   cJSON_AddNumberToObject(root, "logDuration", snapshot.log_duration_s);
+  cJSON_AddNumberToObject(root, "loggingMotorSteps", app_config.logging_motor_steps);
+  cJSON_AddBoolToObject(root, "loggingHomeEachCycle", app_config.logging_home_each_cycle);
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
   cJSON_AddStringToObject(root, "wifiPassword", app_config.wifi_password.c_str());
@@ -597,7 +599,7 @@ esp_err_t StepperMoveHandler(httpd_req_t* req) {
 }
 
 esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
-  const size_t buf_len = std::min<size_t>(req->content_len, 128);
+  const size_t buf_len = std::min<size_t>(req->content_len, 256);
   if (buf_len == 0) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
     return ESP_FAIL;
@@ -629,6 +631,20 @@ esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
   const int speed_us = (speed_item && cJSON_IsNumber(speed_item) && speed_item->valueint > 0)
                            ? speed_item->valueint
                            : app_config.stepper_speed_us;
+  cJSON* logging_steps_item = cJSON_GetObjectItem(root, "loggingMotorSteps");
+  bool logging_steps_set = false;
+  int logging_motor_steps = app_config.logging_motor_steps;
+  if (logging_steps_item && cJSON_IsNumber(logging_steps_item)) {
+    logging_motor_steps = logging_steps_item->valueint;
+    logging_steps_set = true;
+  }
+  cJSON* home_each_item = cJSON_GetObjectItem(root, "loggingHomeEachCycle");
+  bool home_each_set = false;
+  bool logging_home_each_cycle = app_config.logging_home_each_cycle;
+  if (home_each_item && cJSON_IsBool(home_each_item)) {
+    logging_home_each_cycle = cJSON_IsTrue(home_each_item);
+    home_each_set = true;
+  }
   cJSON* hall_item = cJSON_GetObjectItem(root, "hallActiveLevel");
   if (!hall_item) {
     hall_item = cJSON_GetObjectItem(root, "motorHallActiveLevel");
@@ -644,6 +660,10 @@ esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
   StepperHomeOffsetRequest action_req;
   action_req.offset_steps = offset_steps;
   action_req.speed_us = speed_us;
+  action_req.logging_motor_steps = logging_motor_steps;
+  action_req.logging_motor_steps_set = logging_steps_set;
+  action_req.logging_home_each_cycle = logging_home_each_cycle;
+  action_req.logging_home_each_cycle_set = home_each_set;
   action_req.hall_active_level = hall_active_level;
   action_req.hall_active_level_set = hall_active_set;
   ActionResult res = ActionStepperHomeOffset(action_req);
@@ -653,10 +673,15 @@ esp_err_t StepperHomeOffsetHandler(httpd_req_t* req) {
   }
 
   httpd_resp_set_type(req, "application/json");
-  char resp[160];
+  char resp[240];
   std::snprintf(resp, sizeof(resp),
-                "{\"status\":\"stepper_settings_saved\",\"speedUs\":%d,\"offsetSteps\":%d,\"hallActiveLevel\":%d}",
-                speed_us, offset_steps, app_config.motor_hall_active_level);
+                "{\"status\":\"stepper_settings_saved\",\"speedUs\":%d,\"offsetSteps\":%d,"
+                "\"loggingMotorSteps\":%d,\"loggingHomeEachCycle\":%s,\"hallActiveLevel\":%d}",
+                app_config.stepper_speed_us,
+                app_config.stepper_home_offset_steps,
+                app_config.logging_motor_steps,
+                app_config.logging_home_each_cycle ? "true" : "false",
+                app_config.motor_hall_active_level);
   return httpd_resp_sendstr(req, resp);
 }
 
@@ -759,8 +784,9 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
 
   const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
   constexpr int max_steps = 20000;
-  gpio_set_level(STEPPER_DIR, 0);
-  UpdateState([](SharedState& s) { s.stepper_direction_forward = false; });
+  constexpr bool home_search_forward = true;
+  gpio_set_level(STEPPER_DIR, home_search_forward ? 1 : 0);
+  UpdateState([](SharedState& s) { s.stepper_direction_forward = home_search_forward; });
 
   while (!IsHallTriggered() && result.hall_steps < max_steps) {
     if (CopyState().stepper_abort) {
@@ -770,7 +796,7 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
     }
     StepperPulseOnce();
     UpdateState([](SharedState& s) {
-      s.stepper_position -= 1;
+      s.stepper_position += home_search_forward ? 1 : -1;
       s.stepper_target = s.stepper_position;
     });
     esp_rom_delay_us(step_delay_us);
@@ -1064,6 +1090,8 @@ static std::string BuildConfigText(const AppConfig& cfg, const PidConfig& pid, U
   }
   AppendConfigLine(&text, "logging_use_motor = %s\n", cfg.logging_use_motor ? "true" : "false");
   AppendConfigLine(&text, "logging_duration_s = %.3f\n", cfg.logging_duration_s);
+  AppendConfigLine(&text, "logging_motor_steps = %d\n", cfg.logging_motor_steps);
+  AppendConfigLine(&text, "logging_home_each_cycle = %s\n", cfg.logging_home_each_cycle ? "true" : "false");
   AppendConfigLine(&text, "stepper_speed_us = %d\n", cfg.stepper_speed_us);
   AppendConfigLine(&text, "stepper_home_offset_steps = %d\n", cfg.stepper_home_offset_steps);
   AppendConfigLine(&text, "motor_hall_active_level = %d\n", cfg.motor_hall_active_level);
@@ -1271,7 +1299,6 @@ void StopLogging() {
 }
 
 void LoggingTask(void*) {
-  constexpr int kLoggingMotorSteps = 100;  // 90 degrees on the current motor/driver setup.
   constexpr int kGpsPositionTimeoutMs = 1500;
   const TickType_t settle_delay = pdMS_TO_TICKS(1000);  // pause after motor moves
   constexpr UBaseType_t kLogStackLowWords = 512;
@@ -1356,6 +1383,7 @@ void LoggingTask(void*) {
   SharedState pending_base{};
   bool has_pending_base = false;
   bool at_zero = true;
+  int pending_motor_steps = 0;
 
   if (log_config.use_motor || !log_config.homed_once) {
     StepperHomeResult home_result = home_blocking();
@@ -1408,10 +1436,11 @@ void LoggingTask(void*) {
           continue;
         }
 
-        // Сохраняем базу на пользовательском нуле и уходим на +45 градусов.
+        // Сохраняем базу на пользовательском нуле и уходим на калибровочную нагрузку.
         pending_base = avg;
         has_pending_base = true;
-        if (!move_blocking(kLoggingMotorSteps, true)) {
+        pending_motor_steps = std::clamp(app_config.logging_motor_steps, 1, 20000);
+        if (!move_blocking(pending_motor_steps, true)) {
           ESP_LOGW(TAG, "Logging aborted during stepper move");
           StopLogging();
           vTaskDelete(nullptr);
@@ -1420,7 +1449,7 @@ void LoggingTask(void*) {
         continue;
       }
 
-      // Мы в +45 градусах от пользовательского нуля, это калибровочный замер.
+      // Мы у калибровочной нагрузки, это калибровочный замер.
       vTaskDelay(settle_delay);
       SharedState avg{};
       if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg)) {
@@ -1461,19 +1490,38 @@ void LoggingTask(void*) {
         });
       }
 
-      // Вернуться на пользовательский ноль через Hall + offset, чтобы ошибка шагов не накапливалась.
-      StepperHomeResult home_result = home_blocking();
-      if (!StepperHomeSucceeded(home_result)) {
-        const std::string msg = StepperHomeFailureMessage("Logging stopped: return homing",
-                                                          home_result,
-                                                          kStepperHomeRetryAttempts);
-        ESP_LOGW(TAG, "%s", msg.c_str());
-        ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, msg);
-        StopLogging();
-        vTaskDelete(nullptr);
+      if (app_config.logging_home_each_cycle) {
+        // Вернуться на пользовательский ноль через Hall + offset, чтобы ошибка шагов не накапливалась.
+        StepperHomeResult home_result = home_blocking();
+        if (!StepperHomeSucceeded(home_result)) {
+          const std::string msg = StepperHomeFailureMessage("Logging stopped: return homing",
+                                                            home_result,
+                                                            kStepperHomeRetryAttempts);
+          ESP_LOGW(TAG, "%s", msg.c_str());
+          ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, msg);
+          StopLogging();
+          vTaskDelete(nullptr);
+        }
+      } else {
+        // Быстрый возврат: отъехать назад на то же число шагов, без повторного поиска Hall.
+        const int return_steps = std::max(pending_motor_steps, 1);
+        if (!move_blocking(return_steps, false)) {
+          ESP_LOGW(TAG, "Logging aborted during stepper return");
+          ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, "Logging stopped: step return failed");
+          StopLogging();
+          vTaskDelete(nullptr);
+        }
+        UpdateState([](SharedState& s) {
+          s.stepper_position = 0;
+          s.stepper_target = 0;
+          s.stepper_homed = true;
+          s.stepper_home_status = "step_return_zero";
+        });
+        ErrorManagerClear(ErrorCode::kStepperHoming);
       }
       at_zero = true;
       has_pending_base = false;
+      pending_motor_steps = 0;
       continue;
     }
 

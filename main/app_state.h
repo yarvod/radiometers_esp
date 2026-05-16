@@ -44,6 +44,8 @@ struct AppConfig {
   std::string logging_postfix;
   bool logging_use_motor;
   float logging_duration_s;
+  int logging_motor_steps;
+  bool logging_home_each_cycle;
   int stepper_speed_us;
   int stepper_home_offset_steps;
   int motor_hall_active_level;

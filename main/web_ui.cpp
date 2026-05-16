@@ -259,6 +259,21 @@ const char INDEX_HTML[] = R"rawliteral(
             </div>
 
             <div class="form-group">
+              <label for="loggingMotorSteps">Logging load position steps:</label>
+              <input type="number" id="loggingMotorSteps" value="100" min="1" max="20000" step="1" onchange="saveStepperSettings()">
+              <div class="speed-info">В цикле логирования мотор уходит от нуля на это число шагов, чтобы смотреть на нагрузку.</div>
+            </div>
+
+            <div class="form-group">
+              <label for="loggingReturnMode">Logging return mode:</label>
+              <select id="loggingReturnMode" onchange="saveStepperSettings()">
+                <option value="home">Find Hall + offset every cycle</option>
+                <option value="steps">Return by saved step count</option>
+              </select>
+              <div class="speed-info">По шагам быстрее, но если мотор пропустит шаги, ошибка может накапливаться.</div>
+            </div>
+
+            <div class="form-group">
               <label for="hallActiveLevel">Hall active level:</label>
               <select id="hallActiveLevel" onchange="saveStepperSettings()">
                 <option value="0">0 / LOW</option>
@@ -977,6 +992,11 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes' : 'No';
       setValueIfIdle('speed', data.stepperSpeedUs ?? '');
       setValueIfIdle('homeOffsetSteps', data.stepperHomeOffsetSteps ?? 0);
+      setValueIfIdle('loggingMotorSteps', data.loggingMotorSteps ?? 100);
+      const loggingReturnModeEl = document.getElementById('loggingReturnMode');
+      if (loggingReturnModeEl && document.activeElement !== loggingReturnModeEl) {
+        loggingReturnModeEl.value = data.loggingHomeEachCycle === false ? 'steps' : 'home';
+      }
       const hallActiveLevelEl = document.getElementById('hallActiveLevel');
       if (hallActiveLevelEl && document.activeElement !== hallActiveLevelEl) {
         hallActiveLevelEl.value = String(data.motorHallActiveLevel ?? 0);
@@ -1356,11 +1376,13 @@ const char INDEX_HTML[] = R"rawliteral(
     function saveStepperSettings(showAlert = true) {
       const speedUs = parseInt(document.getElementById('speed').value, 10) || 1;
       const offsetSteps = parseInt(document.getElementById('homeOffsetSteps').value, 10) || 0;
+      const loggingMotorSteps = Math.max(1, parseInt(document.getElementById('loggingMotorSteps').value, 10) || 100);
+      const loggingHomeEachCycle = document.getElementById('loggingReturnMode').value !== 'steps';
       const hallActiveLevel = parseInt(document.getElementById('hallActiveLevel').value, 10) ? 1 : 0;
       return fetch('/stepper/home_offset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ speedUs, offsetSteps, hallActiveLevel })
+        body: JSON.stringify({ speedUs, offsetSteps, loggingMotorSteps, loggingHomeEachCycle, hallActiveLevel })
       })
       .then(response => {
         if (!response.ok) throw new Error('Failed to save motor settings');

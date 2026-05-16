@@ -20,6 +20,10 @@ struct StepperMoveRequest {
 struct StepperHomeOffsetRequest {
   int offset_steps = 0;
   int speed_us = 0;
+  int logging_motor_steps = 0;
+  bool logging_motor_steps_set = false;
+  bool logging_home_each_cycle = true;
+  bool logging_home_each_cycle_set = false;
   int hall_active_level = 0;
   bool hall_active_level_set = false;
 };

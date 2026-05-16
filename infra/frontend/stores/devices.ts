@@ -46,6 +46,9 @@ const normalizeDeviceState = (msg: any) => {
   if (typeof msg.busV === 'number' && typeof state.inaBusVoltage !== 'number') state.inaBusVoltage = msg.busV
   if (typeof msg.busI === 'number' && typeof state.inaCurrent !== 'number') state.inaCurrent = msg.busI
   if (typeof msg.busP === 'number' && typeof state.inaPower !== 'number') state.inaPower = msg.busP
+  if (typeof msg.inaVoltage === 'number' && typeof state.inaBusVoltage !== 'number') state.inaBusVoltage = msg.inaVoltage
+  if (typeof msg.inaBusV === 'number' && typeof state.inaBusVoltage !== 'number') state.inaBusVoltage = msg.inaBusV
+  if (typeof msg.busVoltage === 'number' && typeof state.inaBusVoltage !== 'number') state.inaBusVoltage = msg.busVoltage
   return state
 }
 
@@ -222,6 +225,14 @@ export const useDevicesStore = defineStore('devices', {
     },
     async stepperZero(mqtt: MqttClient, deviceId: string) {
       return this.sendCommand(mqtt, deviceId, { type: 'stepper_zero' })
+    },
+    async stepperSettings(mqtt: MqttClient, deviceId: string, payload: {
+      speedUs: number
+      offsetSteps: number
+      loggingMotorSteps: number
+      loggingHomeEachCycle: boolean
+    }) {
+      return this.sendCommand(mqtt, deviceId, { type: 'stepper_home_offset', ...payload })
     },
     async heaterSet(mqtt: MqttClient, deviceId: string, power: number) {
       return this.sendCommand(mqtt, deviceId, { type: 'heater_set', power })

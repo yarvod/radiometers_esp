@@ -19,6 +19,8 @@ AppConfig app_config{
     "",                 // logging_postfix
     false,              // logging_use_motor
     1.0f,               // logging_duration_s
+    100,                // logging_motor_steps
+    true,               // logging_home_each_cycle
     1500,               // stepper_speed_us
     0,                  // stepper_home_offset_steps
     0,                  // motor_hall_active_level

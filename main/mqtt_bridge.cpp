@@ -344,6 +344,7 @@ void BuildMqttState(char* out, size_t out_len) {
     JsonAppendEscaped(&b, state.log_filename.c_str());
     JsonAppend(&b,
                ",\"logUseMotor\":%s,\"logDuration\":%.3f,"
+               "\"loggingMotorSteps\":%d,\"loggingHomeEachCycle\":%s,"
                "\"pidEnabled\":%s,\"pidSetpoint\":%.3f,\"pidSensorIndex\":%d,\"pidSensorMask\":%u,"
                "\"pidKp\":%.6f,\"pidKi\":%.6f,\"pidKd\":%.6f,\"pidOutput\":%.3f,"
                "\"stepperEnabled\":%s,\"stepperHoming\":%s,\"stepperDirForward\":%s,\"stepperMoving\":%s,"
@@ -352,6 +353,8 @@ void BuildMqttState(char* out, size_t out_len) {
                "\"motorHallRawLevel\":%d,\"motorHallTriggered\":%s,\"stepperHomeStatus\":",
                state.log_use_motor ? "true" : "false",
                state.log_duration_s,
+               app_config.logging_motor_steps,
+               app_config.logging_home_each_cycle ? "true" : "false",
                state.pid_enabled ? "true" : "false",
                state.pid_setpoint,
                state.pid_sensor_index,
@@ -565,6 +568,16 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     StepperHomeOffsetRequest req;
     req.offset_steps = get_int("offsetSteps", get_int("offset", app_config.stepper_home_offset_steps));
     req.speed_us = get_int("speedUs", get_int("speed", app_config.stepper_speed_us));
+    cJSON* logging_steps_item = cJSON_GetObjectItem(root, "loggingMotorSteps");
+    if (logging_steps_item && cJSON_IsNumber(logging_steps_item)) {
+      req.logging_motor_steps = logging_steps_item->valueint;
+      req.logging_motor_steps_set = true;
+    }
+    cJSON* home_each_item = cJSON_GetObjectItem(root, "loggingHomeEachCycle");
+    if (home_each_item && cJSON_IsBool(home_each_item)) {
+      req.logging_home_each_cycle = cJSON_IsTrue(home_each_item);
+      req.logging_home_each_cycle_set = true;
+    }
     cJSON* hall_item = cJSON_GetObjectItem(root, "hallActiveLevel");
     if (!hall_item) hall_item = cJSON_GetObjectItem(root, "motorHallActiveLevel");
     if (hall_item && cJSON_IsNumber(hall_item)) {

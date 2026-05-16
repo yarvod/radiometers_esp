@@ -2560,6 +2560,10 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
   bool log_use_motor_val = false;
   bool log_duration_set = false;
   float log_duration_val = log_config.duration_s;
+  bool logging_motor_steps_set = false;
+  int logging_motor_steps_val = config->logging_motor_steps;
+  bool logging_home_each_cycle_set = false;
+  bool logging_home_each_cycle_val = config->logging_home_each_cycle;
   bool storage_backend_set = false;
   StorageBackend storage_backend_val = config->storage_backend;
   bool stepper_speed_set = false;
@@ -2690,6 +2694,19 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
     } else if (key == "logging_duration_s") {
       log_duration_val = std::strtof(value.c_str(), nullptr);
       log_duration_set = (log_duration_val > 0.0f);
+    } else if (key == "logging_motor_steps") {
+      logging_motor_steps_val = std::atoi(value.c_str());
+      if (logging_motor_steps_val > 0) {
+        logging_motor_steps_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid logging_motor_steps in config.txt");
+      }
+    } else if (key == "logging_home_each_cycle") {
+      if (ParseBool(value, &logging_home_each_cycle_val)) {
+        logging_home_each_cycle_set = true;
+      } else {
+        ESP_LOGW(TAG, "Invalid logging_home_each_cycle in config.txt");
+      }
     } else if (key == "storage_backend") {
       if (ParseStorageBackend(value, &storage_backend_val)) {
         storage_backend_set = true;
@@ -2796,6 +2813,12 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
     config->logging_duration_s = log_duration_val;
     log_config.duration_s = log_duration_val;
   }
+  if (logging_motor_steps_set) {
+    config->logging_motor_steps = std::clamp(logging_motor_steps_val, 1, 20000);
+  }
+  if (logging_home_each_cycle_set) {
+    config->logging_home_each_cycle = logging_home_each_cycle_val;
+  }
   if (storage_backend_set) {
     config->storage_backend = storage_backend_val;
   }
@@ -2876,7 +2899,7 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
     pid_config.from_file = true;
   }
   return config->wifi_from_file || config->usb_mass_storage_from_file || log_active_set || log_postfix_set || log_use_motor_set ||
-         log_duration_set || storage_backend_set || stepper_speed_set || stepper_home_offset_set || motor_hall_active_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
+         log_duration_set || logging_motor_steps_set || logging_home_each_cycle_set || storage_backend_set || stepper_speed_set || stepper_home_offset_set || motor_hall_active_set || device_id_set || minio_endpoint_set || minio_access_set || minio_secret_set ||
          minio_bucket_set || minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set || mqtt_enabled_set ||
          net_mode_set || net_priority_set || gps_rtcm_types_set || gps_mode_set || pid_config.from_file;
 }

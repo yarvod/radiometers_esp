@@ -56,11 +56,15 @@
           <div class="temp-value small">{{ sensor.value?.toFixed?.(2) ?? '--' }} °C</div>
         </div>
         <div class="temp-card">
-          <div class="temp-title">I</div>
+          <div class="temp-title">INA U</div>
+          <div class="temp-value small">{{ device?.state?.inaBusVoltage?.toFixed?.(3) ?? '—' }} V</div>
+        </div>
+        <div class="temp-card">
+          <div class="temp-title">INA I</div>
           <div class="temp-value small">{{ device?.state?.inaCurrent?.toFixed?.(3) ?? '—' }} A</div>
         </div>
         <div class="temp-card">
-          <div class="temp-title">P</div>
+          <div class="temp-title">INA P</div>
           <div class="temp-value small">{{ device?.state?.inaPower?.toFixed?.(3) ?? '—' }} W</div>
         </div>
         <div class="temp-card warm">
@@ -237,10 +241,28 @@
         </div>
         <div class="form-group">
           <label>Скорость, us</label>
-          <input type="number" v-model.number="stepper.speedUs" />
+          <input type="number" v-model.number="stepper.speedUs" @input="stepperSettingsDirty = true" />
+        </div>
+        <div class="form-group">
+          <label>Offset после Hall, шаги</label>
+          <input type="number" v-model.number="stepper.offsetSteps" @input="stepperSettingsDirty = true" />
+        </div>
+        <div class="form-group">
+          <label>Шагов до нагрузки в логировании</label>
+          <input type="number" min="1" max="20000" v-model.number="stepper.loggingMotorSteps" @input="stepperSettingsDirty = true" />
+        </div>
+        <div class="form-group">
+          <label>Возврат в цикле логирования</label>
+          <select v-model="stepper.loggingReturnMode" @change="stepperSettingsDirty = true">
+            <option value="home">Искать Hall + offset каждый цикл</option>
+            <option value="steps">Возврат назад по шагам</option>
+          </select>
         </div>
         <label class="inline checkbox"><input type="checkbox" v-model="stepper.reverse" /> <span>Реверс</span></label>
-        <button class="btn primary" @click="stepperMove">Движение</button>
+        <div class="actions">
+          <button class="btn primary" @click="stepperMove">Движение</button>
+          <button class="btn ghost" @click="saveStepperSettings">Сохранить настройки мотора</button>
+        </div>
         <p class="muted">Pos: {{ device?.state?.stepperPosition }} Target: {{ device?.state?.stepperTarget }}</p>
         <p class="muted" v-if="stepperStatus">{{ stepperStatus }}</p>
       </div>
@@ -1016,9 +1038,17 @@ const selectedAtmosphereStations = computed(() => {
 })
 
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
-const stepper = reactive({ steps: 400, speedUs: 1500, reverse: false })
+const stepper = reactive({
+  steps: 400,
+  speedUs: 1500,
+  offsetSteps: 0,
+  loggingMotorSteps: 100,
+  loggingReturnMode: 'home',
+  reverse: false,
+})
 const logStatus = ref('')
 const stepperStatus = ref('')
+const stepperSettingsDirty = ref(false)
 const heaterPower = ref(0)
 const heaterEditing = ref(false)
 const pidDirty = ref(false)
@@ -1178,6 +1208,8 @@ const stepperHomeLabel = computed(() => {
       return 'Offset 0'
     case 'manual_zero':
       return 'Ручной 0'
+    case 'step_return_zero':
+      return 'Шаговый 0'
     case 'not_found':
       return 'Не найден'
     case 'aborted':
@@ -1191,7 +1223,7 @@ const stepperHomeLabel = computed(() => {
   }
 })
 const stepperHomeChipClass = computed(() => {
-  if (['ok', 'hall_zero', 'offset_zero', 'manual_zero'].includes(stepperHomeStatus.value)) return 'online'
+  if (['ok', 'hall_zero', 'offset_zero', 'manual_zero', 'step_return_zero'].includes(stepperHomeStatus.value)) return 'online'
   if (['running', 'seeking_hall', 'applying_offset'].includes(stepperHomeStatus.value)) return 'cool'
   if (stepperHomeStatus.value === 'not_found' || stepperHomeStatus.value === 'aborted') return 'warn'
   return 'subtle'
@@ -1992,6 +2024,12 @@ watch(
       netForm.mode = state.netMode === 'eth' || state.netMode === 'both' || state.netMode === 'wifi' ? state.netMode : 'wifi'
       netForm.priority = state.netPriority === 'eth' ? 'eth' : 'wifi'
     }
+    if (!stepperSettingsDirty.value) {
+      if (Number.isFinite(state.stepperSpeedUs)) stepper.speedUs = Number(state.stepperSpeedUs)
+      if (Number.isFinite(state.stepperHomeOffsetSteps)) stepper.offsetSteps = Number(state.stepperHomeOffsetSteps)
+      if (Number.isFinite(state.loggingMotorSteps)) stepper.loggingMotorSteps = Number(state.loggingMotorSteps)
+      stepper.loggingReturnMode = state.loggingHomeEachCycle === false ? 'steps' : 'home'
+    }
     if (!heaterEditing.value && Number.isFinite(state.heaterPower)) {
       heaterPower.value = Number(state.heaterPower)
     }
@@ -2198,6 +2236,24 @@ async function stepperMove() {
     stepperStatus.value = e?.message || 'Не удалось запустить движение'
   }
 }
+
+async function saveStepperSettings() {
+  if (!deviceId.value) return
+  stepperStatus.value = 'Сохраняю настройки мотора...'
+  try {
+    await store.stepperSettings(nuxtApp.$mqtt, deviceId.value, {
+      speedUs: Math.max(1, Number(stepper.speedUs) || 1),
+      offsetSteps: Number(stepper.offsetSteps) || 0,
+      loggingMotorSteps: Math.min(20000, Math.max(1, Number(stepper.loggingMotorSteps) || 100)),
+      loggingHomeEachCycle: stepper.loggingReturnMode !== 'steps',
+    })
+    stepperSettingsDirty.value = false
+    stepperStatus.value = 'Настройки мотора сохранены'
+  } catch (e: any) {
+    stepperStatus.value = e?.message || 'Не удалось сохранить настройки мотора'
+  }
+}
+
 async function setHeater() {
   if (!deviceId.value) return
   pidApplyStatus.value = 'Устанавливаю нагрев...'

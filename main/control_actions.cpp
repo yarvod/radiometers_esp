@@ -34,6 +34,8 @@ std::string BuildStateJsonInternal() {
   cJSON_AddStringToObject(root, "logFilename", snapshot.log_filename.c_str());
   cJSON_AddBoolToObject(root, "logUseMotor", snapshot.log_use_motor);
   cJSON_AddNumberToObject(root, "logDuration", snapshot.log_duration_s);
+  cJSON_AddNumberToObject(root, "loggingMotorSteps", app_config.logging_motor_steps);
+  cJSON_AddBoolToObject(root, "loggingHomeEachCycle", app_config.logging_home_each_cycle);
   cJSON_AddNumberToObject(root, "voltage1", snapshot.voltage1);
   cJSON_AddNumberToObject(root, "voltage2", snapshot.voltage2);
   cJSON_AddNumberToObject(root, "voltage3", snapshot.voltage3);
@@ -231,6 +233,12 @@ ActionResult ActionStepperHomeOffset(const StepperHomeOffsetRequest& req) {
   const int speed = req.speed_us > 0 ? req.speed_us : app_config.stepper_speed_us;
   app_config.stepper_home_offset_steps = req.offset_steps;
   app_config.stepper_speed_us = speed;
+  if (req.logging_motor_steps_set) {
+    app_config.logging_motor_steps = std::clamp(req.logging_motor_steps, 1, 20000);
+  }
+  if (req.logging_home_each_cycle_set) {
+    app_config.logging_home_each_cycle = req.logging_home_each_cycle;
+  }
   if (req.hall_active_level_set) {
     app_config.motor_hall_active_level = req.hall_active_level ? 1 : 0;
   }
@@ -243,6 +251,8 @@ ActionResult ActionStepperHomeOffset(const StepperHomeOffsetRequest& req) {
   cJSON* root = cJSON_CreateObject();
   cJSON_AddNumberToObject(root, "speedUs", app_config.stepper_speed_us);
   cJSON_AddNumberToObject(root, "offsetSteps", app_config.stepper_home_offset_steps);
+  cJSON_AddNumberToObject(root, "loggingMotorSteps", app_config.logging_motor_steps);
+  cJSON_AddBoolToObject(root, "loggingHomeEachCycle", app_config.logging_home_each_cycle);
   cJSON_AddNumberToObject(root, "hallActiveLevel", app_config.motor_hall_active_level);
   const char* json = cJSON_PrintUnformatted(root);
   std::string payload = json ? json : "{}";
