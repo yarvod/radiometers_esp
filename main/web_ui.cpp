@@ -33,6 +33,10 @@ const char INDEX_HTML[] = R"rawliteral(
     input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
     .speed-info { font-size: 12px; color: #666; margin-top: 5px; }
     .note { font-size: 12px; color: #666; margin-top: 5px; }
+    .pid-debug { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 12px 0; }
+    .pid-debug-item { background: #fff; border: 1px solid #e1e6ea; border-radius: 6px; padding: 8px; }
+    .pid-debug-label { font-size: 11px; color: #667; font-weight: 700; }
+    .pid-debug-value { margin-top: 3px; color: #24313d; font-weight: 700; font-variant-numeric: tabular-nums; }
     .files-panel { background: #f4f4ff; padding: 20px; border-radius: 8px; margin-top: 20px; }
     .file-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
     .file-actions .file-buttons { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -204,6 +208,20 @@ const char INDEX_HTML[] = R"rawliteral(
               <input type="number" id="pidKd" value="0" step="0.01">
             </div>
             <div>Status: <span id="pidStatus">Off</span></div>
+            <div class="pid-debug">
+              <div class="pid-debug-item"><div class="pid-debug-label">PID temp</div><div class="pid-debug-value" id="pidTemperature">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">Error</div><div class="pid-debug-value" id="pidError">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">P term</div><div class="pid-debug-value" id="pidPTerm">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">I term</div><div class="pid-debug-value" id="pidITerm">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">D term</div><div class="pid-debug-value" id="pidDTerm">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">Raw out</div><div class="pid-debug-value" id="pidRawOutput">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">Integral</div><div class="pid-debug-value" id="pidIntegral">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">Candidate</div><div class="pid-debug-value" id="pidIntegralCandidate">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">Derivative</div><div class="pid-debug-value" id="pidDerivative">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">dt</div><div class="pid-debug-value" id="pidDt">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">Saturation</div><div class="pid-debug-value" id="pidSaturation">--</div></div>
+              <div class="pid-debug-item"><div class="pid-debug-label">Integrator</div><div class="pid-debug-value" id="pidIntegralHeld">--</div></div>
+            </div>
             <button class="btn" onclick="applyPid()">Apply PID</button>
             <button class="btn btn-stepper" onclick="enablePid()">Enable PID</button>
             <button class="btn btn-stop" onclick="disablePid()">Disable PID</button>
@@ -570,6 +588,16 @@ const char INDEX_HTML[] = R"rawliteral(
       if (el && document.activeElement !== el) {
         el.value = value;
       }
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value ?? '--';
+    }
+
+    function formatNumber(value, digits = 2, suffix = '') {
+      const n = Number(value);
+      return Number.isFinite(n) ? `${n.toFixed(digits)}${suffix}` : '--';
     }
 
     function getTempEntries(data) {
@@ -1071,6 +1099,19 @@ const char INDEX_HTML[] = R"rawliteral(
       renderPidChips(tempEntries);
       // PID inputs оставляем как ввёл пользователь, не трогаем автоданными
       document.getElementById('pidStatus').textContent = data.pidEnabled ? `On (out ${data.pidOutput?.toFixed(1) ?? 0}%)` : 'Off';
+      setText('pidTemperature', formatNumber(data.pidTemperature, 2, ' °C'));
+      setText('pidError', formatNumber(data.pidError, 3, ' °C'));
+      setText('pidPTerm', formatNumber(data.pidPTerm, 2, '%'));
+      setText('pidITerm', formatNumber(data.pidITerm, 2, '%'));
+      setText('pidDTerm', formatNumber(data.pidDTerm, 2, '%'));
+      setText('pidRawOutput', formatNumber(data.pidRawOutput, 2, '%'));
+      setText('pidIntegral', formatNumber(data.pidIntegral, 2, ' C*s'));
+      setText('pidIntegralCandidate', formatNumber(data.pidIntegralCandidate, 2, ' C*s'));
+      setText('pidDerivative', formatNumber(data.pidDerivative, 4, ' C/s'));
+      setText('pidDt', formatNumber(data.pidDt, 3, ' s'));
+      const saturation = data.pidEnabled ? (data.pidSaturatedHigh ? 'HIGH' : (data.pidSaturatedLow ? 'LOW' : 'NO')) : 'OFF';
+      setText('pidSaturation', saturation);
+      setText('pidIntegralHeld', data.pidEnabled ? (data.pidIntegralHeld ? 'HELD' : 'UPDATING') : 'OFF');
       setValueIfIdle('pidSetpoint', (data.pidSetpoint ?? 0).toFixed(2));
       setValueIfIdle('pidKp', (data.pidKp ?? 0).toFixed(4));
       setValueIfIdle('pidKi', (data.pidKi ?? 0).toFixed(4));

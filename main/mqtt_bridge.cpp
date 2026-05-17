@@ -347,6 +347,10 @@ void BuildMqttState(char* out, size_t out_len) {
                "\"loggingMotorSteps\":%d,\"loggingHomeEachCycle\":%s,"
                "\"pidEnabled\":%s,\"pidSetpoint\":%.3f,\"pidSensorIndex\":%d,\"pidSensorMask\":%u,"
                "\"pidKp\":%.6f,\"pidKi\":%.6f,\"pidKd\":%.6f,\"pidOutput\":%.3f,"
+               "\"pidTemperature\":%.3f,\"pidError\":%.3f,"
+               "\"pidIntegral\":%.3f,\"pidIntegralCandidate\":%.3f,\"pidDerivative\":%.6f,"
+               "\"pidPTerm\":%.3f,\"pidITerm\":%.3f,\"pidDTerm\":%.3f,\"pidRawOutput\":%.3f,"
+               "\"pidDt\":%.3f,\"pidSaturatedHigh\":%s,\"pidSaturatedLow\":%s,\"pidIntegralHeld\":%s,"
                "\"stepperEnabled\":%s,\"stepperHoming\":%s,\"stepperDirForward\":%s,\"stepperMoving\":%s,"
                "\"stepperHomed\":%s,\"stepperPosition\":%d,\"stepperTarget\":%d,"
                "\"stepperSpeedUs\":%d,\"stepperHomeOffsetSteps\":%d,\"motorHallActiveLevel\":%d,"
@@ -363,6 +367,19 @@ void BuildMqttState(char* out, size_t out_len) {
                state.pid_ki,
                state.pid_kd,
                state.pid_output,
+               state.pid_temperature,
+               state.pid_error,
+               state.pid_integral,
+               state.pid_integral_candidate,
+               state.pid_derivative,
+               state.pid_p_term,
+               state.pid_i_term,
+               state.pid_d_term,
+               state.pid_raw_output,
+               state.pid_dt,
+               state.pid_saturated_high ? "true" : "false",
+               state.pid_saturated_low ? "true" : "false",
+               state.pid_integral_held ? "true" : "false",
                state.stepper_enabled ? "true" : "false",
                state.homing ? "true" : "false",
                state.stepper_direction_forward ? "true" : "false",

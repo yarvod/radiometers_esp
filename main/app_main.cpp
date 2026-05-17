@@ -3866,6 +3866,21 @@ void PidTask(void*) {
       prev_error = 0.0f;
       prev_update_us = 0;
       have_prev_error = false;
+      UpdateState([](SharedState& s) {
+        s.pid_temperature = 0.0f;
+        s.pid_error = 0.0f;
+        s.pid_integral = 0.0f;
+        s.pid_integral_candidate = 0.0f;
+        s.pid_derivative = 0.0f;
+        s.pid_p_term = 0.0f;
+        s.pid_i_term = 0.0f;
+        s.pid_d_term = 0.0f;
+        s.pid_raw_output = 0.0f;
+        s.pid_dt = 0.0f;
+        s.pid_saturated_high = false;
+        s.pid_saturated_low = false;
+        s.pid_integral_held = false;
+      });
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
@@ -3901,19 +3916,37 @@ void PidTask(void*) {
     float error = snapshot.pid_setpoint - temp;
     float derivative = (have_prev_error && valid_dt) ? (error - prev_error) / dt : 0.0f;
     float candidate_integral = std::clamp(integral + error * dt, -200.0f, 200.0f);
-    float raw_output = snapshot.pid_kp * error + snapshot.pid_ki * candidate_integral + snapshot.pid_kd * derivative;
+    float p_term = snapshot.pid_kp * error;
+    float i_term = snapshot.pid_ki * candidate_integral;
+    float d_term = snapshot.pid_kd * derivative;
+    float raw_output = p_term + i_term + d_term;
     float output = std::clamp(raw_output, 0.0f, 100.0f);
     bool saturated_high = raw_output > 100.0f;
     bool saturated_low = raw_output < 0.0f;
+    bool integral_held = true;
     if ((!saturated_high && !saturated_low) ||
         (saturated_high && error < 0.0f) ||
         (saturated_low && error > 0.0f)) {
       integral = candidate_integral;
+      integral_held = false;
     }
     output = std::clamp(output, 0.0f, 100.0f);
     HeaterSetPowerPercent(output);
     UpdateState([&](SharedState& s) {
       s.pid_output = output;
+      s.pid_temperature = temp;
+      s.pid_error = error;
+      s.pid_integral = integral;
+      s.pid_integral_candidate = candidate_integral;
+      s.pid_derivative = derivative;
+      s.pid_p_term = p_term;
+      s.pid_i_term = i_term;
+      s.pid_d_term = d_term;
+      s.pid_raw_output = raw_output;
+      s.pid_dt = dt;
+      s.pid_saturated_high = saturated_high;
+      s.pid_saturated_low = saturated_low;
+      s.pid_integral_held = integral_held;
     });
     prev_error = error;
     prev_update_us = now_us;

@@ -209,6 +209,12 @@
             <input type="number" step="0.01" v-model.number="pidForm.kd" @input="pidDirty = true" />
           </label>
         </div>
+        <div class="diagnostic-grid">
+          <div v-for="item in pidDiagnostics" :key="item.label" class="diagnostic-item">
+            <span class="diagnostic-label">{{ item.label }}</span>
+            <span class="diagnostic-value">{{ item.value }}</span>
+          </div>
+        </div>
         <div class="actions">
           <button class="btn primary" @click="applyPid">Сохранить PID</button>
           <button class="btn success" @click="enablePid">Включить PID</button>
@@ -1193,6 +1199,29 @@ const pidSensorTemp = computed(() => {
   })
   if (!count) return '--'
   return `${(sum / count).toFixed(2)} °C`
+})
+const formatPidNumber = (value: unknown, digits = 2, suffix = '') => {
+  const n = Number(value)
+  return Number.isFinite(n) ? `${n.toFixed(digits)}${suffix}` : '--'
+}
+const pidDiagnostics = computed(() => {
+  const state = device.value?.state || {}
+  const enabled = !!state.pidEnabled
+  const saturation = enabled ? (state.pidSaturatedHigh ? 'HIGH' : (state.pidSaturatedLow ? 'LOW' : 'NO')) : 'OFF'
+  return [
+    { label: 'PID temp', value: formatPidNumber(state.pidTemperature, 2, ' °C') },
+    { label: 'Ошибка', value: formatPidNumber(state.pidError, 3, ' °C') },
+    { label: 'P', value: formatPidNumber(state.pidPTerm, 2, ' %') },
+    { label: 'I', value: formatPidNumber(state.pidITerm, 2, ' %') },
+    { label: 'D', value: formatPidNumber(state.pidDTerm, 2, ' %') },
+    { label: 'Raw', value: formatPidNumber(state.pidRawOutput, 2, ' %') },
+    { label: 'Integral', value: formatPidNumber(state.pidIntegral, 2, ' C*s') },
+    { label: 'Candidate', value: formatPidNumber(state.pidIntegralCandidate, 2, ' C*s') },
+    { label: 'dError/dt', value: formatPidNumber(state.pidDerivative, 4, ' C/s') },
+    { label: 'dt', value: formatPidNumber(state.pidDt, 3, ' s') },
+    { label: 'Saturation', value: saturation },
+    { label: 'Integrator', value: enabled ? (state.pidIntegralHeld ? 'HELD' : 'UPDATING') : 'OFF' },
+  ]
 })
 
 const stepperEnabled = computed(() => !!device.value?.state?.stepperEnabled)

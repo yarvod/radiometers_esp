@@ -461,6 +461,10 @@ input { width: 100%; box-sizing: border-box; }
 }
 .device-page .range-row { display: flex; align-items: center; gap: 10px; }
 .device-page .range-row input[type="range"] { flex: 1; }
+.device-page .diagnostic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 12px 0; }
+.device-page .diagnostic-item { background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 4px; font-variant-numeric: tabular-nums; }
+.device-page .diagnostic-label { font-size: 12px; color: var(--muted); font-weight: 700; }
+.device-page .diagnostic-value { font-size: 15px; color: #1f2d3d; font-weight: 800; }
 .chip-select { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-option { background: #f1f3f4; border: 1px solid var(--border); color: #1f2d3d; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .chip-option.selected { background: #e6f8ed; border-color: rgba(46, 139, 87, 0.35); color: #2e8b57; }
