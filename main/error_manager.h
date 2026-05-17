@@ -19,6 +19,7 @@ enum class ErrorCode : uint8_t {
   kMqttTransport = 12,
   kMinioUpload = 13,
   kStepperHoming = 14,
+  kGpsRtcm = 15,
   kMax
 };
 

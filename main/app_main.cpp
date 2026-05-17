@@ -132,6 +132,7 @@ static TaskHandle_t uploaded_clear_task = nullptr;
 static int uploaded_clear_max_files = 1000;
 constexpr uint32_t kExternalPowerCycleStackBytes = 6144;
 static uint64_t gps_log_file_start_us = 0;
+static constexpr uint64_t kGnssLogRotateUs = 3'600'000'000ULL;
 static std::string current_gnss_log_path;
 static volatile bool gps_reconfigure_requested = false;
 static bool sntp_time_available = false;
@@ -1660,16 +1661,33 @@ static bool EnsureRtcmLogFileLocked(const GpsDateTime* frame_time) {
   return ok;
 }
 
-static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
-  constexpr uint64_t kRotateUs = 3'600'000'000ULL;
+static bool IsGnssLogRotationDue(uint64_t now_us) {
+  return !current_gnss_log_path.empty() && gps_log_file_start_us > 0 &&
+         now_us - gps_log_file_start_us >= kGnssLogRotateUs;
+}
 
+static bool RotateStaleGnssLogLocked(uint64_t now_us) {
+  if (!IsGnssLogRotationDue(now_us)) {
+    return true;
+  }
+  const std::string old_path = current_gnss_log_path;
+  if (!QueueCurrentGnssLogForUploadLocked()) {
+    ESP_LOGW(TAG, "RTCM3 log rotation is due, but failed to queue %s", old_path.c_str());
+    ErrorManagerSet(ErrorCode::kGpsRtcm, ErrorSeverity::kWarning, "RTCM3 log rotation failed");
+    return false;
+  }
+  ESP_LOGI(TAG, "RTCM3 log rotated without new frame: %s", old_path.c_str());
+  return true;
+}
+
+static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
   const bool first_open = gps_log_file_start_us == 0;
   const uint64_t now_us = esp_timer_get_time();
   if (first_open || current_gnss_log_path.empty()) {
     if (!EnsureRtcmLogFileLocked(frame.timestamp.valid ? &frame.timestamp : nullptr)) {
       return false;
     }
-  } else if (now_us - gps_log_file_start_us >= kRotateUs) {
+  } else if (IsGnssLogRotationDue(now_us)) {
     if (!QueueCurrentGnssLogForUploadLocked()) {
       return false;
     }
@@ -1719,7 +1737,9 @@ static bool HasAnyGnssFrameData(const CurrentFrame& frame) {
 static void GpsLogTask(void*) {
   constexpr TickType_t kInterval = pdMS_TO_TICKS(30 * 1000);
   constexpr int64_t kCollectWindowUs = 35'000'000;
+  constexpr uint32_t kEmptyRtcmWarnFrames = 4;
   uint32_t frame_index = 0;
+  uint32_t empty_rtcm_frames = 0;
   vTaskDelay(pdMS_TO_TICKS(5000));
   gps_client.probeReceiver();
   vTaskDelay(pdMS_TO_TICKS(1000));
@@ -1745,6 +1765,18 @@ static void GpsLogTask(void*) {
       gps_reconfigure_requested = false;
       gps_client.configurePeriodicOutput(app_config.gps_rtcm_types, app_config.gps_mode);
     }
+    if (IsGnssLogRotationDue(esp_timer_get_time())) {
+      SdLockGuard guard(pdMS_TO_TICKS(1000));
+      if (guard.locked() && MountActiveStorage()) {
+        const bool already_mounted = log_sd_mounted;
+        (void)RotateStaleGnssLogLocked(esp_timer_get_time());
+        if (app_config.storage_backend == StorageBackend::kSd && !already_mounted && !log_file) {
+          UnmountLogSd();
+        }
+      } else {
+        ESP_LOGW(TAG, "Storage unavailable, cannot rotate stale RTCM3 log");
+      }
+    }
 
     gps_client.startFrame(frame_index);
     gps_client.pollFrame();
@@ -1766,6 +1798,10 @@ static void GpsLogTask(void*) {
     gps_client.stopFrameOutput();
     WarnMissingGnssFrameData(frame);
     if (!HasAnyGnssFrameData(frame)) {
+      empty_rtcm_frames++;
+      if (empty_rtcm_frames >= kEmptyRtcmWarnFrames) {
+        ErrorManagerSet(ErrorCode::kGpsRtcm, ErrorSeverity::kWarning, "GNSS RTCM frames are empty");
+      }
       ESP_LOGW(TAG, "GNSS frame %u is empty, skip storage write", static_cast<unsigned>(frame.frame_index));
       frame_index++;
       const int64_t elapsed_us = esp_timer_get_time() - cycle_start_us;
@@ -1777,6 +1813,8 @@ static void GpsLogTask(void*) {
       }
       continue;
     }
+    empty_rtcm_frames = 0;
+    ErrorManagerClear(ErrorCode::kGpsRtcm);
 
     {
       SdLockGuard guard(pdMS_TO_TICKS(1000));
