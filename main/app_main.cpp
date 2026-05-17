@@ -3915,7 +3915,7 @@ void PidTask(void*) {
     }
     float error = snapshot.pid_setpoint - temp;
     float derivative = (have_prev_error && valid_dt) ? (error - prev_error) / dt : 0.0f;
-    float candidate_integral = std::clamp(integral + error * dt, -200.0f, 200.0f);
+    float candidate_integral = std::clamp(integral + error * dt, 0.0f, 200.0f);
     float p_term = snapshot.pid_kp * error;
     float i_term = snapshot.pid_ki * candidate_integral;
     float d_term = snapshot.pid_kd * derivative;
