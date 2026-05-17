@@ -3814,7 +3814,8 @@ void TempTask(void*) {
 void PidTask(void*) {
   float integral = 0.0f;
   float prev_error = 0.0f;
-  const float dt = 1.0f;
+  int64_t prev_update_us = 0;
+  bool have_prev_error = false;
   // Auto-enable PID if it was enabled in config
   SharedState initial = CopyState();
   if (pid_config.from_file && initial.pid_enabled) {
@@ -3825,6 +3826,8 @@ void PidTask(void*) {
     if (!snapshot.pid_enabled) {
       integral = 0.0f;
       prev_error = 0.0f;
+      prev_update_us = 0;
+      have_prev_error = false;
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
@@ -3851,17 +3854,32 @@ void PidTask(void*) {
       continue;
     }
     float temp = temp_sum / static_cast<float>(temp_count);
+    const int64_t now_us = esp_timer_get_time();
+    float dt = prev_update_us > 0 ? static_cast<float>(now_us - prev_update_us) / 1000000.0f : 1.0f;
+    bool valid_dt = std::isfinite(dt) && dt > 0.0f && dt <= 10.0f;
+    if (!valid_dt) {
+      dt = 1.0f;
+    }
     float error = snapshot.pid_setpoint - temp;
-    integral += error * dt;
-    integral = std::clamp(integral, -200.0f, 200.0f);
-    float derivative = (error - prev_error) / dt;
-    float output = snapshot.pid_kp * error + snapshot.pid_ki * integral + snapshot.pid_kd * derivative;
+    float derivative = (have_prev_error && valid_dt) ? (error - prev_error) / dt : 0.0f;
+    float candidate_integral = std::clamp(integral + error * dt, -200.0f, 200.0f);
+    float raw_output = snapshot.pid_kp * error + snapshot.pid_ki * candidate_integral + snapshot.pid_kd * derivative;
+    float output = std::clamp(raw_output, 0.0f, 100.0f);
+    bool saturated_high = raw_output > 100.0f;
+    bool saturated_low = raw_output < 0.0f;
+    if ((!saturated_high && !saturated_low) ||
+        (saturated_high && error < 0.0f) ||
+        (saturated_low && error > 0.0f)) {
+      integral = candidate_integral;
+    }
     output = std::clamp(output, 0.0f, 100.0f);
     HeaterSetPowerPercent(output);
     UpdateState([&](SharedState& s) {
       s.pid_output = output;
     });
     prev_error = error;
+    prev_update_us = now_us;
+    have_prev_error = true;
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
