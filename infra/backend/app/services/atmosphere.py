@@ -193,6 +193,7 @@ class AtmosphereService:
                 altitude_m=altitude_m,
                 h0_m=h0_m,
                 adc_labels=adc_labels,
+                config=config,
             )
             for point in measurement_points
         ]
@@ -224,12 +225,25 @@ class AtmosphereService:
         except (TypeError, ValueError, AttributeError):
             h0_m = 5300.0
         tau_station_id = str(config.get("tau_station_id", "")).strip()
+
+        # Handle explicit bands and overrides
+        overrides = {}
+        if isinstance(config.get("bands"), dict):
+            for k, v in config["bands"].items():
+                if k in ("adc1", "adc2", "adc3") and isinstance(v, dict):
+                    overrides[k] = {
+                        "mode": str(v.get("mode", "auto")),
+                        "alpha": float(v["alpha"]) if "alpha" in v else None,
+                        "beta": float(v["beta"]) if "beta" in v else None,
+                    }
+
         return {
             "station_ids": station_ids,
             "altitude_m": max(0.0, altitude_m),
             "h0_m": h0_m if h0_m > 0 else 5300.0,
             "tau_station_id": tau_station_id if tau_station_id in station_ids else (station_ids[0] if station_ids else ""),
             "tau_average": bool(config.get("tau_average", False)),
+            "bands": overrides,
         }
 
     @staticmethod
@@ -300,6 +314,7 @@ class AtmosphereService:
         altitude_m: float,
         h0_m: float,
         adc_labels: dict[str, str],
+        config: dict[str, object],
     ) -> AtmosphereMeasurementPoint:
         nearest: list[EffectiveTemperaturePoint] = []
         if average:
@@ -324,13 +339,15 @@ class AtmosphereService:
         for idx, tb in enumerate(brightness, start=1):
             tau = self._calc_tau(tb, t_eff)
             tau_values.append(tau)
-            band = self._band_for_adc(f"adc{idx}", adc_labels)
-            alpha_beta = self._alpha_beta(band, altitude_m / 1000.0, point.timestamp) if band else None
-            if tau is None or alpha_beta is None:
+            
+            adc_key = f"adc{idx}"
+            alpha, beta = self._resolve_alpha_beta(adc_key, adc_labels, altitude_m, point.timestamp, config)
+            
+            if tau is None or alpha is None or beta is None:
                 pwv_values.append(None)
                 continue
-            alpha, beta = alpha_beta
-            pwv_values.append((tau - alpha * math.exp(-altitude_m / h0_m)) / beta if beta else None)
+                
+            pwv_values.append((tau - alpha) / beta if beta else None)
 
         return AtmosphereMeasurementPoint(
             timestamp=point.timestamp,
@@ -366,18 +383,58 @@ class AtmosphereService:
     def _season(timestamp: datetime) -> str:
         return "summer" if 5 <= timestamp.month <= 10 else "winter"
 
-    @staticmethod
-    def _band_for_adc(adc_key: str, adc_labels: dict[str, str]) -> str | None:
-        label = (adc_labels.get(adc_key) or adc_key).lower()
-        if "2" in label or "2mm" in label or "2 mm" in label:
-            return "2mm"
-        if "3" in label or "3mm" in label or "3 mm" in label:
-            return "3mm"
-        if adc_key == "adc2":
-            return "2mm"
-        if adc_key == "adc3":
-            return "3mm"
-        return None
+    def _resolve_alpha_beta(
+        self, 
+        adc_key: str, 
+        adc_labels: dict[str, str], 
+        altitude_m: float, 
+        timestamp: datetime,
+        config: dict[str, object]
+    ) -> tuple[float | None, float | None]:
+        # 1. Get settings from config
+        bands_config = config.get("bands", {})
+        adc_cfg = bands_config.get(adc_key) if isinstance(bands_config, dict) else None
+        
+        mode = adc_cfg.get("mode", "auto") if adc_cfg else "auto"
+        manual_alpha = adc_cfg.get("alpha") if adc_cfg else None
+        manual_beta = adc_cfg.get("beta") if adc_cfg else None
+        
+        if mode == "manual":
+            return manual_alpha, manual_beta
+
+        # 2. Determine band
+        band = None
+        if mode in ("2mm", "3mm"):
+            band = mode
+        else:
+            # Auto-detection from label
+            label = (adc_labels.get(adc_key) or adc_key).lower()
+            if "2" in label:
+                band = "2mm"
+            elif "3" in label:
+                band = "3mm"
+            elif adc_key == "adc2":
+                band = "2mm"
+            elif adc_key == "adc3":
+                band = "3mm"
+
+        if not band:
+            return None, None
+
+        # 3. Get interpolated values
+        alpha_beta = self._alpha_beta(band, altitude_m / 1000.0, timestamp)
+        if not alpha_beta:
+            return None, None
+            
+        alpha, beta = alpha_beta
+        
+        # 4. Apply partial manual overrides if they were "corrected" while in 2mm/3mm mode
+        if manual_alpha is not None:
+            alpha = manual_alpha
+        if manual_beta is not None:
+            beta = manual_beta
+            
+        return alpha, beta
 
     def _alpha_beta(self, band: str, height_km: float, timestamp: datetime) -> tuple[float, float] | None:
         rows = COEFFICIENTS.get(band)
