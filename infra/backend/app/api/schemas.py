@@ -97,6 +97,12 @@ class AtmosphereMeasurementPointOut(BaseModel):
     tau1: Optional[float] = None
     tau2: Optional[float] = None
     tau3: Optional[float] = None
+    alpha1: Optional[float] = None
+    alpha2: Optional[float] = None
+    alpha3: Optional[float] = None
+    beta1: Optional[float] = None
+    beta2: Optional[float] = None
+    beta3: Optional[float] = None
     pwv1: Optional[float] = None
     pwv2: Optional[float] = None
     pwv3: Optional[float] = None

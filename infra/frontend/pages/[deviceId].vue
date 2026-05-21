@@ -478,6 +478,7 @@
                 @input="markAtmosphereConfigDirty"
               />
             </label>
+            <div class="coefficient-used">{{ atmosphereCoefficientUsage(key) }}</div>
           </div>
         </div>
       </div>
@@ -534,7 +535,10 @@
           </div>
         </div>
         <div class="chart-box">
-          <h4>PWV</h4>
+          <div class="chart-head-row">
+            <h4>PWV</h4>
+            <span class="muted" v-if="pwvRadiometerStatus">{{ pwvRadiometerStatus }}</span>
+          </div>
           <div class="chart-body">
             <canvas ref="pwvAtmosphereChartEl"></canvas>
           </div>
@@ -870,6 +874,12 @@ type AtmosphereMeasurementPoint = {
   tau1: number | null
   tau2: number | null
   tau3: number | null
+  alpha1: number | null
+  alpha2: number | null
+  alpha3: number | null
+  beta1: number | null
+  beta2: number | null
+  beta3: number | null
   pwv1: number | null
   pwv2: number | null
   pwv3: number | null
@@ -1462,6 +1472,50 @@ const buildAtmosphereCoefficientPayload = () => {
   }
 }
 
+const formatCoefficientValue = (value: number | null) => (
+  value !== null && Number.isFinite(value) ? value.toFixed(4) : '—'
+)
+
+const coefficientStats = (
+  alphaKey: keyof AtmosphereMeasurementPoint,
+  betaKey: keyof AtmosphereMeasurementPoint,
+) => {
+  const points = atmosphereData.value?.measurement_points || []
+  const pairs = points
+    .map((point) => {
+      const alpha = Number(point[alphaKey])
+      const beta = Number(point[betaKey])
+      if (!Number.isFinite(alpha) || !Number.isFinite(beta)) return null
+      return { alpha, beta }
+    })
+    .filter((item): item is { alpha: number; beta: number } => item !== null)
+  if (!pairs.length) return null
+  const latest = pairs[pairs.length - 1]
+  const minAlpha = Math.min(...pairs.map((pair) => pair.alpha))
+  const maxAlpha = Math.max(...pairs.map((pair) => pair.alpha))
+  const minBeta = Math.min(...pairs.map((pair) => pair.beta))
+  const maxBeta = Math.max(...pairs.map((pair) => pair.beta))
+  const varying = Math.abs(maxAlpha - minAlpha) > 1e-9 || Math.abs(maxBeta - minBeta) > 1e-9
+  return { latest, minAlpha, maxAlpha, minBeta, maxBeta, varying }
+}
+
+const atmosphereCoefficientUsage = (key: AtmosphereBandKey) => {
+  const idx = key === 'adc2' ? '2' : '3'
+  const stats = coefficientStats(
+    `alpha${idx}` as keyof AtmosphereMeasurementPoint,
+    `beta${idx}` as keyof AtmosphereMeasurementPoint,
+  )
+  if (!stats) return 'Используется: alpha —, beta —'
+  if (!stats.varying) {
+    return `Используется: alpha ${formatCoefficientValue(stats.latest.alpha)}, beta ${formatCoefficientValue(stats.latest.beta)}`
+  }
+  return [
+    `Используется: alpha ${formatCoefficientValue(stats.latest.alpha)}, beta ${formatCoefficientValue(stats.latest.beta)}`,
+    `диапазон alpha ${formatCoefficientValue(stats.minAlpha)}-${formatCoefficientValue(stats.maxAlpha)}`,
+    `beta ${formatCoefficientValue(stats.minBeta)}-${formatCoefficientValue(stats.maxBeta)}`,
+  ].join('; ')
+}
+
 const scheduleAtmosphereReload = () => {
   if (atmosphereReloadTimer) clearTimeout(atmosphereReloadTimer)
   atmosphereReloadTimer = setTimeout(() => {
@@ -1708,6 +1762,7 @@ const buildAtmosphereDataset = (label: string, data: (number | null)[], color: s
   const dataset = buildDataset(label, data, color)
   dataset.tension = 0.2
   dataset.pointRadius = 1.5
+  dataset.spanGaps = true
   return dataset
 }
 
@@ -1809,6 +1864,22 @@ const buildPwvAtmosphereDatasets = () => {
   })
   return { labels: timeline.map((entry) => entry.label), datasets: [...radiometerDatasets, ...profileDatasets] }
 }
+
+const countFiniteAtmosphereValues = (key: keyof AtmosphereMeasurementPoint) => {
+  const points = atmosphereData.value?.measurement_points || []
+  return points.reduce((count, point) => count + (Number.isFinite(point[key]) ? 1 : 0), 0)
+}
+
+const pwvRadiometerStatus = computed(() => {
+  if (!atmosphereData.value?.measurement_points?.length) return ''
+  const tau2 = countFiniteAtmosphereValues('tau2')
+  const tau3 = countFiniteAtmosphereValues('tau3')
+  const pwv2 = countFiniteAtmosphereValues('pwv2')
+  const pwv3 = countFiniteAtmosphereValues('pwv3')
+  if (pwv2 || pwv3) return `Радиометр: ADC2 ${pwv2}, ADC3 ${pwv3}`
+  if (tau2 || tau3) return 'PWV радиометров нет: проверь режим и alpha/beta для ADC2/ADC3'
+  return 'PWV радиометров нет: нет tau по ADC2/ADC3'
+})
 
 const atmosphereChartOptions = () => ({
   responsive: true,

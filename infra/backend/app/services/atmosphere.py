@@ -60,6 +60,12 @@ class AtmosphereMeasurementPoint:
     tau1: float | None
     tau2: float | None
     tau3: float | None
+    alpha1: float | None
+    alpha2: float | None
+    alpha3: float | None
+    beta1: float | None
+    beta2: float | None
+    beta3: float | None
     pwv1: float | None
     pwv2: float | None
     pwv3: float | None
@@ -389,6 +395,8 @@ class AtmosphereService:
 
         brightness = [point.brightness_temp1, point.brightness_temp2, point.brightness_temp3]
         tau_values: list[float | None] = []
+        alpha_values: list[float | None] = []
+        beta_values: list[float | None] = []
         pwv_values: list[float | None] = []
         for idx, tb in enumerate(brightness, start=1):
             tau = self._calc_tau(tb, t_eff)
@@ -396,6 +404,8 @@ class AtmosphereService:
             
             adc_key = f"adc{idx}"
             alpha, beta = self._resolve_alpha_beta(adc_key, adc_labels, altitude_m, point.timestamp, config)
+            alpha_values.append(alpha)
+            beta_values.append(beta)
             
             if tau is None or alpha is None or beta is None:
                 pwv_values.append(None)
@@ -416,6 +426,12 @@ class AtmosphereService:
             tau1=tau_values[0],
             tau2=tau_values[1],
             tau3=tau_values[2],
+            alpha1=alpha_values[0],
+            alpha2=alpha_values[1],
+            alpha3=alpha_values[2],
+            beta1=beta_values[0],
+            beta2=beta_values[1],
+            beta3=beta_values[2],
             pwv1=pwv_values[0],
             pwv2=pwv_values[1],
             pwv3=pwv_values[2],

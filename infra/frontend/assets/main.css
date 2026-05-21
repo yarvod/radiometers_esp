@@ -120,6 +120,12 @@ input { width: 100%; box-sizing: border-box; }
   color: #1f2933;
   align-self: center;
 }
+.coefficient-used {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
 .divider { height: 1px; background: var(--border); margin: 12px 0; }
 .back { align-self: flex-start; }
 
