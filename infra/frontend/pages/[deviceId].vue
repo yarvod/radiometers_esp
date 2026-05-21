@@ -433,6 +433,54 @@
           </button>
         </div>
       </div>
+      <div class="form-group atmosphere-coefficients">
+        <label>Коэффициенты PWV</label>
+        <div class="inline fields">
+          <label class="compact">Сезон
+            <select v-model="configForm.atmosphere.season" @change="markAtmosphereConfigDirty">
+              <option value="auto">Авто по дате</option>
+              <option value="summer">Лето</option>
+              <option value="winter">Зима</option>
+            </select>
+          </label>
+          <div class="actions coefficient-actions">
+            <button class="btn primary sm" type="button" @click="loadAtmosphere">Пересчитать PWV</button>
+            <button class="btn ghost sm" type="button" @click="saveConfig" :disabled="configSaving">Сохранить коэффициенты</button>
+          </div>
+        </div>
+        <div class="coefficient-grid">
+          <div class="coefficient-row" v-for="key in atmosphereBandKeys" :key="`coeff-${key}`">
+            <div class="coefficient-channel">{{ atmosphereBandLabel(key) }}</div>
+            <label class="compact">Канал
+              <select v-model="configForm.atmosphere.bands[key].mode" @change="markAtmosphereConfigDirty">
+                <option value="off">Не считать</option>
+                <option value="auto">Авто</option>
+                <option value="2mm">2 mm</option>
+                <option value="3mm">3 mm</option>
+                <option value="manual">Alpha/Beta вручную</option>
+              </select>
+            </label>
+            <label class="compact">alpha
+              <input
+                type="number"
+                step="0.001"
+                v-model.number="configForm.atmosphere.bands[key].alpha"
+                placeholder="таблично"
+                @input="markAtmosphereConfigDirty"
+              />
+            </label>
+            <label class="compact">beta
+              <input
+                type="number"
+                step="0.001"
+                v-model.number="configForm.atmosphere.bands[key].beta"
+                placeholder="таблично"
+                @input="markAtmosphereConfigDirty"
+              />
+            </label>
+          </div>
+        </div>
+      </div>
       <div class="chart-stack">
         <div class="chart-box">
           <h4>Температуры</h4>
@@ -778,12 +826,22 @@ type DeviceConfig = {
   adc_labels: Record<string, string>
 }
 
+type AtmosphereBandKey = 'adc2' | 'adc3'
+
+type AtmosphereBandConfig = {
+  mode?: string
+  alpha?: number | null
+  beta?: number | null
+}
+
 type AtmosphereConfig = {
   station_ids?: string[]
   altitude_m?: number
   h0_m?: number
   tau_station_id?: string
   tau_average?: boolean
+  season?: string
+  bands?: Partial<Record<'adc1' | AtmosphereBandKey, AtmosphereBandConfig>>
 }
 
 type StationOption = {
@@ -886,6 +944,11 @@ const configForm = reactive({
     stationIds: [] as string[],
     altitudeM: 0,
     h0M: 5300,
+    season: 'auto',
+    bands: {
+      adc2: { mode: '2mm', alpha: null as number | null, beta: null as number | null },
+      adc3: { mode: '3mm', alpha: null as number | null, beta: null as number | null },
+    } as Record<AtmosphereBandKey, { mode: string; alpha: number | null; beta: number | null }>,
   },
 })
 
@@ -1005,6 +1068,8 @@ const adcLabelDefaults: Record<string, string> = {
 }
 const adcLabelKeys = Object.keys(adcLabelDefaults)
 const adcLabel = (key: string, fallback: string) => adcLabelMap.value[key] || fallback
+const atmosphereBandKeys: AtmosphereBandKey[] = ['adc2', 'adc3']
+const atmosphereBandLabel = (key: AtmosphereBandKey) => `${adcLabel(key, key.toUpperCase())} (${key.toUpperCase()})`
 const tempBindingRoles = [
   { key: 'radiometer_adc1' },
   { key: 'radiometer_adc2' },
@@ -1099,6 +1164,7 @@ const stationOptionsLoading = ref(false)
 const stationSearchQuery = ref('')
 const stationSelectOpen = ref(false)
 let stationSearchTimer: ReturnType<typeof setTimeout> | null = null
+let atmosphereReloadTimer: ReturnType<typeof setTimeout> | null = null
 const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
@@ -1359,6 +1425,54 @@ const formatTimestamp = (value: string) => {
 
 const stationLabel = (station: StationOption) => {
   return station.name ? `${station.station_id} · ${station.name}` : station.station_id
+}
+
+const finiteOrNull = (value: unknown) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const normalizedSeason = (value: unknown) => {
+  const season = String(value || 'auto')
+  return season === 'summer' || season === 'winter' ? season : 'auto'
+}
+
+const normalizedBandMode = (value: unknown, fallback: string) => {
+  const mode = String(value || fallback)
+  return ['off', 'auto', '2mm', '3mm', 'manual'].includes(mode) ? mode : fallback
+}
+
+const buildAtmosphereCoefficientPayload = () => {
+  const bands: Record<string, { mode: string; alpha?: number; beta?: number }> = {}
+  atmosphereBandKeys.forEach((key) => {
+    const form = configForm.atmosphere.bands[key]
+    const defaultMode = key === 'adc2' ? '2mm' : '3mm'
+    const payload: { mode: string; alpha?: number; beta?: number } = {
+      mode: normalizedBandMode(form.mode, defaultMode),
+    }
+    const alpha = finiteOrNull(form.alpha)
+    const beta = finiteOrNull(form.beta)
+    if (alpha !== null) payload.alpha = alpha
+    if (beta !== null) payload.beta = beta
+    bands[key] = payload
+  })
+  return {
+    season: normalizedSeason(configForm.atmosphere.season),
+    bands,
+  }
+}
+
+const scheduleAtmosphereReload = () => {
+  if (atmosphereReloadTimer) clearTimeout(atmosphereReloadTimer)
+  atmosphereReloadTimer = setTimeout(() => {
+    atmosphereReloadTimer = null
+    loadAtmosphere()
+  }, 350)
+}
+
+const markAtmosphereConfigDirty = () => {
+  configDirty.value = true
+  scheduleAtmosphereReload()
 }
 
 const toLocalInputValue = (date: Date) => {
@@ -2511,6 +2625,7 @@ async function loadAtmosphere() {
       limit: String(historyFilters.limit),
       average: atmosphereAverage.value ? 'true' : 'false',
     })
+    params.set('coefficients', JSON.stringify(buildAtmosphereCoefficientPayload()))
     const primary = atmospherePrimaryStation.value || selected[0]
     if (primary) params.set('tau_station_id', primary)
     if (historyFilters.bucketMode === 'manual') {
@@ -2664,6 +2779,17 @@ const seedConfigForm = () => {
   configForm.atmosphere.stationIds = [...(atmosphere.station_ids || [])]
   configForm.atmosphere.altitudeM = Number.isFinite(Number(atmosphere.altitude_m)) ? Number(atmosphere.altitude_m) : 0
   configForm.atmosphere.h0M = Number.isFinite(Number(atmosphere.h0_m)) ? Number(atmosphere.h0_m) : 5300
+  configForm.atmosphere.season = normalizedSeason(atmosphere.season)
+  const bands = atmosphere.bands || {}
+  atmosphereBandKeys.forEach((key) => {
+    const defaultMode = key === 'adc2' ? '2mm' : '3mm'
+    const band = (bands[key] || {}) as AtmosphereBandConfig
+    configForm.atmosphere.bands[key] = {
+      mode: normalizedBandMode(band.mode, defaultMode),
+      alpha: finiteOrNull(band.alpha),
+      beta: finiteOrNull(band.beta),
+    }
+  })
   atmospherePrimaryStation.value = String(atmosphere.tau_station_id || configForm.atmosphere.stationIds[0] || '')
   atmosphereAverage.value = !!atmosphere.tau_average
 }
@@ -2731,6 +2857,7 @@ const saveConfig = async () => {
         ? atmospherePrimaryStation.value
         : (stationIds[0] || ''),
       tau_average: atmosphereAverage.value,
+      ...buildAtmosphereCoefficientPayload(),
     }
     const displayName = configForm.displayName.trim()
     const res = await apiFetch<DeviceConfig>(`/api/devices/${deviceId.value}`, {
@@ -2794,6 +2921,10 @@ onBeforeUnmount(() => {
   if (stationSearchTimer) {
     clearTimeout(stationSearchTimer)
     stationSearchTimer = null
+  }
+  if (atmosphereReloadTimer) {
+    clearTimeout(atmosphereReloadTimer)
+    atmosphereReloadTimer = null
   }
   if (tempChart) {
     tempChart.destroy()

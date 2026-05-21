@@ -33,6 +33,9 @@ COEFFICIENTS = {
     ],
 }
 
+VALID_BAND_MODES = {"auto", "off", "2mm", "3mm", "manual"}
+VALID_SEASONS = {"auto", "summer", "winter"}
+
 
 @dataclass(frozen=True)
 class EffectiveTemperaturePoint:
@@ -99,9 +102,12 @@ class AtmosphereService:
         bucket_seconds: int | None,
         tau_station_id: str | None,
         average: bool,
+        coefficient_config: dict[str, object] | None = None,
     ) -> AtmosphereSeries:
         device = await self._devices.get(device_id)
         config = self._normalize_config(dict(device.atmosphere_config or {}) if device else {})
+        if coefficient_config:
+            config = self._merge_coefficient_config(config, coefficient_config)
         adc_labels = dict(device.adc_labels or {}) if device else {}
         points, raw_count, bucket_seconds_value, bucket_label, aggregated = await self._measurements.list_series(
             device_id=device_id,
@@ -210,7 +216,32 @@ class AtmosphereService:
         )
 
     @staticmethod
-    def _normalize_config(config: dict[str, object]) -> dict[str, object]:
+    def _optional_float(value: object) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    @classmethod
+    def _normalize_band_config(cls, raw: object, default_mode: str = "auto") -> dict[str, object]:
+        cfg = raw if isinstance(raw, dict) else {}
+        mode = str(cfg.get("mode", default_mode)).strip().lower()
+        if mode not in VALID_BAND_MODES:
+            mode = default_mode if default_mode in VALID_BAND_MODES else "auto"
+        alpha = cls._optional_float(cfg.get("alpha"))
+        beta = cls._optional_float(cfg.get("beta"))
+        out: dict[str, object] = {"mode": mode}
+        if alpha is not None:
+            out["alpha"] = alpha
+        if beta is not None:
+            out["beta"] = beta
+        return out
+
+    @classmethod
+    def _normalize_config(cls, config: dict[str, object]) -> dict[str, object]:
         station_ids: list[str] = []
         for raw in config.get("station_ids", []) if isinstance(config, dict) else []:
             value = str(raw).strip()
@@ -225,17 +256,23 @@ class AtmosphereService:
         except (TypeError, ValueError, AttributeError):
             h0_m = 5300.0
         tau_station_id = str(config.get("tau_station_id", "")).strip()
+        season = str(config.get("season", "auto")).strip().lower()
+        if season not in VALID_SEASONS:
+            season = "auto"
 
-        # Handle explicit bands and overrides
-        overrides = {}
-        if isinstance(config.get("bands"), dict):
-            for k, v in config["bands"].items():
-                if k in ("adc1", "adc2", "adc3") and isinstance(v, dict):
-                    overrides[k] = {
-                        "mode": str(v.get("mode", "auto")),
-                        "alpha": float(v["alpha"]) if "alpha" in v else None,
-                        "beta": float(v["beta"]) if "beta" in v else None,
-                    }
+        bands_config = config.get("bands", {}) if isinstance(config, dict) else {}
+        overrides = {
+            "adc2": cls._normalize_band_config(
+                bands_config.get("adc2") if isinstance(bands_config, dict) else None,
+                default_mode="2mm",
+            ),
+            "adc3": cls._normalize_band_config(
+                bands_config.get("adc3") if isinstance(bands_config, dict) else None,
+                default_mode="3mm",
+            ),
+        }
+        if isinstance(bands_config, dict) and "adc1" in bands_config:
+            overrides["adc1"] = cls._normalize_band_config(bands_config.get("adc1"), default_mode="off")
 
         return {
             "station_ids": station_ids,
@@ -243,8 +280,25 @@ class AtmosphereService:
             "h0_m": h0_m if h0_m > 0 else 5300.0,
             "tau_station_id": tau_station_id if tau_station_id in station_ids else (station_ids[0] if station_ids else ""),
             "tau_average": bool(config.get("tau_average", False)),
+            "season": season,
             "bands": overrides,
         }
+
+    @classmethod
+    def _merge_coefficient_config(cls, base: dict[str, object], raw: dict[str, object]) -> dict[str, object]:
+        merged = dict(base)
+        season = str(raw.get("season", merged.get("season", "auto"))).strip().lower()
+        if season in VALID_SEASONS:
+            merged["season"] = season
+        raw_bands = raw.get("bands")
+        if isinstance(raw_bands, dict):
+            bands = dict(merged.get("bands", {})) if isinstance(merged.get("bands"), dict) else {}
+            for adc_key in ("adc1", "adc2", "adc3"):
+                if adc_key in raw_bands:
+                    default_mode = "2mm" if adc_key == "adc2" else "3mm" if adc_key == "adc3" else "off"
+                    bands[adc_key] = cls._normalize_band_config(raw_bands.get(adc_key), default_mode=default_mode)
+            merged["bands"] = bands
+        return merged
 
     @staticmethod
     def _profile_metrics(sounding: Sounding, min_height_m: float) -> tuple[float, float] | None:
@@ -347,7 +401,8 @@ class AtmosphereService:
                 pwv_values.append(None)
                 continue
                 
-            pwv_values.append((tau - alpha) / beta if beta else None)
+            dry_tau = alpha * math.exp(-altitude_m / h0_m)
+            pwv_values.append((tau - dry_tau) / beta if beta else None)
 
         return AtmosphereMeasurementPoint(
             timestamp=point.timestamp,
@@ -391,27 +446,26 @@ class AtmosphereService:
         timestamp: datetime,
         config: dict[str, object]
     ) -> tuple[float | None, float | None]:
-        # 1. Get settings from config
         bands_config = config.get("bands", {})
         adc_cfg = bands_config.get(adc_key) if isinstance(bands_config, dict) else None
-        
-        mode = adc_cfg.get("mode", "auto") if adc_cfg else "auto"
-        manual_alpha = adc_cfg.get("alpha") if adc_cfg else None
-        manual_beta = adc_cfg.get("beta") if adc_cfg else None
-        
+
+        mode = str(adc_cfg.get("mode", "auto") if isinstance(adc_cfg, dict) else "auto").strip().lower()
+        manual_alpha = self._optional_float(adc_cfg.get("alpha")) if isinstance(adc_cfg, dict) else None
+        manual_beta = self._optional_float(adc_cfg.get("beta")) if isinstance(adc_cfg, dict) else None
+
+        if mode == "off":
+            return None, None
         if mode == "manual":
             return manual_alpha, manual_beta
 
-        # 2. Determine band
         band = None
         if mode in ("2mm", "3mm"):
             band = mode
         else:
-            # Auto-detection from label
-            label = (adc_labels.get(adc_key) or adc_key).lower()
-            if "2" in label:
+            label = (adc_labels.get(adc_key) or "").lower().replace(" ", "")
+            if "2mm" in label or "2мм" in label:
                 band = "2mm"
-            elif "3" in label:
+            elif "3mm" in label or "3мм" in label:
                 band = "3mm"
             elif adc_key == "adc2":
                 band = "2mm"
@@ -421,26 +475,31 @@ class AtmosphereService:
         if not band:
             return None, None
 
-        # 3. Get interpolated values
-        alpha_beta = self._alpha_beta(band, altitude_m / 1000.0, timestamp)
+        season = str(config.get("season", "auto")).strip().lower()
+        season_override = season if season in ("summer", "winter") else None
+        alpha_beta = self._alpha_beta(band, altitude_m / 1000.0, timestamp, season_override)
         if not alpha_beta:
             return None, None
-            
+
         alpha, beta = alpha_beta
-        
-        # 4. Apply partial manual overrides if they were "corrected" while in 2mm/3mm mode
         if manual_alpha is not None:
             alpha = manual_alpha
         if manual_beta is not None:
             beta = manual_beta
-            
+
         return alpha, beta
 
-    def _alpha_beta(self, band: str, height_km: float, timestamp: datetime) -> tuple[float, float] | None:
+    def _alpha_beta(
+        self,
+        band: str,
+        height_km: float,
+        timestamp: datetime,
+        season_override: str | None = None,
+    ) -> tuple[float, float] | None:
         rows = COEFFICIENTS.get(band)
         if not rows:
             return None
-        season = self._season(timestamp)
+        season = season_override if season_override in ("summer", "winter") else self._season(timestamp)
         if height_km <= rows[0][0]:
             return rows[0][1][season]
         if height_km >= rows[-1][0]:

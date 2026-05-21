@@ -1,10 +1,40 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Sequence
 
 from app.domain.entities import Device, DeviceGpsConfig
 from app.repositories.interfaces import DeviceRepository
+
+
+VALID_BAND_MODES = {"auto", "off", "2mm", "3mm", "manual"}
+VALID_SEASONS = {"auto", "summer", "winter"}
+
+
+def optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def normalize_band_config(raw: object, default_mode: str) -> dict[str, object]:
+    cfg = raw if isinstance(raw, dict) else {}
+    mode = str(cfg.get("mode", default_mode)).strip().lower()
+    if mode not in VALID_BAND_MODES:
+        mode = default_mode
+    out: dict[str, object] = {"mode": mode}
+    alpha = optional_float(cfg.get("alpha"))
+    beta = optional_float(cfg.get("beta"))
+    if alpha is not None:
+        out["alpha"] = alpha
+    if beta is not None:
+        out["beta"] = beta
+    return out
 
 
 class DeviceService:
@@ -108,12 +138,30 @@ class DeviceService:
             except (TypeError, ValueError, AttributeError):
                 h0_m = 5300.0
             tau_station_id = str(atmosphere_config.get("tau_station_id", "")).strip()
+            season = str(atmosphere_config.get("season", "auto")).strip().lower()
+            if season not in VALID_SEASONS:
+                season = "auto"
+            raw_bands = atmosphere_config.get("bands", {})
+            bands = {
+                "adc2": normalize_band_config(
+                    raw_bands.get("adc2") if isinstance(raw_bands, dict) else None,
+                    "2mm",
+                ),
+                "adc3": normalize_band_config(
+                    raw_bands.get("adc3") if isinstance(raw_bands, dict) else None,
+                    "3mm",
+                ),
+            }
+            if isinstance(raw_bands, dict) and "adc1" in raw_bands:
+                bands["adc1"] = normalize_band_config(raw_bands.get("adc1"), "off")
             atmosphere_config = {
                 "station_ids": station_ids,
                 "altitude_m": max(0.0, altitude_m),
                 "h0_m": h0_m if h0_m > 0 else 5300.0,
                 "tau_station_id": tau_station_id if tau_station_id in station_ids else (station_ids[0] if station_ids else ""),
                 "tau_average": bool(atmosphere_config.get("tau_average", False)),
+                "season": season,
+                "bands": bands,
             }
         return await self._devices.update(
             device_id=device_id,

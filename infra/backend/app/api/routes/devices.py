@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -51,6 +52,18 @@ def sanitize_rtcm_types(values: list[int] | None) -> list[int] | None:
         if 0 < type_id <= 4095 and type_id not in out:
             out.append(type_id)
     return out
+
+
+def parse_coefficients(value: str | None) -> dict[str, object] | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid coefficients JSON") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid coefficients payload")
+    return parsed
 
 
 @router.get("", response_model=list[DeviceOut])
@@ -119,6 +132,7 @@ async def get_device_atmosphere(
     bucket_seconds: int | None = Query(default=None, ge=0, le=86400),
     tau_station_id: str | None = Query(default=None),
     average: bool = Query(default=False),
+    coefficients: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
 ):
     series = await atmosphere.build_series(
@@ -129,6 +143,7 @@ async def get_device_atmosphere(
         bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
         tau_station_id=tau_station_id,
         average=average,
+        coefficient_config=parse_coefficients(coefficients),
     )
     return AtmosphereSeriesResponse(
         config=series.config,

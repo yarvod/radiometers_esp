@@ -99,6 +99,27 @@ input { width: 100%; box-sizing: border-box; }
 .fields > * { flex: 1 1 180px; }
 .fields .compact input { width: 100%; }
 .fields .compact select { width: 100%; }
+.coefficient-actions { align-self: flex-end; flex: 2 1 260px; }
+.coefficient-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.coefficient-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(140px, 1fr) minmax(110px, 0.8fr) minmax(110px, 0.8fr);
+  gap: 8px;
+  align-items: end;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+.coefficient-channel {
+  font-weight: 700;
+  color: #1f2933;
+  align-self: center;
+}
 .divider { height: 1px; background: var(--border); margin: 12px 0; }
 .back { align-self: flex-start; }
 
@@ -496,6 +517,7 @@ input { width: 100%; box-sizing: border-box; }
 .station-check { color: #2563eb; font-weight: 900; }
 .station-empty { padding: 14px; }
 @media (max-width: 720px) {
+  .coefficient-row { grid-template-columns: 1fr; }
   .config-binding-row { grid-template-columns: 1fr; gap: 6px; }
 }
 .device-page .chart-stack { display: flex; flex-direction: column; gap: 20px; }
