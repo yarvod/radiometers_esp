@@ -465,7 +465,7 @@
                 type="number"
                 step="0.001"
                 v-model.number="configForm.atmosphere.bands[key].alpha"
-                placeholder="таблично"
+                :placeholder="atmosphereCoefficientPlaceholder(key, 'alpha')"
                 @input="markAtmosphereConfigDirty"
               />
             </label>
@@ -474,10 +474,14 @@
                 type="number"
                 step="0.001"
                 v-model.number="configForm.atmosphere.bands[key].beta"
-                placeholder="таблично"
+                :placeholder="atmosphereCoefficientPlaceholder(key, 'beta')"
                 @input="markAtmosphereConfigDirty"
               />
             </label>
+            <button class="btn ghost sm coefficient-reset" type="button" @click="clearAtmosphereBandOverrides(key)">
+              Табличные
+            </button>
+            <div class="coefficient-used">{{ atmosphereDefaultUsage(key) }}</div>
             <div class="coefficient-used">{{ atmosphereCoefficientUsage(key) }}</div>
           </div>
         </div>
@@ -838,6 +842,34 @@ type AtmosphereBandConfig = {
   beta?: number | null
 }
 
+type AtmosphereCoefficientPair = {
+  alpha: number | null
+  beta: number | null
+}
+
+type AtmosphereCoefficientRow = {
+  height_km: number
+  summer: AtmosphereCoefficientPair
+  winter: AtmosphereCoefficientPair
+}
+
+type AtmosphereCoefficientDefaults = {
+  altitude_m: number
+  season: string
+  effective_season: 'summer' | 'winter'
+  table: Record<string, AtmosphereCoefficientRow[]>
+  channels: Record<string, {
+    label: string
+    mode: string
+    band: string
+    season: 'summer' | 'winter'
+    manual: AtmosphereCoefficientPair
+    table: AtmosphereCoefficientPair
+    effective: AtmosphereCoefficientPair
+    seasons: Record<'summer' | 'winter', AtmosphereCoefficientPair>
+  }>
+}
+
 type AtmosphereConfig = {
   station_ids?: string[]
   altitude_m?: number
@@ -1166,6 +1198,7 @@ const historyTempAddresses = ref<string[]>([])
 const historyTempBindings = ref<Record<string, string>>({})
 const historyBrightnessLabels = ref<Record<string, string>>({})
 const atmosphereData = ref<AtmosphereResponse | null>(null)
+const atmosphereCoefficientDefaults = ref<AtmosphereCoefficientDefaults | null>(null)
 const atmosphereStatus = ref('')
 const atmosphereAverage = ref(false)
 const atmospherePrimaryStation = ref('')
@@ -1438,6 +1471,7 @@ const stationLabel = (station: StationOption) => {
 }
 
 const finiteOrNull = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
@@ -1450,6 +1484,53 @@ const normalizedSeason = (value: unknown) => {
 const normalizedBandMode = (value: unknown, fallback: string) => {
   const mode = String(value || fallback)
   return ['off', 'auto', '2mm', '3mm', 'manual'].includes(mode) ? mode : fallback
+}
+
+const defaultBandForAtmosphereKey = (key: AtmosphereBandKey) => (key === 'adc2' ? '2mm' : '3mm')
+
+const selectedBandForAtmosphereKey = (key: AtmosphereBandKey) => {
+  const mode = normalizedBandMode(configForm.atmosphere.bands[key].mode, defaultBandForAtmosphereKey(key))
+  return mode === '3mm' || mode === '2mm' ? mode : defaultBandForAtmosphereKey(key)
+}
+
+const selectedSeasonForAtmosphereDefaults = () => {
+  const season = normalizedSeason(configForm.atmosphere.season)
+  if (season === 'summer' || season === 'winter') return season
+  const timestamp = atmosphereData.value?.measurement_points?.at(-1)?.timestamp || historyData.value.at(-1)?.timestamp
+  const dt = timestamp ? parseDateAny(timestamp) : new Date()
+  const month = dt ? dt.getMonth() + 1 : new Date().getMonth() + 1
+  return month >= 5 && month <= 10 ? 'summer' : 'winter'
+}
+
+const interpolateCoefficient = (band: string, season: 'summer' | 'winter'): AtmosphereCoefficientPair | null => {
+  const rows = atmosphereCoefficientDefaults.value?.table?.[band] || []
+  if (!rows.length) return atmosphereCoefficientDefaults.value?.channels?.[band]?.seasons?.[season] || null
+  const heightKm = Math.max(0, Number(configForm.atmosphere.altitudeM) || 0) / 1000
+  if (heightKm <= rows[0].height_km) return rows[0][season]
+  const last = rows[rows.length - 1]
+  if (heightKm >= last.height_km) return last[season]
+  for (let i = 0; i < rows.length - 1; i += 1) {
+    const a = rows[i]
+    const b = rows[i + 1]
+    if (heightKm >= a.height_km && heightKm <= b.height_km) {
+      const k = (heightKm - a.height_km) / (b.height_km - a.height_km)
+      return {
+        alpha: Number(a[season].alpha) + (Number(b[season].alpha) - Number(a[season].alpha)) * k,
+        beta: Number(a[season].beta) + (Number(b[season].beta) - Number(a[season].beta)) * k,
+      }
+    }
+  }
+  return null
+}
+
+const atmosphereDefaultPair = (key: AtmosphereBandKey, season = selectedSeasonForAtmosphereDefaults()) => (
+  interpolateCoefficient(selectedBandForAtmosphereKey(key), season)
+)
+
+const atmosphereCoefficientPlaceholder = (key: AtmosphereBandKey, field: 'alpha' | 'beta') => {
+  const pair = atmosphereDefaultPair(key)
+  const value = pair?.[field]
+  return value !== null && value !== undefined && Number.isFinite(value) ? String(value) : 'таблично'
 }
 
 const buildAtmosphereCoefficientPayload = () => {
@@ -1475,6 +1556,17 @@ const buildAtmosphereCoefficientPayload = () => {
 const formatCoefficientValue = (value: number | null) => (
   value !== null && Number.isFinite(value) ? value.toFixed(4) : '—'
 )
+
+const atmosphereDefaultUsage = (key: AtmosphereBandKey) => {
+  const summer = atmosphereDefaultPair(key, 'summer')
+  const winter = atmosphereDefaultPair(key, 'winter')
+  const selected = selectedSeasonForAtmosphereDefaults() === 'summer' ? 'лето' : 'зима'
+  return [
+    `Таблично (${selected}, ${selectedBandForAtmosphereKey(key)}): alpha ${formatCoefficientValue(atmosphereDefaultPair(key)?.alpha ?? null)}, beta ${formatCoefficientValue(atmosphereDefaultPair(key)?.beta ?? null)}`,
+    `лето ${formatCoefficientValue(summer?.alpha ?? null)}/${formatCoefficientValue(summer?.beta ?? null)}`,
+    `зима ${formatCoefficientValue(winter?.alpha ?? null)}/${formatCoefficientValue(winter?.beta ?? null)}`,
+  ].join('; ')
+}
 
 const coefficientStats = (
   alphaKey: keyof AtmosphereMeasurementPoint,
@@ -1514,6 +1606,12 @@ const atmosphereCoefficientUsage = (key: AtmosphereBandKey) => {
     `диапазон alpha ${formatCoefficientValue(stats.minAlpha)}-${formatCoefficientValue(stats.maxAlpha)}`,
     `beta ${formatCoefficientValue(stats.minBeta)}-${formatCoefficientValue(stats.maxBeta)}`,
   ].join('; ')
+}
+
+const clearAtmosphereBandOverrides = (key: AtmosphereBandKey) => {
+  configForm.atmosphere.bands[key].alpha = null
+  configForm.atmosphere.bands[key].beta = null
+  markAtmosphereConfigDirty()
 }
 
 const scheduleAtmosphereReload = () => {
@@ -2723,6 +2821,20 @@ async function loadAtmosphere() {
   }
 }
 
+async function loadAtmosphereCoefficientDefaults() {
+  if (!deviceId.value) return
+  try {
+    const params = new URLSearchParams()
+    params.set('coefficients', JSON.stringify(buildAtmosphereCoefficientPayload()))
+    const response = await apiFetch<AtmosphereCoefficientDefaults>(
+      `/api/devices/${deviceId.value}/atmosphere/coefficients?${params.toString()}`,
+    )
+    atmosphereCoefficientDefaults.value = response
+  } catch (e) {
+    atmosphereCoefficientDefaults.value = null
+  }
+}
+
 async function loadHistory() {
   if (!deviceId.value) return
   historyLoading.value = true
@@ -2880,6 +2992,7 @@ const loadDeviceConfig = async () => {
     if (!configDirty.value) {
       seedConfigForm()
     }
+    await loadAtmosphereCoefficientDefaults()
   } catch (e: any) {
     configStatus.value = e?.message || 'Не удалось загрузить конфигурацию'
   }
@@ -2956,6 +3069,7 @@ const saveConfig = async () => {
       historyTempLabels.value = nextLabels
     }
     seedConfigForm()
+    await loadAtmosphereCoefficientDefaults()
     await loadAtmosphere()
   } catch (e: any) {
     configStatus.value = e?.message || 'Не удалось сохранить настройки'

@@ -107,7 +107,7 @@ input { width: 100%; box-sizing: border-box; }
 }
 .coefficient-row {
   display: grid;
-  grid-template-columns: minmax(130px, 1fr) minmax(140px, 1fr) minmax(110px, 0.8fr) minmax(110px, 0.8fr);
+  grid-template-columns: minmax(130px, 1fr) minmax(140px, 1fr) minmax(110px, 0.8fr) minmax(110px, 0.8fr) minmax(96px, auto);
   gap: 8px;
   align-items: end;
   border: 1px solid var(--border);
@@ -126,6 +126,7 @@ input { width: 100%; box-sizing: border-box; }
   font-size: 12px;
   font-weight: 600;
 }
+.coefficient-reset { align-self: end; }
 .divider { height: 1px; background: var(--border); margin: 12px 0; }
 .back { align-self: flex-start; }
 

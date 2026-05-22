@@ -121,6 +121,22 @@ async def get_device(
     return DeviceConfigOut.model_validate(device, from_attributes=True)
 
 
+@router.get("/{device_id}/atmosphere/coefficients")
+@inject
+async def get_device_atmosphere_coefficients(
+    device_id: str,
+    atmosphere: FromDishka[AtmosphereService],
+    at: str | None = Query(default=None),
+    coefficients: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+):
+    return await atmosphere.coefficient_defaults(
+        device_id=device_id,
+        timestamp=parse_datetime(at),
+        coefficient_config=parse_coefficients(coefficients),
+    )
+
+
 @router.get("/{device_id}/atmosphere", response_model=AtmosphereSeriesResponse)
 @inject
 async def get_device_atmosphere(

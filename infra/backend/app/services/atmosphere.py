@@ -221,6 +221,76 @@ class AtmosphereService:
             aggregated=aggregated,
         )
 
+    async def coefficient_defaults(
+        self,
+        device_id: str,
+        timestamp: datetime | None = None,
+        coefficient_config: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        device = await self._devices.get(device_id)
+        config = self._normalize_config(dict(device.atmosphere_config or {}) if device else {})
+        if coefficient_config:
+            config = self._merge_coefficient_config(config, coefficient_config)
+        adc_labels = dict(device.adc_labels or {}) if device else {}
+        altitude_m = float(config.get("altitude_m") or 0.0)
+        ts = timestamp or datetime.utcnow()
+        selected_season = str(config.get("season", "auto")).strip().lower()
+        effective_season = selected_season if selected_season in ("summer", "winter") else self._season(ts)
+
+        table = {
+            band: [
+                {
+                    "height_km": height_km,
+                    "summer": {"alpha": values["summer"][0], "beta": values["summer"][1]},
+                    "winter": {"alpha": values["winter"][0], "beta": values["winter"][1]},
+                }
+                for height_km, values in rows
+            ]
+            for band, rows in COEFFICIENTS.items()
+        }
+
+        channels: dict[str, object] = {}
+        bands_config = config.get("bands", {})
+        for adc_key in ("adc2", "adc3"):
+            adc_cfg = bands_config.get(adc_key) if isinstance(bands_config, dict) else None
+            mode = str(adc_cfg.get("mode", "auto") if isinstance(adc_cfg, dict) else "auto").strip().lower()
+            band = self._band_for_adc(adc_key, adc_labels, mode)
+            if band is None:
+                band = "2mm" if adc_key == "adc2" else "3mm"
+            season_values: dict[str, object] = {}
+            for season in ("summer", "winter"):
+                pair = self._alpha_beta(band, altitude_m / 1000.0, ts, season)
+                season_values[season] = (
+                    {"alpha": pair[0], "beta": pair[1]}
+                    if pair
+                    else {"alpha": None, "beta": None}
+                )
+            table_pair = self._alpha_beta(band, altitude_m / 1000.0, ts, effective_season)
+            effective_alpha, effective_beta = self._resolve_alpha_beta(adc_key, adc_labels, altitude_m, ts, config)
+            manual_alpha = self._optional_float(adc_cfg.get("alpha")) if isinstance(adc_cfg, dict) else None
+            manual_beta = self._optional_float(adc_cfg.get("beta")) if isinstance(adc_cfg, dict) else None
+            channels[adc_key] = {
+                "label": adc_labels.get(adc_key) or adc_key.upper(),
+                "mode": mode,
+                "band": band,
+                "season": effective_season,
+                "manual": {"alpha": manual_alpha, "beta": manual_beta},
+                "table": {
+                    "alpha": table_pair[0] if table_pair else None,
+                    "beta": table_pair[1] if table_pair else None,
+                },
+                "effective": {"alpha": effective_alpha, "beta": effective_beta},
+                "seasons": season_values,
+            }
+
+        return {
+            "altitude_m": altitude_m,
+            "season": selected_season,
+            "effective_season": effective_season,
+            "table": table,
+            "channels": channels,
+        }
+
     @staticmethod
     def _optional_float(value: object) -> float | None:
         if value is None or value == "":
@@ -454,6 +524,21 @@ class AtmosphereService:
     def _season(timestamp: datetime) -> str:
         return "summer" if 5 <= timestamp.month <= 10 else "winter"
 
+    @staticmethod
+    def _band_for_adc(adc_key: str, adc_labels: dict[str, str], mode: str) -> str | None:
+        if mode in ("2mm", "3mm"):
+            return mode
+        label = (adc_labels.get(adc_key) or "").lower().replace(" ", "")
+        if "2mm" in label or "2мм" in label:
+            return "2mm"
+        if "3mm" in label or "3мм" in label:
+            return "3mm"
+        if adc_key == "adc2":
+            return "2mm"
+        if adc_key == "adc3":
+            return "3mm"
+        return None
+
     def _resolve_alpha_beta(
         self, 
         adc_key: str, 
@@ -474,19 +559,7 @@ class AtmosphereService:
         if mode == "manual":
             return manual_alpha, manual_beta
 
-        band = None
-        if mode in ("2mm", "3mm"):
-            band = mode
-        else:
-            label = (adc_labels.get(adc_key) or "").lower().replace(" ", "")
-            if "2mm" in label or "2мм" in label:
-                band = "2mm"
-            elif "3mm" in label or "3мм" in label:
-                band = "3mm"
-            elif adc_key == "adc2":
-                band = "2mm"
-            elif adc_key == "adc3":
-                band = "3mm"
+        band = self._band_for_adc(adc_key, adc_labels, mode)
 
         if not band:
             return None, None
