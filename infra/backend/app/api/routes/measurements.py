@@ -10,6 +10,7 @@ from app.services.brightness import apply_brightness_temperatures
 from app.services.calibrations import RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.measurements import MeasurementService
+from app.services.temp_outliers import TemperatureOutlierFilterConfig
 
 router = APIRouter(prefix="/measurements", tags=["measurements"])
 
@@ -34,24 +35,38 @@ async def list_measurements(
     end: str | None = Query(None, alias="to"),
     limit: int = Query(2000, ge=1, le=10000),
     bucket_seconds: int | None = Query(None, ge=0, le=86400),
+    temp_outlier_filter: bool = Query(False),
+    temp_outlier_window: int = Query(9, ge=3, le=501),
+    temp_outlier_threshold: float = Query(3.5, gt=0, le=100),
+    temp_outlier_min_count: int = Query(5, ge=1, le=500),
     current_user: User = Depends(get_current_user),
 ):
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)
-    points_seq, raw_count, bucket_seconds, bucket_label, aggregated = await measurements.list_series(
-        device_id=device_id,
-        start=start_dt,
-        end=end_dt,
-        limit=limit,
-        bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
-    )
-    points = list(points_seq)
-    calibration_items, _ = await calibrations.list(device_id=device_id, limit=10000, offset=0)
     device = await devices.get_device(device_id)
     config_temp_labels = list(device.temp_labels) if device else []
     config_temp_addresses = list(device.temp_addresses) if device else []
     config_temp_label_map = dict(device.temp_label_map) if device else {}
     config_temp_bindings = dict(device.temp_bindings) if device else {}
+    points_seq, raw_count, bucket_seconds, bucket_label, aggregated, outlier_stats = (
+        await measurements.list_series_with_temp_outlier_filter(
+            device_id=device_id,
+            start=start_dt,
+            end=end_dt,
+            limit=limit,
+            bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
+            temp_outlier_filter=TemperatureOutlierFilterConfig(
+                enabled=temp_outlier_filter,
+                window=temp_outlier_window,
+                threshold=temp_outlier_threshold,
+                min_count=temp_outlier_min_count,
+            ),
+            temp_addresses=config_temp_addresses,
+            temp_bindings=config_temp_bindings,
+        )
+    )
+    points = list(points_seq)
+    calibration_items, _ = await calibrations.list(device_id=device_id, limit=10000, offset=0)
     apply_brightness_temperatures(
         points,
         list(calibration_items),
@@ -95,6 +110,7 @@ async def list_measurements(
         temp_label_map=config_temp_label_map,
         temp_bindings=config_temp_bindings,
         brightness_temp_labels=brightness_temp_labels,
+        temp_outlier_filter=outlier_stats.as_dict(),
     )
 
 

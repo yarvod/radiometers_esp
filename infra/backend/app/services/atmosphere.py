@@ -14,6 +14,7 @@ from app.repositories.interfaces import (
 )
 from app.services.brightness import apply_brightness_temperatures
 from app.services.measurements import MeasurementService
+from app.services.temp_outliers import TemperatureOutlierFilterConfig
 
 
 COEFFICIENTS = {
@@ -82,6 +83,7 @@ class AtmosphereSeries:
     bucket_seconds: int
     bucket_label: str
     aggregated: bool
+    temp_outlier_filter: dict[str, object]
 
 
 class AtmosphereService:
@@ -109,26 +111,39 @@ class AtmosphereService:
         tau_station_id: str | None,
         average: bool,
         coefficient_config: dict[str, object] | None = None,
+        temp_outlier_filter: TemperatureOutlierFilterConfig | None = None,
     ) -> AtmosphereSeries:
         device = await self._devices.get(device_id)
         config = self._normalize_config(dict(device.atmosphere_config or {}) if device else {})
         if coefficient_config:
             config = self._merge_coefficient_config(config, coefficient_config)
         adc_labels = dict(device.adc_labels or {}) if device else {}
-        points, raw_count, bucket_seconds_value, bucket_label, aggregated = await self._measurements.list_series(
+        temp_addresses = list(device.temp_addresses or []) if device else []
+        temp_bindings = dict(device.temp_bindings or {}) if device else {}
+        (
+            points,
+            raw_count,
+            bucket_seconds_value,
+            bucket_label,
+            aggregated,
+            outlier_stats,
+        ) = await self._measurements.list_series_with_temp_outlier_filter(
             device_id=device_id,
             start=start,
             end=end,
             limit=limit,
             bucket_seconds=bucket_seconds,
+            temp_outlier_filter=temp_outlier_filter,
+            temp_addresses=temp_addresses,
+            temp_bindings=temp_bindings,
         )
         measurement_points = list(points)
         calibrations = list(await self._calibrations.list(device_id=device_id, limit=10000, offset=0))
         apply_brightness_temperatures(
             measurement_points,
             calibrations,
-            temp_addresses=list(device.temp_addresses or []) if device else [],
-            temp_bindings=dict(device.temp_bindings or {}) if device else {},
+            temp_addresses=temp_addresses,
+            temp_bindings=temp_bindings,
         )
 
         station_ids = [str(item) for item in config.get("station_ids", [])]
@@ -143,6 +158,7 @@ class AtmosphereService:
                 bucket_seconds=bucket_seconds_value,
                 bucket_label=bucket_label,
                 aggregated=aggregated,
+                temp_outlier_filter=outlier_stats.as_dict(),
             )
 
         min_ts = min((point.timestamp for point in measurement_points), default=start)
@@ -219,6 +235,7 @@ class AtmosphereService:
             bucket_seconds=bucket_seconds_value,
             bucket_label=bucket_label,
             aggregated=aggregated,
+            temp_outlier_filter=outlier_stats.as_dict(),
         )
 
     async def coefficient_defaults(

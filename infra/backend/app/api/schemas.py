@@ -118,6 +118,7 @@ class AtmosphereSeriesResponse(BaseModel):
     bucket_seconds: int
     bucket_label: str
     aggregated: bool
+    temp_outlier_filter: dict[str, object] = Field(default_factory=dict)
 
 
 class DeviceGpsConfigOut(BaseModel):
@@ -407,6 +408,7 @@ class MeasurementsResponse(BaseModel):
     temp_label_map: dict[str, str] = Field(default_factory=dict)
     temp_bindings: dict[str, str] = Field(default_factory=dict)
     brightness_temp_labels: dict[str, str] = Field(default_factory=dict)
+    temp_outlier_filter: dict[str, object] = Field(default_factory=dict)
 
 
 class MeasurementLatestResponse(BaseModel):

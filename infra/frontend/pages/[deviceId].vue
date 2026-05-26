@@ -383,6 +383,21 @@
           </div>
         </label>
       </div>
+      <div class="inline fields">
+        <label class="checkbox">
+          <input type="checkbox" v-model="tempOutlierFilter.enabled" />
+          <span>Фильтр выбросов температуры</span>
+        </label>
+        <label class="compact" v-if="tempOutlierFilter.enabled">Окно, точек
+          <input type="number" min="3" max="501" step="2" v-model.number="tempOutlierFilter.window" />
+        </label>
+        <label class="compact" v-if="tempOutlierFilter.enabled">Порог σ
+          <input type="number" min="0.1" max="100" step="0.1" v-model.number="tempOutlierFilter.threshold" />
+        </label>
+        <label class="compact" v-if="tempOutlierFilter.enabled">Мин. соседей
+          <input type="number" min="1" max="500" step="1" v-model.number="tempOutlierFilter.minCount" />
+        </label>
+      </div>
       <p class="muted" v-if="historyRangeLabel">{{ historyRangeLabel }}</p>
       <div class="actions">
         <button class="btn primary" @click="loadHistory" :disabled="historyLoading">Загрузить</button>
@@ -401,6 +416,9 @@
       <div class="status-row" v-if="historyBucketLabel && historyBucketLabel !== 'raw'">
         <span class="chip subtle">Окно: {{ historyBucketLabel }}</span>
         <span class="chip subtle">Исходно: {{ historyRawCount }}</span>
+      </div>
+      <div class="status-row" v-if="historyOutlierStatus">
+        <span class="chip subtle">{{ historyOutlierStatus }}</span>
       </div>
       <div class="form-group">
         <label>Температурные датчики</label>
@@ -800,6 +818,7 @@ type MeasurementsResponse = {
   temp_addresses: string[]
   temp_bindings: Record<string, string>
   brightness_temp_labels: Record<string, string>
+  temp_outlier_filter?: TempOutlierFilterStats
 }
 
 type ErrorEvent = {
@@ -927,6 +946,18 @@ type AtmosphereResponse = {
   bucket_seconds: number
   bucket_label: string
   aggregated: boolean
+  temp_outlier_filter?: TempOutlierFilterStats
+}
+
+type TempOutlierFilterStats = {
+  enabled: boolean
+  window: number
+  threshold: number
+  min_count: number
+  inspected_indices: number[]
+  removed_count: number
+  input_count: number
+  output_count: number
 }
 
 type DeviceGpsConfig = {
@@ -1188,6 +1219,12 @@ const historyFilters = reactive({
   bucketValue: 10,
   bucketUnit: 's',
 })
+const tempOutlierFilter = reactive({
+  enabled: false,
+  window: 9,
+  threshold: 3.5,
+  minCount: 5,
+})
 const historySelection = reactive({
   tempIndices: [] as number[],
   adcSeries: ['adc1', 'adc2', 'adc3'] as string[],
@@ -1212,6 +1249,7 @@ const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
 const historyRawCount = ref(0)
+const historyOutlierFilter = ref<TempOutlierFilterStats | null>(null)
 const historyAutoRefresh = ref(false)
 const historyRefreshSec = ref(15)
 let historyTimer: ReturnType<typeof setInterval> | null = null
@@ -1475,6 +1513,33 @@ const finiteOrNull = (value: unknown) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
+
+const normalizedTempOutlierFilterParams = () => {
+  let window = Math.max(3, Math.min(501, Math.floor(Number(tempOutlierFilter.window) || 9)))
+  if (window % 2 === 0) window += 1
+  const threshold = Math.max(0.1, Math.min(100, Number(tempOutlierFilter.threshold) || 3.5))
+  const minCount = Math.max(1, Math.min(window - 1, Math.floor(Number(tempOutlierFilter.minCount) || 5)))
+  tempOutlierFilter.window = window
+  tempOutlierFilter.threshold = threshold
+  tempOutlierFilter.minCount = minCount
+  return { window, threshold, minCount }
+}
+
+const appendTempOutlierFilterParams = (params: URLSearchParams) => {
+  if (!tempOutlierFilter.enabled) return
+  const normalized = normalizedTempOutlierFilterParams()
+  params.set('temp_outlier_filter', 'true')
+  params.set('temp_outlier_window', String(normalized.window))
+  params.set('temp_outlier_threshold', String(normalized.threshold))
+  params.set('temp_outlier_min_count', String(normalized.minCount))
+}
+
+const historyOutlierStatus = computed(() => {
+  const stats = historyOutlierFilter.value
+  if (!stats?.enabled) return ''
+  const sensors = (stats.inspected_indices || []).map((idx) => historyTempLabels.value[idx] || `t${idx + 1}`).join(', ')
+  return `Фильтр температуры: убрано ${stats.removed_count} из ${stats.input_count}; датчики ${sensors || '—'}`
+})
 
 const normalizedSeason = (value: unknown) => {
   const season = String(value || 'auto')
@@ -2794,6 +2859,7 @@ async function loadAtmosphere() {
       limit: String(historyFilters.limit),
       average: atmosphereAverage.value ? 'true' : 'false',
     })
+    appendTempOutlierFilterParams(params)
     params.set('coefficients', JSON.stringify(buildAtmosphereCoefficientPayload()))
     const primary = atmospherePrimaryStation.value || selected[0]
     if (primary) params.set('tau_station_id', primary)
@@ -2854,6 +2920,7 @@ async function loadHistory() {
       device_id: deviceId.value,
       limit: String(historyFilters.limit),
     })
+    appendTempOutlierFilterParams(params)
     if (historyFilters.bucketMode === 'manual') {
       const multiplier = historyFilters.bucketUnit === 'h' ? 3600 : historyFilters.bucketUnit === 'm' ? 60 : 1
       const seconds = Math.max(1, Math.floor(historyFilters.bucketValue * multiplier))
@@ -2875,6 +2942,7 @@ async function loadHistory() {
     historyTempAddresses.value = response.temp_addresses || []
     historyTempBindings.value = response.temp_bindings || {}
     historyBrightnessLabels.value = response.brightness_temp_labels || {}
+    historyOutlierFilter.value = response.temp_outlier_filter || null
     const hasKnownTempAddresses = !!deviceConfig.value?.temp_addresses?.some(Boolean)
     if (deviceConfig.value && response.temp_label_map) {
       deviceConfig.value = {

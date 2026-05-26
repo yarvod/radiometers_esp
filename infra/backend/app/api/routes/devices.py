@@ -27,6 +27,7 @@ from app.services.atmosphere import AtmosphereService
 from app.services.calibrations import CalibrationError, RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
+from app.services.temp_outliers import TemperatureOutlierFilterConfig
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -149,6 +150,10 @@ async def get_device_atmosphere(
     tau_station_id: str | None = Query(default=None),
     average: bool = Query(default=False),
     coefficients: str | None = Query(default=None),
+    temp_outlier_filter: bool = Query(False),
+    temp_outlier_window: int = Query(9, ge=3, le=501),
+    temp_outlier_threshold: float = Query(3.5, gt=0, le=100),
+    temp_outlier_min_count: int = Query(5, ge=1, le=500),
     current_user: User = Depends(get_current_user),
 ):
     series = await atmosphere.build_series(
@@ -160,6 +165,12 @@ async def get_device_atmosphere(
         tau_station_id=tau_station_id,
         average=average,
         coefficient_config=parse_coefficients(coefficients),
+        temp_outlier_filter=TemperatureOutlierFilterConfig(
+            enabled=temp_outlier_filter,
+            window=temp_outlier_window,
+            threshold=temp_outlier_threshold,
+            min_count=temp_outlier_min_count,
+        ),
     )
     return AtmosphereSeriesResponse(
         config=series.config,
@@ -177,6 +188,7 @@ async def get_device_atmosphere(
         bucket_seconds=series.bucket_seconds,
         bucket_label=series.bucket_label,
         aggregated=series.aggregated,
+        temp_outlier_filter=series.temp_outlier_filter,
     )
 
 
