@@ -18,6 +18,8 @@ mosquitto_passwd
 
 # Env/config
 .env
+backup.env
+backups/
 frontend/.env
 infra/.env
 
