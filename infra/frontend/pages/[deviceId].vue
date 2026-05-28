@@ -1864,7 +1864,11 @@ const palette = [
   '#8c564b',
   '#e377c2',
   '#7f7f7f',
+  '#bcbd22',
+  '#17becf',
 ]
+const atmosphereRadiometerPalette = [palette[0], palette[1], palette[2]]
+const pwvProfilePalette = palette.slice(3)
 
 type AdcSeriesOption = {
   key: string
@@ -2062,9 +2066,9 @@ const buildTeffDatasets = () => {
 
 const atmosphereAdcSeries = computed(() => {
   const items = [
-    { key: '1', adcKey: 'adc1', label: adcLabelMap.value.adc1 || 'ADC1', color: '#16a085' },
-    { key: '2', adcKey: 'adc2', label: adcLabelMap.value.adc2 || 'ADC2', color: '#c0392b' },
-    { key: '3', adcKey: 'adc3', label: adcLabelMap.value.adc3 || 'ADC3', color: '#8e44ad' },
+    { key: '1', adcKey: 'adc1', label: adcLabelMap.value.adc1 || 'ADC1', color: atmosphereRadiometerPalette[0] },
+    { key: '2', adcKey: 'adc2', label: adcLabelMap.value.adc2 || 'ADC2', color: atmosphereRadiometerPalette[1] },
+    { key: '3', adcKey: 'adc3', label: adcLabelMap.value.adc3 || 'ADC3', color: atmosphereRadiometerPalette[2] },
   ]
   const labelCounts = new Map<string, number>()
   items.forEach((item) => labelCounts.set(item.label, (labelCounts.get(item.label) || 0) + 1))
@@ -2125,7 +2129,7 @@ const buildPwvAtmosphereDatasets = () => {
     const dataset = buildAtmosphereDataset(
       `Профиль ${response.station_labels[stationId] || stationId}`,
       mapTimelineValues(timeline, values),
-      palette[(idx + 3) % palette.length],
+      pwvProfilePalette[idx % pwvProfilePalette.length],
     )
     dataset.borderDash = [6, 4]
     dataset.pointRadius = 2
