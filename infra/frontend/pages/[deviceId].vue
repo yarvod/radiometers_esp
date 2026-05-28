@@ -506,31 +506,96 @@
       </div>
       <div class="chart-stack">
         <div class="chart-box">
-          <h4>Температуры</h4>
+          <div class="chart-head-row">
+            <h4>Температуры</h4>
+            <div class="axis-controls">
+              <label class="checkbox axis-auto"><input type="checkbox" v-model="chartAxisLimits.temp.auto" /> <span>Авто Y</span></label>
+              <label class="compact">min
+                <input type="number" step="any" v-model.number="chartAxisLimits.temp.min" :disabled="chartAxisLimits.temp.auto" />
+              </label>
+              <label class="compact">max
+                <input type="number" step="any" v-model.number="chartAxisLimits.temp.max" :disabled="chartAxisLimits.temp.auto" />
+              </label>
+              <button class="btn ghost sm" type="button" @click="resetChartAxis('temp')">Сброс</button>
+            </div>
+          </div>
+          <div class="axis-error" v-if="chartAxisError('temp')">{{ chartAxisError('temp') }}</div>
           <div class="chart-body">
             <canvas ref="tempChartEl"></canvas>
           </div>
         </div>
         <div class="chart-box">
-          <h4>ADC + Cal</h4>
+          <div class="chart-head-row">
+            <h4>ADC + Cal</h4>
+            <div class="axis-controls">
+              <label class="checkbox axis-auto"><input type="checkbox" v-model="chartAxisLimits.adc.auto" /> <span>Авто Y</span></label>
+              <label class="compact">min
+                <input type="number" step="any" v-model.number="chartAxisLimits.adc.min" :disabled="chartAxisLimits.adc.auto" />
+              </label>
+              <label class="compact">max
+                <input type="number" step="any" v-model.number="chartAxisLimits.adc.max" :disabled="chartAxisLimits.adc.auto" />
+              </label>
+              <button class="btn ghost sm" type="button" @click="resetChartAxis('adc')">Сброс</button>
+            </div>
+          </div>
+          <div class="axis-error" v-if="chartAxisError('adc')">{{ chartAxisError('adc') }}</div>
           <div class="chart-body">
             <canvas ref="adcChartEl"></canvas>
           </div>
         </div>
         <div class="chart-box">
-          <h4>Яркостная температура Tk</h4>
+          <div class="chart-head-row">
+            <h4>Яркостная температура Tk</h4>
+            <div class="axis-controls">
+              <label class="checkbox axis-auto"><input type="checkbox" v-model="chartAxisLimits.brightness.auto" /> <span>Авто Y</span></label>
+              <label class="compact">min
+                <input type="number" step="any" v-model.number="chartAxisLimits.brightness.min" :disabled="chartAxisLimits.brightness.auto" />
+              </label>
+              <label class="compact">max
+                <input type="number" step="any" v-model.number="chartAxisLimits.brightness.max" :disabled="chartAxisLimits.brightness.auto" />
+              </label>
+              <button class="btn ghost sm" type="button" @click="resetChartAxis('brightness')">Сброс</button>
+            </div>
+          </div>
+          <div class="axis-error" v-if="chartAxisError('brightness')">{{ chartAxisError('brightness') }}</div>
           <div class="chart-body">
             <canvas ref="brightnessChartEl"></canvas>
           </div>
         </div>
         <div class="chart-box">
-          <h4>Контроль теплой нагрузки</h4>
+          <div class="chart-head-row">
+            <h4>Контроль теплой нагрузки</h4>
+            <div class="axis-controls">
+              <label class="checkbox axis-auto"><input type="checkbox" v-model="chartAxisLimits.loadCheck.auto" /> <span>Авто Y</span></label>
+              <label class="compact">min
+                <input type="number" step="any" v-model.number="chartAxisLimits.loadCheck.min" :disabled="chartAxisLimits.loadCheck.auto" />
+              </label>
+              <label class="compact">max
+                <input type="number" step="any" v-model.number="chartAxisLimits.loadCheck.max" :disabled="chartAxisLimits.loadCheck.auto" />
+              </label>
+              <button class="btn ghost sm" type="button" @click="resetChartAxis('loadCheck')">Сброс</button>
+            </div>
+          </div>
+          <div class="axis-error" v-if="chartAxisError('loadCheck')">{{ chartAxisError('loadCheck') }}</div>
           <div class="chart-body">
             <canvas ref="loadCheckChartEl"></canvas>
           </div>
         </div>
         <div class="chart-box">
-          <h4>Эффективная температура по зондам</h4>
+          <div class="chart-head-row">
+            <h4>Эффективная температура по зондам</h4>
+            <div class="axis-controls">
+              <label class="checkbox axis-auto"><input type="checkbox" v-model="chartAxisLimits.teff.auto" /> <span>Авто Y</span></label>
+              <label class="compact">min
+                <input type="number" step="any" v-model.number="chartAxisLimits.teff.min" :disabled="chartAxisLimits.teff.auto" />
+              </label>
+              <label class="compact">max
+                <input type="number" step="any" v-model.number="chartAxisLimits.teff.max" :disabled="chartAxisLimits.teff.auto" />
+              </label>
+              <button class="btn ghost sm" type="button" @click="resetChartAxis('teff')">Сброс</button>
+            </div>
+          </div>
+          <div class="axis-error" v-if="chartAxisError('teff')">{{ chartAxisError('teff') }}</div>
           <div class="chart-body">
             <canvas ref="teffChartEl"></canvas>
           </div>
@@ -538,20 +603,33 @@
         <div class="chart-box">
           <div class="chart-head-row">
             <h4>Тау атмосферы</h4>
-            <div class="inline fields compact-controls">
-              <label class="checkbox">
-                <input type="checkbox" v-model="atmosphereAverage" :disabled="atmosphereStationOptions.length === 0" />
-                <span>Усреднить</span>
-              </label>
-              <label class="compact">Станция
-                <select v-model="atmospherePrimaryStation" :disabled="atmosphereAverage || atmosphereStationOptions.length === 0">
-                  <option v-for="station in atmosphereStationOptions" :key="station.station_id" :value="station.station_id">
-                    {{ stationLabel(station) }}
-                  </option>
-                </select>
-              </label>
+            <div class="chart-head-controls">
+              <div class="axis-controls">
+                <label class="checkbox axis-auto"><input type="checkbox" v-model="chartAxisLimits.tau.auto" /> <span>Авто Y</span></label>
+                <label class="compact">min
+                  <input type="number" step="any" v-model.number="chartAxisLimits.tau.min" :disabled="chartAxisLimits.tau.auto" />
+                </label>
+                <label class="compact">max
+                  <input type="number" step="any" v-model.number="chartAxisLimits.tau.max" :disabled="chartAxisLimits.tau.auto" />
+                </label>
+                <button class="btn ghost sm" type="button" @click="resetChartAxis('tau')">Сброс</button>
+              </div>
+              <div class="inline fields compact-controls">
+                <label class="checkbox">
+                  <input type="checkbox" v-model="atmosphereAverage" :disabled="atmosphereStationOptions.length === 0" />
+                  <span>Усреднить</span>
+                </label>
+                <label class="compact">Станция
+                  <select v-model="atmospherePrimaryStation" :disabled="atmosphereAverage || atmosphereStationOptions.length === 0">
+                    <option v-for="station in atmosphereStationOptions" :key="station.station_id" :value="station.station_id">
+                      {{ stationLabel(station) }}
+                    </option>
+                  </select>
+                </label>
+              </div>
             </div>
           </div>
+          <div class="axis-error" v-if="chartAxisError('tau')">{{ chartAxisError('tau') }}</div>
           <div class="chart-body">
             <canvas ref="tauChartEl"></canvas>
           </div>
@@ -559,8 +637,21 @@
         <div class="chart-box">
           <div class="chart-head-row">
             <h4>PWV</h4>
-            <span class="muted" v-if="pwvRadiometerStatus">{{ pwvRadiometerStatus }}</span>
+            <div class="chart-head-controls">
+              <div class="axis-controls">
+                <label class="checkbox axis-auto"><input type="checkbox" v-model="chartAxisLimits.pwv.auto" /> <span>Авто Y</span></label>
+                <label class="compact">min
+                  <input type="number" step="any" v-model.number="chartAxisLimits.pwv.min" :disabled="chartAxisLimits.pwv.auto" />
+                </label>
+                <label class="compact">max
+                  <input type="number" step="any" v-model.number="chartAxisLimits.pwv.max" :disabled="chartAxisLimits.pwv.auto" />
+                </label>
+                <button class="btn ghost sm" type="button" @click="resetChartAxis('pwv')">Сброс</button>
+              </div>
+              <span class="muted" v-if="pwvRadiometerStatus">{{ pwvRadiometerStatus }}</span>
+            </div>
           </div>
+          <div class="axis-error" v-if="chartAxisError('pwv')">{{ chartAxisError('pwv') }}</div>
           <div class="chart-body">
             <canvas ref="pwvAtmosphereChartEl"></canvas>
           </div>
@@ -1273,6 +1364,21 @@ const errorRangeLabel = computed(() => {
   const start = errorOffset.value + 1
   const end = errorOffset.value + errorEvents.value.length
   return `${start}–${end} из ${errorTotal.value}`
+})
+type ChartKey = 'temp' | 'adc' | 'brightness' | 'loadCheck' | 'teff' | 'tau' | 'pwv'
+type ChartAxisLimit = {
+  auto: boolean
+  min: number | '' | null
+  max: number | '' | null
+}
+const chartAxisLimits = reactive<Record<ChartKey, ChartAxisLimit>>({
+  temp: { auto: true, min: '', max: '' },
+  adc: { auto: true, min: '', max: '' },
+  brightness: { auto: true, min: '', max: '' },
+  loadCheck: { auto: true, min: '', max: '' },
+  teff: { auto: true, min: '', max: '' },
+  tau: { auto: true, min: '', max: '' },
+  pwv: { auto: true, min: '', max: '' },
 })
 const tempChartEl = ref<HTMLCanvasElement | null>(null)
 const adcChartEl = ref<HTMLCanvasElement | null>(null)
@@ -2044,7 +2150,49 @@ const pwvRadiometerStatus = computed(() => {
   return 'PWV радиометров нет: нет tau по ADC2/ADC3'
 })
 
-const atmosphereChartOptions = () => ({
+const axisValue = (value: number | '' | null) => {
+  if (value === '' || value === null) return undefined
+  const num = Number(value)
+  return Number.isFinite(num) ? num : undefined
+}
+
+const chartAxisError = (key: ChartKey) => {
+  const limit = chartAxisLimits[key]
+  if (limit.auto) return ''
+  const min = axisValue(limit.min)
+  const max = axisValue(limit.max)
+  if (min !== undefined && max !== undefined && min >= max) return 'min должен быть меньше max'
+  return ''
+}
+
+const yScaleOptions = (key: ChartKey) => {
+  const scale: Record<string, any> = { ticks: { maxTicksLimit: 6 } }
+  const limit = chartAxisLimits[key]
+  if (limit.auto || chartAxisError(key)) return scale
+  const min = axisValue(limit.min)
+  const max = axisValue(limit.max)
+  if (min !== undefined) scale.min = min
+  if (max !== undefined) scale.max = max
+  return scale
+}
+
+const applyChartAxisLimits = (chart: any, key: ChartKey) => {
+  if (!chart?.options?.scales?.y) return
+  const scale = chart.options.scales.y
+  delete scale.min
+  delete scale.max
+  const limit = yScaleOptions(key)
+  if (limit.min !== undefined) scale.min = limit.min
+  if (limit.max !== undefined) scale.max = limit.max
+}
+
+const resetChartAxis = (key: ChartKey) => {
+  chartAxisLimits[key].auto = true
+  chartAxisLimits[key].min = ''
+  chartAxisLimits[key].max = ''
+}
+
+const commonChartOptions = (key: ChartKey, tooltip?: Record<string, any>) => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index', intersect: false },
@@ -2054,15 +2202,7 @@ const atmosphereChartOptions = () => ({
       align: 'start',
       labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
     },
-    tooltip: {
-      mode: 'index',
-      intersect: false,
-      callbacks: {
-        title: (items: any[]) => {
-          return String(items?.[0]?.label || '')
-        },
-      },
-    },
+    ...(tooltip ? { tooltip } : {}),
   },
   layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
   scales: {
@@ -2075,9 +2215,21 @@ const atmosphereChartOptions = () => ({
       },
       grid: { display: false },
     },
-    y: { ticks: { maxTicksLimit: 6 } },
+    y: yScaleOptions(key),
   },
 })
+
+const atmosphereChartOptions = (key: ChartKey) => (
+  commonChartOptions(key, {
+      mode: 'index',
+      intersect: false,
+      callbacks: {
+        title: (items: any[]) => {
+          return String(items?.[0]?.label || '')
+        },
+      },
+    })
+)
 
 const renderCharts = () => {
   if (!ChartCtor) return
@@ -2140,27 +2292,12 @@ const renderCharts = () => {
     tempChart = new ChartCtor(tempChartEl.value, {
       type: 'line',
       data: { labels, datasets: tempDatasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: {
-            position: 'top',
-            align: 'start',
-            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
-          },
-        },
-        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
-        scales: {
-          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
-          y: { ticks: { maxTicksLimit: 6 } },
-        },
-      },
+      options: commonChartOptions('temp'),
     })
   } else {
     tempChart.data.labels = labels
     tempChart.data.datasets = tempDatasets
+    applyChartAxisLimits(tempChart, 'temp')
     tempChart.update('none')
   }
 
@@ -2168,27 +2305,12 @@ const renderCharts = () => {
     adcChart = new ChartCtor(adcChartEl.value, {
       type: 'line',
       data: { labels, datasets: adcDatasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: {
-            position: 'top',
-            align: 'start',
-            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
-          },
-        },
-        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
-        scales: {
-          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
-          y: { ticks: { maxTicksLimit: 6 } },
-        },
-      },
+      options: commonChartOptions('adc'),
     })
   } else {
     adcChart.data.labels = labels
     adcChart.data.datasets = adcDatasets
+    applyChartAxisLimits(adcChart, 'adc')
     adcChart.update('none')
   }
 
@@ -2196,27 +2318,12 @@ const renderCharts = () => {
     brightnessChart = new ChartCtor(brightnessChartEl.value, {
       type: 'line',
       data: { labels, datasets: brightnessDatasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: {
-            position: 'top',
-            align: 'start',
-            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
-          },
-        },
-        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
-        scales: {
-          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
-          y: { ticks: { maxTicksLimit: 6 } },
-        },
-      },
+      options: commonChartOptions('brightness'),
     })
   } else {
     brightnessChart.data.labels = labels
     brightnessChart.data.datasets = brightnessDatasets
+    applyChartAxisLimits(brightnessChart, 'brightness')
     brightnessChart.update('none')
   }
 
@@ -2224,27 +2331,12 @@ const renderCharts = () => {
     loadCheckChart = new ChartCtor(loadCheckChartEl.value, {
       type: 'line',
       data: { labels, datasets: loadCheckDatasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: {
-            position: 'top',
-            align: 'start',
-            labels: { boxWidth: 10, boxHeight: 10, padding: 12, usePointStyle: true },
-          },
-        },
-        layout: { padding: { top: 4, right: 8, bottom: 4, left: 4 } },
-        scales: {
-          x: { ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0, minRotation: 0 }, grid: { display: false } },
-          y: { ticks: { maxTicksLimit: 6 } },
-        },
-      },
+      options: commonChartOptions('loadCheck'),
     })
   } else {
     loadCheckChart.data.labels = labels
     loadCheckChart.data.datasets = loadCheckDatasets
+    applyChartAxisLimits(loadCheckChart, 'loadCheck')
     loadCheckChart.update('none')
   }
 
@@ -2252,11 +2344,12 @@ const renderCharts = () => {
     teffChart = new ChartCtor(teffChartEl.value, {
       type: 'line',
       data: teffChartData,
-      options: atmosphereChartOptions(),
+      options: atmosphereChartOptions('teff'),
     })
   } else {
     teffChart.data.labels = teffChartData.labels
     teffChart.data.datasets = teffChartData.datasets
+    applyChartAxisLimits(teffChart, 'teff')
     teffChart.update('none')
   }
 
@@ -2264,11 +2357,12 @@ const renderCharts = () => {
     tauChart = new ChartCtor(tauChartEl.value, {
       type: 'line',
       data: tauChartData,
-      options: atmosphereChartOptions(),
+      options: atmosphereChartOptions('tau'),
     })
   } else {
     tauChart.data.labels = tauChartData.labels
     tauChart.data.datasets = tauChartData.datasets
+    applyChartAxisLimits(tauChart, 'tau')
     tauChart.update('none')
   }
 
@@ -2276,11 +2370,12 @@ const renderCharts = () => {
     pwvAtmosphereChart = new ChartCtor(pwvAtmosphereChartEl.value, {
       type: 'line',
       data: pwvChartData,
-      options: atmosphereChartOptions(),
+      options: atmosphereChartOptions('pwv'),
     })
   } else {
     pwvAtmosphereChart.data.labels = pwvChartData.labels
     pwvAtmosphereChart.data.datasets = pwvChartData.datasets
+    applyChartAxisLimits(pwvAtmosphereChart, 'pwv')
     pwvAtmosphereChart.update('none')
   }
 }
@@ -2449,6 +2544,14 @@ watch(
     loadTempIndex.value,
     atmosphereData.value,
   ],
+  () => {
+    renderCharts()
+  },
+  { deep: true }
+)
+
+watch(
+  chartAxisLimits,
   () => {
     renderCharts()
   },

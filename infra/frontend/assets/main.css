@@ -528,15 +528,25 @@ input { width: 100%; box-sizing: border-box; }
   .config-binding-row { grid-template-columns: 1fr; gap: 6px; }
 }
 .device-page .chart-stack { display: flex; flex-direction: column; gap: 20px; }
-.device-page .chart-box { background: transparent; border: none; padding: 0; height: 320px; display: flex; flex-direction: column; gap: 8px; }
+.device-page .chart-box { background: transparent; border: none; padding: 0; height: 370px; display: flex; flex-direction: column; gap: 8px; }
 .device-page .chart-box h4 { margin: 0; font-size: 16px; color: #1f2933; }
 .device-page .chart-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.device-page .chart-head-controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.device-page .axis-controls { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.device-page .axis-controls .compact { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.device-page .axis-controls .compact input { width: 86px; padding: 7px 8px; border-radius: 8px; font-size: 13px; }
+.device-page .axis-controls .checkbox { gap: 6px; font-size: 13px; }
+.device-page .axis-controls .checkbox input { width: 16px; height: 16px; }
+.device-page .axis-controls .btn.sm { padding: 7px 10px; font-size: 13px; border-radius: 8px; }
+.device-page .axis-error { color: #c0392b; font-size: 12px; font-weight: 700; min-height: 16px; }
 .device-page .compact-controls { align-items: center; gap: 10px; }
 .device-page .compact-controls select { min-width: 220px; }
 .device-page .chart-body { position: relative; flex: 1; min-height: 0; }
 .device-page .chart-body canvas { width: 100% !important; height: 100% !important; }
 @media (max-width: 640px) {
-  .device-page .chart-box { height: 260px; }
+  .device-page .chart-box { height: 360px; }
+  .device-page .chart-head-row, .device-page .chart-head-controls, .device-page .axis-controls { align-items: flex-start; justify-content: flex-start; }
+  .device-page .axis-controls .compact input { width: 76px; }
 }
 .device-page .error-list { display: flex; flex-direction: column; gap: 12px; }
 .device-page .error-item { background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
