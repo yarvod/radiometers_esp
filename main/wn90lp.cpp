@@ -1,5 +1,6 @@
 #include "wn90lp.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -30,7 +31,7 @@ constexpr uint8_t kNumRegs = 9;      // 0x0165..0x016D
 constexpr size_t kRespLen = 3 + kNumRegs * 2 + 2;
 
 constexpr TickType_t kRespTimeoutTicks = pdMS_TO_TICKS(600);
-constexpr TickType_t kPollIntervalTicks = pdMS_TO_TICKS(60000);
+// Poll interval is read from app_config.meteo_poll_interval_s at runtime.
 
 constexpr uint16_t kInvalidU16  = 0xFFFF;
 constexpr uint16_t kInvalidTemp = 0x07FF;
@@ -117,7 +118,8 @@ void Wn90lpClient::taskLoop() {
     } else {
       UpdateState([](SharedState& s) { s.meteo.online = false; });
     }
-    vTaskDelay(kPollIntervalTicks);
+    const int interval_s = std::max(10, app_config.meteo_poll_interval_s);
+    vTaskDelay(pdMS_TO_TICKS(static_cast<uint32_t>(interval_s) * 1000u));
   }
 }
 
@@ -254,12 +256,18 @@ void AppendMeteoLog(const MeteoData& d) {
   const std::string path = std::string(ActiveStorageMountPoint()) + "/" + fname;
 
   // Hourly rotation: if we've moved to a new file, queue the previous one for upload.
+  // Also handles storage-backend switch: if the old path is on a different mount point,
+  // skip rename (file lives on the old storage) and just start fresh on the new one.
   if (!s_current_meteo_path.empty() && s_current_meteo_path != path) {
-    struct stat st {};
-    if (stat(s_current_meteo_path.c_str(), &st) == 0 && st.st_size > 0) {
-      const std::string upload_dir = ActiveToUploadDir();
-      RenameIntoDir(s_current_meteo_path, upload_dir);
-      ESP_LOGI("METEO", "rotated and queued: %s", s_current_meteo_path.c_str());
+    const std::string mount = ActiveStorageMountPoint();
+    const bool same_storage = (s_current_meteo_path.rfind(mount, 0) == 0);
+    if (same_storage) {
+      struct stat st {};
+      if (stat(s_current_meteo_path.c_str(), &st) == 0 && st.st_size > 0) {
+        const std::string upload_dir = ActiveToUploadDir();
+        RenameIntoDir(s_current_meteo_path, upload_dir);
+        ESP_LOGI("METEO", "rotated and queued: %s", s_current_meteo_path.c_str());
+      }
     }
     s_current_meteo_path.clear();
   }

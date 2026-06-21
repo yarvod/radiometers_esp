@@ -77,6 +77,9 @@
 #include <sys/stat.h>
 
 #include "hw_pins.h"
+
+static constexpr char kTag[] = "APP";
+
 #if 0  // legacy addresses kept for reference
 [[maybe_unused]] constexpr uint64_t TEMP_ADDR_RAD = 0x77062223A096AD28ULL;
 [[maybe_unused]] constexpr uint64_t TEMP_ADDR_LOAD = 0xE80000105FF4E228ULL;
@@ -170,7 +173,7 @@ static void EnsureGpioIsrServiceInstalled() {
     installed = true;
     return;
   }
-  ESP_LOGE(TAG, "gpio_install_isr_service failed: %s", esp_err_to_name(err));
+  ESP_LOGE(kTag, "gpio_install_isr_service failed: %s", esp_err_to_name(err));
   ESP_ERROR_CHECK(err);
 }
 
@@ -181,7 +184,7 @@ bool IsHallTriggered() {
 void SetExternalPower(bool enabled) {
   gpio_set_level(EXT_PWR_ON, enabled ? 1 : 0);
   UpdateState([&](SharedState& s) { s.external_power_on = enabled; });
-  ESP_LOGI(TAG, "External module power %s", enabled ? "ON" : "OFF");
+  ESP_LOGI(kTag, "External module power %s", enabled ? "ON" : "OFF");
 }
 
 static void ExternalPowerCycleTask(void* arg) {
@@ -352,7 +355,7 @@ static esp_err_t StartGpsClient() {
     gps_err = gps_client.startTasks();
   }
   if (gps_err != ESP_OK) {
-    ESP_LOGE(TAG, "GPS init/start failed: %s", esp_err_to_name(gps_err));
+    ESP_LOGE(kTag, "GPS init/start failed: %s", esp_err_to_name(gps_err));
   }
   return gps_err;
 }
@@ -495,7 +498,7 @@ void MaybeDisciplineSystemTimeFromGps(const UtcTimeSnapshot& gps_time) {
   tv.tv_sec = gps_time.unix_time;
   tv.tv_usec = static_cast<suseconds_t>(gps_time.millisecond) * 1000;
   if (settimeofday(&tv, nullptr) == 0) {
-    ESP_LOGI(TAG, "System time disciplined from GPZDA (%lld.%03u)",
+    ESP_LOGI(kTag, "System time disciplined from GPZDA (%lld.%03u)",
              static_cast<long long>(gps_time.unix_time), static_cast<unsigned>(gps_time.millisecond));
   }
 }
@@ -828,12 +831,12 @@ static void NetworkMonitorTask(void*) {
 void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
   if (event_base == ETH_EVENT) {
     if (event_id == ETHERNET_EVENT_START) {
-      ESP_LOGI(TAG, "Ethernet started");
+      ESP_LOGI(kTag, "Ethernet started");
     } else if (event_id == ETHERNET_EVENT_CONNECTED) {
-      ESP_LOGI(TAG, "Ethernet link up");
+      ESP_LOGI(kTag, "Ethernet link up");
       UpdateState([](SharedState& s) { s.eth_link_up = true; });
     } else if (event_id == ETHERNET_EVENT_DISCONNECTED) {
-      ESP_LOGW(TAG, "Ethernet link down");
+      ESP_LOGW(kTag, "Ethernet link down");
       UpdateState([](SharedState& s) {
         s.eth_link_up = false;
         s.eth_ip.clear();
@@ -846,7 +849,7 @@ void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, v
         StartEthPreferredWifiFallbackTask(5000);
       }
     } else if (event_id == ETHERNET_EVENT_STOP) {
-      ESP_LOGI(TAG, "Ethernet stopped");
+      ESP_LOGI(kTag, "Ethernet stopped");
       UpdateState([](SharedState& s) {
         s.eth_link_up = false;
         s.eth_ip.clear();
@@ -857,7 +860,7 @@ void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, v
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
     const std::string ip = FormatIp4(event->ip_info.ip);
-    ESP_LOGI(TAG, "Ethernet got IP: " IPSTR " mask " IPSTR " gw " IPSTR,
+    ESP_LOGI(kTag, "Ethernet got IP: " IPSTR " mask " IPSTR " gw " IPSTR,
              IP2STR(&event->ip_info.ip),
              IP2STR(&event->ip_info.netmask),
              IP2STR(&event->ip_info.gw));
@@ -870,7 +873,7 @@ void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, v
     if (wifi_inited &&
         (app_config.net_mode == NetMode::kEthOnly ||
          (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth))) {
-      ESP_LOGI(TAG, "Ethernet is preferred and has IP, stopping Wi-Fi fallback/AP");
+      ESP_LOGI(kTag, "Ethernet is preferred and has IP, stopping Wi-Fi fallback/AP");
       StopWifiInterface(true);
     }
     UpdateDefaultNetif();
@@ -879,18 +882,18 @@ void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, v
 
 static esp_err_t InitEthernet() {
 #if !CONFIG_ETH_SPI_ETHERNET_W5500
-  ESP_LOGE(TAG, "W5500 support not enabled in sdkconfig");
+  ESP_LOGE(kTag, "W5500 support not enabled in sdkconfig");
   return ESP_ERR_NOT_SUPPORTED;
 #else
   if (eth_inited) {
     return ESP_OK;
   }
   EnsureNetifInit();
-  ESP_LOGI(TAG, "Initializing W5500 Ethernet (CS=%d INT=%d RST=%d)",
+  ESP_LOGI(kTag, "Initializing W5500 Ethernet (CS=%d INT=%d RST=%d)",
            static_cast<int>(ETH_CS), static_cast<int>(ETH_INT), static_cast<int>(ETH_RST));
   esp_err_t ret = InitSpiBus();
   if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "Shared SPI bus init for Ethernet failed: %s", esp_err_to_name(ret));
+    ESP_LOGE(kTag, "Shared SPI bus init for Ethernet failed: %s", esp_err_to_name(ret));
     return ret;
   }
   gpio_set_level(ETH_CS, 1);
@@ -914,7 +917,7 @@ static esp_err_t InitEthernet() {
   eth_mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
   eth_phy = esp_eth_phy_new_w5500(&phy_config);
   if (!eth_mac || !eth_phy) {
-    ESP_LOGE(TAG, "Failed to create W5500 MAC/PHY");
+    ESP_LOGE(kTag, "Failed to create W5500 MAC/PHY");
     if (eth_mac) {
       eth_mac->del(eth_mac);
       eth_mac = nullptr;
@@ -931,7 +934,7 @@ static esp_err_t InitEthernet() {
   esp_eth_config_t config = ETH_DEFAULT_CONFIG(eth_mac, eth_phy);
   esp_err_t install_err = esp_eth_driver_install(&config, &eth_handle);
   if (install_err != ESP_OK) {
-    ESP_LOGE(TAG, "Ethernet driver install failed: %s", esp_err_to_name(install_err));
+    ESP_LOGE(kTag, "Ethernet driver install failed: %s", esp_err_to_name(install_err));
     return install_err;
   }
 
@@ -945,10 +948,10 @@ static esp_err_t InitEthernet() {
     mac_err = esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, eth_addr);
   }
   if (mac_err != ESP_OK) {
-    ESP_LOGE(TAG, "Ethernet MAC address setup failed: %s", esp_err_to_name(mac_err));
+    ESP_LOGE(kTag, "Ethernet MAC address setup failed: %s", esp_err_to_name(mac_err));
     return mac_err;
   }
-  ESP_LOGI(TAG, "Ethernet MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+  ESP_LOGI(kTag, "Ethernet MAC: %02x:%02x:%02x:%02x:%02x:%02x",
            eth_addr[0], eth_addr[1], eth_addr[2], eth_addr[3], eth_addr[4], eth_addr[5]);
 
   esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
@@ -963,26 +966,26 @@ static esp_err_t InitEthernet() {
     eth_handlers_registered = true;
   }
   eth_inited = true;
-  ESP_LOGI(TAG, "W5500 Ethernet initialized");
+  ESP_LOGI(kTag, "W5500 Ethernet initialized");
   return ESP_OK;
 #endif
 }
 
 static bool StartEthernet() {
   if (eth_started) {
-    ESP_LOGI(TAG, "Ethernet already started");
+    ESP_LOGI(kTag, "Ethernet already started");
     return true;
   }
   if (InitEthernet() != ESP_OK) {
     return false;
   }
-  ESP_LOGI(TAG, "Starting Ethernet");
+  ESP_LOGI(kTag, "Starting Ethernet");
   esp_err_t err = esp_eth_start(eth_handle);
   if (err == ESP_OK) {
     eth_started = true;
     return true;
   } else {
-    ESP_LOGE(TAG, "Ethernet start failed: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "Ethernet start failed: %s", esp_err_to_name(err));
     return false;
   }
 }
@@ -1003,7 +1006,7 @@ static void StopEthernet() {
 
 void ApplyNetworkConfig() {
   const NetMode mode = app_config.net_mode;
-  ESP_LOGI(TAG, "Applying network config: mode=%s priority=%s",
+  ESP_LOGI(kTag, "Applying network config: mode=%s priority=%s",
            NetModeToString(app_config.net_mode).c_str(),
            NetPriorityToString(app_config.net_priority).c_str());
   if (mode == NetMode::kWifiOnly) {
@@ -1066,7 +1069,7 @@ static void EthPreferredWifiFallbackTask(void* arg) {
   eth_preferred_wifi_fallback_task = nullptr;
 
   if (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth && !eth_up && !wifi_up) {
-    ESP_LOGW(TAG, "Ethernet preferred but no Ethernet IP after %d ms, starting Wi-Fi fallback", delay_ms);
+    ESP_LOGW(kTag, "Ethernet preferred but no Ethernet IP after %d ms, starting Wi-Fi fallback", delay_ms);
     InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
   }
   vTaskDelete(nullptr);
@@ -1100,7 +1103,7 @@ static void ConfigApFallbackTask(void* arg) {
   config_ap_fallback_task = nullptr;
 
   if (!wifi_up && !eth_up) {
-    ESP_LOGW(TAG, "No network IP after %d ms, starting configuration AP", delay_ms);
+    ESP_LOGW(kTag, "No network IP after %d ms, starting configuration AP", delay_ms);
     StartConfigAp();
   }
   vTaskDelete(nullptr);
@@ -1140,11 +1143,11 @@ static esp_err_t EnsureWifiInit() {
   }
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "Wi-Fi init failed");
+  ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), kTag, "Wi-Fi init failed");
   ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEventHandler, nullptr),
-                      TAG, "Wi-Fi event handler register failed");
+                      kTag, "Wi-Fi event handler register failed");
   ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEventHandler, nullptr),
-                      TAG, "Wi-Fi IP event handler register failed");
+                      kTag, "Wi-Fi IP event handler register failed");
   wifi_inited = true;
   return ESP_OK;
 }
@@ -1181,7 +1184,7 @@ static bool RequestWifiConnect(const char* reason) {
   last_wifi_connect_attempt_us = now_us;
   const esp_err_t err = esp_wifi_connect();
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Wi-Fi connect request failed (%s): %s", reason ? reason : "connect", esp_err_to_name(err));
+    ESP_LOGW(kTag, "Wi-Fi connect request failed (%s): %s", reason ? reason : "connect", esp_err_to_name(err));
     return false;
   }
   return true;
@@ -1223,17 +1226,17 @@ static bool StartConfigAp() {
 
   esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to switch Wi-Fi to configuration AP: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "Failed to switch Wi-Fi to configuration AP: %s", esp_err_to_name(err));
     return false;
   }
   err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to configure configuration AP: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "Failed to configure configuration AP: %s", esp_err_to_name(err));
     return false;
   }
   err = esp_wifi_start();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to start configuration AP: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "Failed to start configuration AP: %s", esp_err_to_name(err));
     return false;
   }
   esp_wifi_set_ps(WIFI_PS_NONE);
@@ -1241,7 +1244,7 @@ static bool StartConfigAp() {
   fallback_ap_active = true;
   ErrorManagerSetLocal(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Configuration AP active");
   const std::string ap_ip = GetNetifIp(wifi_netif_ap);
-  ESP_LOGW(TAG, "Configuration AP active: SSID=esp password=12345678 IP=%s", ap_ip.empty() ? "192.168.4.1" : ap_ip.c_str());
+  ESP_LOGW(kTag, "Configuration AP active: SSID=esp password=12345678 IP=%s", ap_ip.empty() ? "192.168.4.1" : ap_ip.c_str());
   UpdateState([&](SharedState& s) {
     s.wifi_ip_ap = ap_ip.empty() ? "192.168.4.1" : ap_ip;
     s.wifi_ip = s.wifi_ip_ap;
@@ -1257,7 +1260,7 @@ static bool EnableFallbackAp() {
     return false;
   }
 
-  ESP_LOGW(TAG, "Starting fallback AP and continuing STA retries");
+  ESP_LOGW(kTag, "Starting fallback AP and continuing STA retries");
   fallback_ap_active = true;
   ErrorManagerSetLocal(ErrorCode::kWifiFallback, ErrorSeverity::kWarning, "Fallback AP active");
 
@@ -1266,17 +1269,17 @@ static bool EnableFallbackAp() {
 
   esp_err_t err = esp_wifi_disconnect();
   if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) {
-    ESP_LOGW(TAG, "Wi-Fi disconnect before fallback AP failed: %s", esp_err_to_name(err));
+    ESP_LOGW(kTag, "Wi-Fi disconnect before fallback AP failed: %s", esp_err_to_name(err));
   }
   err = esp_wifi_set_mode(WIFI_MODE_APSTA);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to switch Wi-Fi to APSTA fallback: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "Failed to switch Wi-Fi to APSTA fallback: %s", esp_err_to_name(err));
     fallback_ap_active = false;
     return false;
   }
   err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to configure fallback AP: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "Failed to configure fallback AP: %s", esp_err_to_name(err));
     fallback_ap_active = false;
     return false;
   }
@@ -1318,7 +1321,7 @@ bool EnsureDirExists(const char* path) {
   if (mkdir(path, 0775) == 0) {
     return true;
   }
-  ESP_LOGE(TAG, "mkdir %s failed: %d", path, errno);
+  ESP_LOGE(kTag, "mkdir %s failed: %d", path, errno);
   return false;
 }
 
@@ -1339,7 +1342,7 @@ bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::strin
   if (!EnsureDirExists(dest_dir)) return false;
   std::string dest = std::string(dest_dir) + "/" + Basename(src_path);
   if (rename(src_path.c_str(), dest.c_str()) != 0) {
-    ESP_LOGE(TAG, "Failed to move %s -> %s (errno %d)", src_path.c_str(), dest.c_str(), errno);
+    ESP_LOGE(kTag, "Failed to move %s -> %s (errno %d)", src_path.c_str(), dest.c_str(), errno);
     return false;
   }
   if (out_new_path) {
@@ -1455,7 +1458,7 @@ static int DeleteUploadedFilesBatchLocked(int max_files, ClearUploadedFilesResul
       result->deleted++;
     } else {
       result->failed++;
-      ESP_LOGW(TAG, "Failed to delete uploaded file %s (errno %d)", full.c_str(), errno);
+      ESP_LOGW(kTag, "Failed to delete uploaded file %s (errno %d)", full.c_str(), errno);
     }
   }
   closedir(dir);
@@ -1500,7 +1503,7 @@ static void UploadedClearTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 
-  ESP_LOGI(TAG,
+  ESP_LOGI(kTag,
            "Manual uploaded cleanup done: scanned=%d deleted=%d failed=%d limit=%d%s%s",
            result.scanned, result.deleted, result.failed, limit,
            result.sd_busy ? " sd_busy" : "",
@@ -1535,7 +1538,7 @@ bool StartUploadedClearTask(int max_files, std::string* out_status) {
 bool QueueCurrentLogForUpload() {
   SdLockGuard guard;
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "Storage mutex unavailable, cannot queue log");
+    ESP_LOGW(kTag, "Storage mutex unavailable, cannot queue log");
     return false;
   }
   if (!MountActiveStorage()) {
@@ -1559,7 +1562,7 @@ bool QueueCurrentLogForUpload() {
   if (app_config.storage_backend == StorageBackend::kSd) {
     UpdateSdStatsLocked();
   }
-  ESP_LOGI(TAG, "Queued log for upload: %s", new_path.c_str());
+  ESP_LOGI(kTag, "Queued log for upload: %s", new_path.c_str());
   return true;
 }
 
@@ -1668,7 +1671,7 @@ static bool QueueCurrentGnssLogForUploadLocked() {
   }
   current_gnss_log_path.clear();
   gps_log_file_start_us = 0;
-  ESP_LOGI(TAG, "Queued RTCM3 log for upload: %s", queued_name.c_str());
+  ESP_LOGI(kTag, "Queued RTCM3 log for upload: %s", queued_name.c_str());
   return true;
 }
 
@@ -1678,12 +1681,12 @@ static bool EnsureRtcmLogFileLocked(const GpsDateTime* frame_time) {
     const std::string filename = BuildGnssLogFilename(frame_time);
     current_gnss_log_path = std::string(ActiveStorageMountPoint()) + "/" + filename;
     gps_log_file_start_us = esp_timer_get_time();
-    ESP_LOGI(TAG, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
+    ESP_LOGI(kTag, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
   }
 
   FILE* f = fopen(current_gnss_log_path.c_str(), "ab");
   if (!f) {
-    ESP_LOGE(TAG, "Failed to create RTCM3 log %s (errno %d)", current_gnss_log_path.c_str(), errno);
+    ESP_LOGE(kTag, "Failed to create RTCM3 log %s (errno %d)", current_gnss_log_path.c_str(), errno);
     return false;
   }
   const bool ok = fclose(f) == 0;
@@ -1701,11 +1704,11 @@ static bool RotateStaleGnssLogLocked(uint64_t now_us) {
   }
   const std::string old_path = current_gnss_log_path;
   if (!QueueCurrentGnssLogForUploadLocked()) {
-    ESP_LOGW(TAG, "RTCM3 log rotation is due, but failed to queue %s", old_path.c_str());
+    ESP_LOGW(kTag, "RTCM3 log rotation is due, but failed to queue %s", old_path.c_str());
     ErrorManagerSet(ErrorCode::kGpsRtcm, ErrorSeverity::kWarning, "RTCM3 log rotation failed");
     return false;
   }
-  ESP_LOGI(TAG, "RTCM3 log rotated without new frame: %s", old_path.c_str());
+  ESP_LOGI(kTag, "RTCM3 log rotated without new frame: %s", old_path.c_str());
   return true;
 }
 
@@ -1723,12 +1726,12 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
     const std::string filename = BuildGnssLogFilename(frame.timestamp.valid ? &frame.timestamp : nullptr);
     current_gnss_log_path = std::string(ActiveStorageMountPoint()) + "/" + filename;
     gps_log_file_start_us = now_us;
-    ESP_LOGI(TAG, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
+    ESP_LOGI(kTag, "Starting RTCM3 log: %s", current_gnss_log_path.c_str());
   }
 
   FILE* f = fopen(current_gnss_log_path.c_str(), "ab");
   if (!f) {
-    ESP_LOGE(TAG, "Failed to open RTCM3 log %s (errno %d)", current_gnss_log_path.c_str(), errno);
+    ESP_LOGE(kTag, "Failed to open RTCM3 log %s (errno %d)", current_gnss_log_path.c_str(), errno);
     return false;
   }
   bool ok = gps_client.writeRtcmFramesToFile(frame, f);
@@ -1744,9 +1747,9 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
     if (app_config.storage_backend == StorageBackend::kSd) {
       UpdateSdStatsLocked();
     }
-    ESP_LOGD(TAG, "GNSS frame %u appended to RTCM3 log %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
+    ESP_LOGD(kTag, "GNSS frame %u appended to RTCM3 log %s", static_cast<unsigned>(frame.frame_index), current_gnss_log_path.c_str());
   } else {
-    ESP_LOGE(TAG, "Failed to append GNSS frame %u to RTCM3 log", static_cast<unsigned>(frame.frame_index));
+    ESP_LOGE(kTag, "Failed to append GNSS frame %u to RTCM3 log", static_cast<unsigned>(frame.frame_index));
   }
   return ok;
 }
@@ -1754,7 +1757,7 @@ static bool WriteGnssFrameLocked(const CurrentFrame& frame) {
 static void WarnMissingGnssFrameData(const CurrentFrame& frame) {
   for (uint16_t type : app_config.gps_rtcm_types) {
     if (frame.rtcm_by_type.count(type) == 0) {
-      ESP_LOGD(TAG, "GNSS frame %u missing RTCM%u", static_cast<unsigned>(frame.frame_index), static_cast<unsigned>(type));
+      ESP_LOGD(kTag, "GNSS frame %u missing RTCM%u", static_cast<unsigned>(frame.frame_index), static_cast<unsigned>(type));
     }
   }
 }
@@ -1781,7 +1784,7 @@ static void GpsLogTask(void*) {
         UnmountLogSd();
       }
     } else {
-      ESP_LOGW(TAG, "Storage unavailable, RTCM3 log file will be created on first write");
+      ESP_LOGW(kTag, "Storage unavailable, RTCM3 log file will be created on first write");
     }
   }
   while (true) {
@@ -1803,7 +1806,7 @@ static void GpsLogTask(void*) {
           UnmountLogSd();
         }
       } else {
-        ESP_LOGW(TAG, "Storage unavailable, cannot rotate stale RTCM3 log");
+        ESP_LOGW(kTag, "Storage unavailable, cannot rotate stale RTCM3 log");
       }
     }
 
@@ -1820,7 +1823,7 @@ static void GpsLogTask(void*) {
     CurrentFrame frame{};
     if (!gps_client.finishFrame(frame)) {
       gps_client.stopFrameOutput();
-      ESP_LOGW(TAG, "Failed to finish GNSS frame %u", static_cast<unsigned>(frame_index));
+      ESP_LOGW(kTag, "Failed to finish GNSS frame %u", static_cast<unsigned>(frame_index));
       frame_index++;
       continue;
     }
@@ -1831,7 +1834,7 @@ static void GpsLogTask(void*) {
       if (empty_rtcm_frames >= kEmptyRtcmWarnFrames) {
         ErrorManagerSet(ErrorCode::kGpsRtcm, ErrorSeverity::kWarning, "GNSS RTCM frames are empty");
       }
-      ESP_LOGW(TAG, "GNSS frame %u is empty, skip storage write", static_cast<unsigned>(frame.frame_index));
+      ESP_LOGW(kTag, "GNSS frame %u is empty, skip storage write", static_cast<unsigned>(frame.frame_index));
       frame_index++;
       const int64_t elapsed_us = esp_timer_get_time() - cycle_start_us;
       const int64_t interval_us = 30'000'000;
@@ -1848,7 +1851,7 @@ static void GpsLogTask(void*) {
     {
       SdLockGuard guard(pdMS_TO_TICKS(1000));
       if (!guard.locked()) {
-        ESP_LOGW(TAG, "Storage mutex unavailable, skip GNSS frame write");
+        ESP_LOGW(kTag, "Storage mutex unavailable, skip GNSS frame write");
         frame_index++;
         vTaskDelay(kInterval);
         continue;
@@ -1911,7 +1914,7 @@ static bool Sha256File(const std::string& path, std::string* out_hex, size_t* ou
   if (out_size) *out_size = 0;
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) {
-    ESP_LOGE(TAG, "Failed to open %s for hashing", path.c_str());
+    ESP_LOGE(kTag, "Failed to open %s for hashing", path.c_str());
     return false;
   }
   mbedtls_sha256_context ctx;
@@ -1921,7 +1924,7 @@ static bool Sha256File(const std::string& path, std::string* out_hex, size_t* ou
   if (!buf) {
     mbedtls_sha256_free(&ctx);
     fclose(f);
-    ESP_LOGE(TAG, "No memory for hash buffer");
+    ESP_LOGE(kTag, "No memory for hash buffer");
     return false;
   }
   size_t total = 0;
@@ -2027,14 +2030,14 @@ static const char* MbedtlsAllocModeName() {
 }
 
 static void LogMemoryStatus(const char* label) {
-  ESP_LOGI(TAG, "Memory %s: %s", label ? label : "-", UploadHeapDiag().c_str());
+  ESP_LOGI(kTag, "Memory %s: %s", label ? label : "-", UploadHeapDiag().c_str());
 #if CONFIG_SPIRAM
-  ESP_LOGI(TAG, "PSRAM %s: initialized=%s size=%u bytes",
+  ESP_LOGI(kTag, "PSRAM %s: initialized=%s size=%u bytes",
            label ? label : "-",
            esp_psram_is_initialized() ? "yes" : "no",
            static_cast<unsigned>(esp_psram_is_initialized() ? esp_psram_get_size() : 0));
 #else
-  ESP_LOGI(TAG, "PSRAM %s: disabled in sdkconfig", label ? label : "-");
+  ESP_LOGI(kTag, "PSRAM %s: disabled in sdkconfig", label ? label : "-");
 #endif
 }
 
@@ -2071,20 +2074,20 @@ static bool HasHeapForTlsUpload() {
                 static_cast<unsigned>(min_internal_free),
                 static_cast<unsigned>(min_internal_largest));
   ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, msg);
-  ESP_LOGW(TAG, "%s", msg);
+  ESP_LOGW(kTag, "%s", msg);
   return false;
 }
 
 static bool UploadFileToMinio(const std::string& path) {
   if (!app_config.minio_enabled) {
     ErrorManagerClear(ErrorCode::kMinioUpload);
-    ESP_LOGI(TAG, "MinIO disabled, skip upload");
+    ESP_LOGI(kTag, "MinIO disabled, skip upload");
     return false;
   }
   if (app_config.minio_endpoint.empty() || app_config.minio_access_key.empty() || app_config.minio_secret_key.empty() ||
       app_config.minio_bucket.empty()) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "MinIO config incomplete");
-    ESP_LOGW(TAG, "MinIO config incomplete, skip upload");
+    ESP_LOGW(kTag, "MinIO config incomplete, skip upload");
     return false;
   }
   const std::string filename = Basename(path);
@@ -2102,7 +2105,7 @@ static bool UploadFileToMinio(const std::string& path) {
   const bool use_https = endpoint.rfind("https://", 0) == 0;
   if (host.empty()) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Invalid MinIO endpoint");
-    ESP_LOGE(TAG, "Invalid MinIO endpoint: %s", endpoint.c_str());
+    ESP_LOGE(kTag, "Invalid MinIO endpoint: %s", endpoint.c_str());
     return false;
   }
   if (use_https && !HasHeapForTlsUpload()) {
@@ -2114,10 +2117,10 @@ static bool UploadFileToMinio(const std::string& path) {
   size_t file_size = 0;
   if (!Sha256File(path, &payload_hash, &file_size)) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to hash upload file");
-    ESP_LOGE(TAG, "Failed to hash %s", path.c_str());
+    ESP_LOGE(kTag, "Failed to hash %s", path.c_str());
     return false;
   }
-  ESP_LOGI(TAG,
+  ESP_LOGI(kTag,
            "MinIO upload prepare: file=%s size=%u tls=%s tls_in=%d tls_out=%d dynamic_buffer=%s mbedtls_alloc=%s %s",
            path.c_str(),
            static_cast<unsigned>(file_size),
@@ -2226,7 +2229,7 @@ static bool UploadFileToMinio(const std::string& path) {
   std::string canonical_hash_hex;
   if (!Sha256String(canonical_request, &canonical_hash_hex)) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to hash canonical request");
-    ESP_LOGE(TAG, "Failed to hash canonical request");
+    ESP_LOGE(kTag, "Failed to hash canonical request");
     return false;
   }
 
@@ -2236,14 +2239,14 @@ static bool UploadFileToMinio(const std::string& path) {
   uint8_t signing_key[32];
   if (!DeriveS3SigningKey(app_config.minio_secret_key, date_buf, region, signing_key)) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to derive signing key");
-    ESP_LOGE(TAG, "Failed to derive signing key");
+    ESP_LOGE(kTag, "Failed to derive signing key");
     return false;
   }
   uint8_t signature_bin[32];
   if (!HmacSha256(signing_key, sizeof(signing_key),
                   reinterpret_cast<const uint8_t*>(string_to_sign.data()), string_to_sign.size(), signature_bin)) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to sign request");
-    ESP_LOGE(TAG, "Failed to sign string");
+    ESP_LOGE(kTag, "Failed to sign string");
     return false;
   }
   const std::string signature_hex = HexEncode(signature_bin, sizeof(signature_bin));
@@ -2265,7 +2268,7 @@ static bool UploadFileToMinio(const std::string& path) {
   esp_http_client_handle_t client = esp_http_client_init(&cfg_http);
   if (!client) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "esp_http_client_init failed");
-    ESP_LOGE(TAG, "esp_http_client_init failed");
+    ESP_LOGE(kTag, "esp_http_client_init failed");
     return false;
   }
   char len_buf[32];
@@ -2276,23 +2279,23 @@ static bool UploadFileToMinio(const std::string& path) {
   esp_http_client_set_header(client, "x-amz-date", amz_date);
   esp_http_client_set_header(client, "Authorization", authorization.c_str());
 
-  ESP_LOGI(TAG, "MinIO HTTP open begin: %s", UploadHeapDiag().c_str());
+  ESP_LOGI(kTag, "MinIO HTTP open begin: %s", UploadHeapDiag().c_str());
   const esp_err_t open_err = esp_http_client_open(client, file_size);
   if (open_err != ESP_OK) {
     const std::string heap_diag = UploadHeapDiag();
     const std::string diag = std::string("HTTP open failed: ") + esp_err_to_name(open_err) + " " + heap_diag;
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, diag);
-    ESP_LOGE(TAG, "Failed to open HTTP connection to %s: %s (%s)",
+    ESP_LOGE(kTag, "Failed to open HTTP connection to %s: %s (%s)",
              url.c_str(), esp_err_to_name(open_err), heap_diag.c_str());
     esp_http_client_cleanup(client);
     return false;
   }
-  ESP_LOGI(TAG, "MinIO HTTP open ok: %s", UploadHeapDiag().c_str());
+  ESP_LOGI(kTag, "MinIO HTTP open ok: %s", UploadHeapDiag().c_str());
 
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) {
     ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Failed to open upload file");
-    ESP_LOGE(TAG, "Cannot reopen file %s for upload", path.c_str());
+    ESP_LOGE(kTag, "Cannot reopen file %s for upload", path.c_str());
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return false;
@@ -2304,7 +2307,7 @@ static bool UploadFileToMinio(const std::string& path) {
     int written = esp_http_client_write(client, buf, n);
     if (written < 0) {
       ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP write failed");
-      ESP_LOGE(TAG, "HTTP write failed");
+      ESP_LOGE(kTag, "HTTP write failed");
       ok = false;
       break;
     }
@@ -2320,14 +2323,14 @@ static bool UploadFileToMinio(const std::string& path) {
   int status = esp_http_client_get_status_code(client);
   esp_http_client_close(client);
   esp_http_client_cleanup(client);
-  ESP_LOGI(TAG, "MinIO HTTP cleanup done: status=%d %s", status, UploadHeapDiag().c_str());
+  ESP_LOGI(kTag, "MinIO HTTP cleanup done: status=%d %s", status, UploadHeapDiag().c_str());
   if (status >= 200 && status < 300) {
     ErrorManagerClear(ErrorCode::kMinioUpload);
-    ESP_LOGI(TAG, "Uploaded %s to MinIO (%d)", path.c_str(), status);
+    ESP_LOGI(kTag, "Uploaded %s to MinIO (%d)", path.c_str(), status);
     return true;
   }
   ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "MinIO upload failed");
-  ESP_LOGE(TAG, "MinIO upload failed, status %d", status);
+  ESP_LOGE(kTag, "MinIO upload failed, status %d", status);
   return false;
 }
 
@@ -2354,7 +2357,7 @@ static bool UploadPendingOnce() {
   {
     SdLockGuard guard(pdMS_TO_TICKS(50));
     if (!guard.locked()) {
-      ESP_LOGW(TAG, "Storage mutex busy, skip upload cycle");
+      ESP_LOGW(kTag, "Storage mutex busy, skip upload cycle");
       return false;
     }
     if (!MountActiveStorage()) {
@@ -2366,7 +2369,7 @@ static bool UploadPendingOnce() {
     const std::string to_upload = ActiveToUploadDir();
     DIR* dir = opendir(to_upload.c_str());
     if (!dir) {
-      ESP_LOGI(TAG, "No upload dir, nothing to sync");
+      ESP_LOGI(kTag, "No upload dir, nothing to sync");
       return false;
     }
     struct dirent* ent = nullptr;
@@ -2389,7 +2392,7 @@ static bool UploadPendingOnce() {
     if (UploadFileToMinio(f)) {
       SdLockGuard guard(pdMS_TO_TICKS(200));
       if (!guard.locked() || !MountActiveStorage()) {
-        ESP_LOGW(TAG, "Storage busy, cannot move uploaded file %s", f.c_str());
+        ESP_LOGW(kTag, "Storage busy, cannot move uploaded file %s", f.c_str());
         continue;
       }
       const std::string uploaded_dir = ActiveUploadedDir();
@@ -2400,7 +2403,7 @@ static bool UploadPendingOnce() {
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
   if (uploaded > 0) {
-    ESP_LOGI(TAG, "Uploaded %d file(s) to MinIO", uploaded);
+    ESP_LOGI(kTag, "Uploaded %d file(s) to MinIO", uploaded);
   }
   CleanupUploadedDirIfNeeded(kMaxSdUsagePercent);
   {
@@ -2418,7 +2421,7 @@ static bool UploadPendingOnce() {
 static void CleanupUploadedDirIfNeeded(int max_percent) {
   SdLockGuard guard(pdMS_TO_TICKS(200));
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "Storage mutex unavailable, skip cleanup");
+    ESP_LOGW(kTag, "Storage mutex unavailable, skip cleanup");
     return;
   }
   if (!MountActiveStorage()) {
@@ -2427,7 +2430,7 @@ static void CleanupUploadedDirIfNeeded(int max_percent) {
   const std::string uploaded = ActiveUploadedDir();
   int deleted = PurgeUploadedFiles(ActiveStorageMountPoint(), uploaded.c_str(), max_percent);
   if (deleted > 0) {
-    ESP_LOGI(TAG, "Deleted %d uploaded file(s) to free space", deleted);
+    ESP_LOGI(kTag, "Deleted %d uploaded file(s) to free space", deleted);
   }
 }
 
@@ -2513,7 +2516,7 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
   WaitForTempSensors(3000);
   SdLockGuard guard;
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "Storage mutex unavailable, cannot open log file");
+    ESP_LOGW(kTag, "Storage mutex unavailable, cannot open log file");
     return false;
   }
   if (!MountActiveStorage()) {
@@ -2527,12 +2530,12 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
   const std::string filename = BuildLogFilename(postfix);
   std::string full_path;
   if (!BuildActiveStorageFilenamePath(filename, &full_path)) {
-    ESP_LOGW(TAG, "Bad filename for logging: %s", filename.c_str());
+    ESP_LOGW(kTag, "Bad filename for logging: %s", filename.c_str());
     return false;
   }
   log_file = fopen(full_path.c_str(), "w");
   if (!log_file) {
-    ESP_LOGE(TAG, "Failed to open log file %s", full_path.c_str());
+    ESP_LOGE(kTag, "Failed to open log file %s", full_path.c_str());
     return false;
   }
 
@@ -2718,14 +2721,14 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
         ssid = value;
         ssid_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid wifi_ssid in config.txt");
+        ESP_LOGW(kTag, "Invalid wifi_ssid in config.txt");
       }
     } else if (key == "wifi_password") {
       if (value.size() >= 8 && value.size() < WIFI_PASSWORD_MAX_LEN) {
         password = value;
         pass_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid wifi_password in config.txt");
+        ESP_LOGW(kTag, "Invalid wifi_password in config.txt");
       }
     } else if (key == "wifi_ap_mode") {
       if (ParseBool(value, &wifi_ap_mode_val)) {
@@ -2735,7 +2738,7 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
       if (ParseBool(value, &usb_value)) {
         usb_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid usb_mass_storage value in config.txt");
+        ESP_LOGW(kTag, "Invalid usb_mass_storage value in config.txt");
       }
     } else if (key == "pid_kp") {
       pid_kp = std::strtof(value.c_str(), nullptr);
@@ -2778,26 +2781,26 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
       if (logging_motor_steps_val > 0) {
         logging_motor_steps_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid logging_motor_steps in config.txt");
+        ESP_LOGW(kTag, "Invalid logging_motor_steps in config.txt");
       }
     } else if (key == "logging_home_each_cycle") {
       if (ParseBool(value, &logging_home_each_cycle_val)) {
         logging_home_each_cycle_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid logging_home_each_cycle in config.txt");
+        ESP_LOGW(kTag, "Invalid logging_home_each_cycle in config.txt");
       }
     } else if (key == "storage_backend") {
       if (ParseStorageBackend(value, &storage_backend_val)) {
         storage_backend_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid storage_backend in config.txt");
+        ESP_LOGW(kTag, "Invalid storage_backend in config.txt");
       }
     } else if (key == "stepper_speed_us") {
       stepper_speed_val = std::atoi(value.c_str());
       if (stepper_speed_val > 0) {
         stepper_speed_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid stepper_speed_us in config.txt");
+        ESP_LOGW(kTag, "Invalid stepper_speed_us in config.txt");
       }
     } else if (key == "stepper_home_offset_steps") {
       stepper_home_offset_val = std::atoi(value.c_str());
@@ -2843,13 +2846,13 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
       if (ParseNetMode(value, &net_mode_val)) {
         net_mode_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid net_mode in config.txt");
+        ESP_LOGW(kTag, "Invalid net_mode in config.txt");
       }
     } else if (key == "net_priority") {
       if (ParseNetPriority(value, &net_priority_val)) {
         net_priority_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid net_priority in config.txt");
+        ESP_LOGW(kTag, "Invalid net_priority in config.txt");
       }
     } else if (key == "gps_rtcm_types") {
       gps_rtcm_types_val = ParseRtcmTypesString(value);
@@ -2860,8 +2863,16 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
         gps_mode_val = mode;
         gps_mode_set = true;
       } else {
-        ESP_LOGW(TAG, "Invalid gps_mode in config.txt");
+        ESP_LOGW(kTag, "Invalid gps_mode in config.txt");
       }
+    } else if (key == "meteo_poll_interval_s") {
+      const int v = std::atoi(value.c_str());
+      if (v >= 10 && v <= 3600) {
+        config->meteo_poll_interval_s = v;
+      }
+    } else if (key == "meteo_enabled") {
+      bool b = false;
+      if (ParseBool(value, &b)) config->meteo_enabled = b;
     }
   }
 
@@ -2992,7 +3003,7 @@ bool ParseConfigFile(FILE* file, AppConfig* config) {
   while (fgets(buf.data(), buf.size(), file)) {
     text += buf.data();
     if (text.size() > 8192) {
-      ESP_LOGW(TAG, "config.txt too large, ignoring tail");
+      ESP_LOGW(kTag, "config.txt too large, ignoring tail");
       break;
     }
   }
@@ -3031,9 +3042,9 @@ bool LoadConfigFromInternalFlash(AppConfig* config) {
   }
   const bool parsed = ParseConfigText(text, config);
   if (parsed) {
-    ESP_LOGI(TAG, "Config loaded from ESP internal flash NVS");
+    ESP_LOGI(kTag, "Config loaded from ESP internal flash NVS");
   } else {
-    ESP_LOGW(TAG, "ESP internal flash config is present but invalid");
+    ESP_LOGW(kTag, "ESP internal flash config is present but invalid");
   }
   return parsed;
 }
@@ -3045,7 +3056,7 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
   SdLockGuard guard;
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "SD mutex unavailable, trying ESP internal flash config");
+    ESP_LOGW(kTag, "SD mutex unavailable, trying ESP internal flash config");
     (void)LoadConfigFromInternalFlash(config);
     return;
   }
@@ -3068,7 +3079,7 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
   esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
   if (ret != ESP_OK) {
-    ESP_LOGW(TAG, "SD mount failed for config.txt: %s, trying ESP internal flash config", esp_err_to_name(ret));
+    ESP_LOGW(kTag, "SD mount failed for config.txt: %s, trying ESP internal flash config", esp_err_to_name(ret));
     (void)LoadConfigFromInternalFlash(config);
     return;
   }
@@ -3077,12 +3088,12 @@ void LoadConfigFromSdCard(AppConfig* config) {
   if (!file) {
     file = fopen("/sdcard/config.bak", "r");
     if (!file) {
-      ESP_LOGW(TAG, "Config file not found at %s, trying ESP internal flash config", CONFIG_FILE_PATH);
+      ESP_LOGW(kTag, "Config file not found at %s, trying ESP internal flash config", CONFIG_FILE_PATH);
       esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, card);
       (void)LoadConfigFromInternalFlash(config);
       return;
     }
-    ESP_LOGW(TAG, "Using backup config at /sdcard/config.bak");
+    ESP_LOGW(kTag, "Using backup config at /sdcard/config.bak");
   }
 
   const bool parsed = ParseConfigFile(file, config);
@@ -3091,17 +3102,17 @@ void LoadConfigFromSdCard(AppConfig* config) {
 
   if (parsed) {
     if (config->wifi_from_file) {
-      ESP_LOGI(TAG, "Wi-Fi config loaded from config.txt (SSID: %s)", config->wifi_ssid.c_str());
+      ESP_LOGI(kTag, "Wi-Fi config loaded from config.txt (SSID: %s)", config->wifi_ssid.c_str());
     } else {
       // Keep defaults if Wi-Fi not found/invalid in file.
       config->wifi_ssid = DEFAULT_WIFI_SSID;
       config->wifi_password = DEFAULT_WIFI_PASS;
     }
     if (config->usb_mass_storage_from_file) {
-      ESP_LOGI(TAG, "usb_mass_storage=%s (config.txt)", config->usb_mass_storage ? "true" : "false");
+      ESP_LOGI(kTag, "usb_mass_storage=%s (config.txt)", config->usb_mass_storage ? "true" : "false");
     }
   } else {
-    ESP_LOGW(TAG, "config.txt present but values are missing/invalid, trying ESP internal flash config");
+    ESP_LOGW(kTag, "config.txt present but values are missing/invalid, trying ESP internal flash config");
     if (!LoadConfigFromInternalFlash(config)) {
       config->wifi_ssid = DEFAULT_WIFI_SSID;
       config->wifi_password = DEFAULT_WIFI_PASS;
@@ -3116,7 +3127,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     bool eth_up = false;
     ReadNetworkUpFlags(nullptr, &eth_up);
     if (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth && eth_up) {
-      ESP_LOGI(TAG, "Ignoring Wi-Fi disconnect because Ethernet is preferred and up");
+      ESP_LOGI(kTag, "Ignoring Wi-Fi disconnect because Ethernet is preferred and up");
       StopWifiRecoverTask();
       UpdateState([&](SharedState& s) {
         s.wifi_ip.clear();
@@ -3138,7 +3149,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     if (retry_count < 5) {
       if (RequestWifiConnect("event_retry")) {
         retry_count++;
-        ESP_LOGW(TAG, "Retry Wi-Fi connection (%d)", retry_count);
+        ESP_LOGW(kTag, "Retry Wi-Fi connection (%d)", retry_count);
       }
     } else {
       xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
@@ -3150,7 +3161,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     last_wifi_connect_attempt_us = 0;
     ErrorManagerClearLocal(ErrorCode::kWifiDisconnected);
     auto* event = static_cast<ip_event_got_ip_t*>(event_data);
-    ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    ESP_LOGI(kTag, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     const std::string sta_ip = FormatIp4(event->ip_info.ip);
     const std::string ap_ip = GetNetifIp(wifi_netif_ap);
     UpdateState([&](SharedState& s) {
@@ -3164,7 +3175,7 @@ void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, 
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     StopWifiRecoverTask();
     if (fallback_ap_active && !app_config.wifi_ap_mode) {
-      ESP_LOGI(TAG, "Disabling fallback AP after reconnect");
+      ESP_LOGI(kTag, "Disabling fallback AP after reconnect");
       fallback_ap_active = false;
       ErrorManagerClearLocal(ErrorCode::kWifiFallback);
       esp_wifi_set_mode(WIFI_MODE_STA);
@@ -3245,9 +3256,9 @@ void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode
       wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15'000));
 
   if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(TAG, "Connected to SSID:%s", ssid.c_str());
+    ESP_LOGI(kTag, "Connected to SSID:%s", ssid.c_str());
   } else {
-    ESP_LOGW(TAG, "Failed to connect to SSID:%s, starting STA retries", ssid.c_str());
+    ESP_LOGW(kTag, "Failed to connect to SSID:%s, starting STA retries", ssid.c_str());
     xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
     EnableFallbackAp();
     StartWifiRecoverTask(15000);
@@ -3487,7 +3498,7 @@ esp_err_t InitIna219() {
     bus_cfg.intr_priority = 0;
     bus_cfg.trans_queue_depth = 0;
     bus_cfg.flags.enable_internal_pullup = true;
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &i2c_bus), TAG, "I2C bus init failed");
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &i2c_bus), kTag, "I2C bus init failed");
   }
 
   if (!ina219_dev) {
@@ -3495,7 +3506,7 @@ esp_err_t InitIna219() {
     dev_cfg.device_address = INA219_ADDR;
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_cfg.scl_speed_hz = INA219_I2C_FREQ_HZ;
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &ina219_dev), TAG, "INA219 attach failed");
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &ina219_dev), kTag, "INA219 attach failed");
   }
 
   auto write_reg = [](uint8_t reg, uint16_t value) -> esp_err_t {
@@ -3507,9 +3518,9 @@ esp_err_t InitIna219() {
     return i2c_master_transmit(ina219_dev, payload, sizeof(payload), INA219_I2C_TIMEOUT);
   };
 
-  ESP_RETURN_ON_ERROR(write_reg(0x00, INA219_CONFIG), TAG, "INA219 config failed");
-  ESP_RETURN_ON_ERROR(write_reg(0x05, INA219_CALIBRATION), TAG, "INA219 calibration failed");
-  ESP_LOGI(TAG, "INA219 initialized");
+  ESP_RETURN_ON_ERROR(write_reg(0x00, INA219_CONFIG), kTag, "INA219 config failed");
+  ESP_RETURN_ON_ERROR(write_reg(0x05, INA219_CALIBRATION), kTag, "INA219 calibration failed");
+  ESP_LOGI(kTag, "INA219 initialized");
   return ESP_OK;
 }
 
@@ -3572,7 +3583,7 @@ esp_err_t ReadIna219() {
 esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
   bool host_init = false;
   sdmmc_card_t* card = static_cast<sdmmc_card_t*>(malloc(sizeof(sdmmc_card_t)));
-  ESP_RETURN_ON_FALSE(card, ESP_ERR_NO_MEM, TAG, "No mem for sdmmc_card_t");
+  ESP_RETURN_ON_FALSE(card, ESP_ERR_NO_MEM, kTag, "No mem for sdmmc_card_t");
 
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
   host.flags |= SDMMC_HOST_FLAG_1BIT;
@@ -3584,7 +3595,7 @@ esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
   slot_config.d0 = SD_D0;
   slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
-  ESP_RETURN_ON_ERROR((*host.init)(), TAG, "Host init failed");
+  ESP_RETURN_ON_ERROR((*host.init)(), kTag, "Host init failed");
   host_init = true;
 
   esp_err_t err = sdmmc_host_init_slot(host.slot, &slot_config);
@@ -3602,7 +3613,7 @@ esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
 
   // Retry until card present
   while (sdmmc_card_init(&host, card) != ESP_OK) {
-    ESP_LOGW(TAG, "Insert SD card");
+    ESP_LOGW(kTag, "Insert SD card");
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 
@@ -3625,8 +3636,8 @@ esp_err_t StartUsbMsc(sdmmc_card_t* card) {
               .use_one_fat = false,
           },
   };
-  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_init_sdmmc(&config_sdmmc), TAG, "Init MSC storage failed");
-  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_mount(MSC_BASE_PATH), TAG, "Mount MSC storage failed");
+  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_init_sdmmc(&config_sdmmc), kTag, "Init MSC storage failed");
+  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_mount(MSC_BASE_PATH), kTag, "Mount MSC storage failed");
 
   tinyusb_config_t tusb_cfg = {};
   tusb_cfg.device_descriptor = &kMscDeviceDescriptor;
@@ -3642,8 +3653,8 @@ esp_err_t StartUsbMsc(sdmmc_card_t* card) {
 #endif
   tusb_cfg.self_powered = false;
   tusb_cfg.vbus_monitor_io = -1;
-  ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), TAG, "TinyUSB install failed");
-  ESP_LOGI(TAG, "USB in MSC mode");
+  ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), kTag, "TinyUSB install failed");
+  ESP_LOGI(kTag, "USB in MSC mode");
   return ESP_OK;
 }
 
@@ -3762,13 +3773,13 @@ esp_err_t ReadAllAdc(float* v1, float* v2, float* v3) {
   }
   err = adc2.Read(&raw2);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "ADC2 read failed: %s", esp_err_to_name(err));
+    ESP_LOGW(kTag, "ADC2 read failed: %s", esp_err_to_name(err));
     ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC2 read failed");
     return err;
   }
   err = adc3.Read(&raw3);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "ADC3 read failed: %s", esp_err_to_name(err));
+    ESP_LOGW(kTag, "ADC3 read failed: %s", esp_err_to_name(err));
     ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC3 read failed");
     return err;
   }
@@ -3812,19 +3823,19 @@ void Ina219Task(void*) {
       consecutive_failures++;
       const int64_t now_us = esp_timer_get_time();
       if (consecutive_failures == 1 || now_us - last_log_us > 10'000'000) {
-        ESP_LOGW(TAG, "INA219 read failed: %s (consecutive=%d)", esp_err_to_name(err), consecutive_failures);
+        ESP_LOGW(kTag, "INA219 read failed: %s (consecutive=%d)", esp_err_to_name(err), consecutive_failures);
         last_log_us = now_us;
       }
       if (consecutive_failures >= 3 && now_us - last_reinit_us > 10'000'000) {
         last_reinit_us = now_us;
-        ESP_LOGW(TAG, "Reinitializing INA219 after I2C failures");
+        ESP_LOGW(kTag, "Reinitializing INA219 after I2C failures");
         esp_err_t init_err = InitIna219();
         if (init_err != ESP_OK) {
-          ESP_LOGW(TAG, "INA219 reinit failed: %s", esp_err_to_name(init_err));
+          ESP_LOGW(kTag, "INA219 reinit failed: %s", esp_err_to_name(init_err));
         }
       }
     } else if (consecutive_failures > 0) {
-      ESP_LOGI(TAG, "INA219 recovered after %d failed read(s)", consecutive_failures);
+      ESP_LOGI(kTag, "INA219 recovered after %d failed read(s)", consecutive_failures);
       consecutive_failures = 0;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -3877,13 +3888,13 @@ void TempTask(void*) {
         }
       });
       if (count > 0) {
-        ESP_LOGD(TAG, "Temps (%d):", count);
+        ESP_LOGD(kTag, "Temps (%d):", count);
         for (int i = 0; i < count; ++i) {
-          ESP_LOGD(TAG, "  Sensor %d: %.2f C", i + 1, temps[i]);
+          ESP_LOGD(kTag, "  Sensor %d: %.2f C", i + 1, temps[i]);
         }
       }
     } else {
-      ESP_LOGW(TAG, "M1820ReadTemperatures failed");
+      ESP_LOGW(kTag, "M1820ReadTemperatures failed");
       ErrorManagerSet(ErrorCode::kTempSensor, ErrorSeverity::kWarning, "M1820 read failed");
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -4005,7 +4016,7 @@ void CalibrateZero() {
     }
   });
   if (already_running) {
-    ESP_LOGW(TAG, "Calibration already in progress");
+    ESP_LOGW(kTag, "Calibration already in progress");
     return;
   }
 
@@ -4038,12 +4049,12 @@ void CalibrateZero() {
       s.offset3 = new_offset3;
       s.calibrating = false;
     });
-    ESP_LOGI(TAG, "Calibration done: offsets %.6f, %.6f, %.6f", new_offset1, new_offset2, new_offset3);
+    ESP_LOGI(kTag, "Calibration done: offsets %.6f, %.6f, %.6f", new_offset1, new_offset2, new_offset3);
   } else {
     UpdateState([](SharedState& s) {
       s.calibrating = false;
     });
-    ESP_LOGW(TAG, "Calibration collected no samples");
+    ESP_LOGW(kTag, "Calibration collected no samples");
   }
 
   gpio_set_level(RELAY_PIN, 0);
@@ -4066,9 +4077,9 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(ret);
   }
   const uint32_t boot_id = LoadAndIncrementBootId();
-  ESP_LOGI(TAG, "Boot ID: %u", static_cast<unsigned>(boot_id));
+  ESP_LOGI(kTag, "Boot ID: %u", static_cast<unsigned>(boot_id));
   LogMemoryStatus("boot");
-  ESP_LOGI(TAG, "TLS config: in=%d out=%d dynamic_buffer=%s mbedtls_alloc=%s",
+  ESP_LOGI(kTag, "TLS config: in=%d out=%d dynamic_buffer=%s mbedtls_alloc=%s",
            CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN,
            CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN,
 #if CONFIG_MBEDTLS_DYNAMIC_BUFFER
@@ -4090,7 +4101,7 @@ extern "C" void app_main(void) {
   usb_mode = LoadUsbModeFromNvs(&usb_mode_found);
   if (app_config.usb_mass_storage_from_file && !usb_mode_found) {
     usb_mode = app_config.usb_mass_storage ? UsbMode::kMsc : UsbMode::kCdc;
-    ESP_LOGI(TAG, "USB mode set from config.txt (no NVS value): %s", usb_mode == UsbMode::kMsc ? "MSC" : "CDC");
+    ESP_LOGI(kTag, "USB mode set from config.txt (no NVS value): %s", usb_mode == UsbMode::kMsc ? "MSC" : "CDC");
     SaveUsbModeToNvs(usb_mode);
   }
   UpdateState([&](SharedState& s) { s.usb_msc_mode = (usb_mode == UsbMode::kMsc); });
@@ -4101,7 +4112,7 @@ extern "C" void app_main(void) {
   if (app_config.storage_backend == StorageBackend::kInternalFlash) {
     SdLockGuard guard(pdMS_TO_TICKS(2000));
     if (!guard.locked() || !MountInternalFlashFs()) {
-      ESP_LOGW(TAG, "Internal flash storage is selected but not mounted yet");
+      ESP_LOGW(kTag, "Internal flash storage is selected but not mounted yet");
     }
   }
 
@@ -4112,7 +4123,7 @@ extern "C" void app_main(void) {
     }
     if (msc_err != ESP_OK) {
       msc_ok = false;
-      ESP_LOGE(TAG, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
+      ESP_LOGE(kTag, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
       usb_mode = UsbMode::kCdc;
       ErrorManagerSet(ErrorCode::kUsbMscInit, ErrorSeverity::kError,
                       std::string("MSC init failed: ") + esp_err_to_name(msc_err));
@@ -4134,7 +4145,7 @@ extern "C" void app_main(void) {
   InitFanPwm();
   bool temp_ok = M1820Init(TEMP_1WIRE);
   if (!temp_ok) {
-    ESP_LOGW(TAG, "M1820 init failed or no sensors found");
+    ESP_LOGW(kTag, "M1820 init failed or no sensors found");
     ErrorManagerSet(ErrorCode::kTempSensor, ErrorSeverity::kError, "M1820 init failed");
     init_ok = false;
   }
@@ -4144,7 +4155,7 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(adc3.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
   esp_err_t ina_err = InitIna219();
   if (ina_err != ESP_OK) {
-    ESP_LOGE(TAG, "INA219 init failed: %s", esp_err_to_name(ina_err));
+    ESP_LOGE(kTag, "INA219 init failed: %s", esp_err_to_name(ina_err));
     ErrorManagerSet(ErrorCode::kInaInit, ErrorSeverity::kError, "INA219 init failed");
     init_ok = false;
   } else {
@@ -4152,7 +4163,7 @@ extern "C" void app_main(void) {
   }
 
   if (!app_config.wifi_from_file) {
-    ESP_LOGI(TAG, "Using default Wi-Fi config (SSID: %s)", app_config.wifi_ssid.c_str());
+    ESP_LOGI(kTag, "Using default Wi-Fi config (SSID: %s)", app_config.wifi_ssid.c_str());
   }
   UpdateState([](SharedState& s) {
     s.pid_kp = pid_config.kp;
@@ -4172,7 +4183,7 @@ extern "C" void app_main(void) {
   ApplyNetworkConfig();
   StartSntp();
   if (WaitForTimeSyncMs(8000)) {
-    ESP_LOGI(TAG, "Time synced via NTP");
+    ESP_LOGI(kTag, "Time synced via NTP");
     ErrorManagerClear(ErrorCode::kTimeSync);
   } else {
     UtcTimeSnapshot fallback_time{};
@@ -4183,13 +4194,13 @@ extern "C" void app_main(void) {
       fallback_time = GetBestUtcTimeForData();
     }
     if (fallback_time.source == UtcTimeSource::kGps && fallback_time.valid) {
-      ESP_LOGW(TAG, "NTP sync timed out, using GPZDA UTC time");
+      ESP_LOGW(kTag, "NTP sync timed out, using GPZDA UTC time");
       ErrorManagerClear(ErrorCode::kTimeSync);
     } else if (fallback_time.source == UtcTimeSource::kSystemCached && fallback_time.valid) {
-      ESP_LOGW(TAG, "NTP sync timed out, using cached system UTC time");
+      ESP_LOGW(kTag, "NTP sync timed out, using cached system UTC time");
       ErrorManagerClear(ErrorCode::kTimeSync);
     } else {
-      ESP_LOGW(TAG, "NTP sync timed out, using monotonic timestamp fallback");
+      ESP_LOGW(kTag, "NTP sync timed out, using monotonic timestamp fallback");
       ErrorManagerSet(ErrorCode::kTimeSync, ErrorSeverity::kWarning, "NTP sync timed out");
     }
   }
@@ -4225,7 +4236,7 @@ extern "C" void app_main(void) {
     log_config.use_motor = app_config.logging_use_motor;
     log_config.duration_s = app_config.logging_duration_s;
     if (!StartLoggingToFile(postfix, usb_mode)) {
-      ESP_LOGW(TAG, "Auto-start logging failed");
+      ESP_LOGW(kTag, "Auto-start logging failed");
       app_config.logging_active = false;
       (void)SaveConfigToSdCard(app_config, pid_config, usb_mode);
     } else {
@@ -4242,7 +4253,7 @@ extern "C" void app_main(void) {
   }
 
   init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
-  ESP_LOGI(TAG, "System ready");
+  ESP_LOGI(kTag, "System ready");
 
   // Start MQTT after init (non-blocking)
   StartMqttBridge();

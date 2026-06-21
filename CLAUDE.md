@@ -13,6 +13,7 @@ Two independent subsystems:
 ## Shell conventions
 
 - Prefix **all** shell commands with `rtk` to reduce token usage (e.g. `rtk git status`, `rtk find ...`). The hook rewrites them transparently.
+- **Large-output commands MUST use `rtk`** so output is filtered/compressed before reaching context. This is especially important for: `rtk idf.py build`, `rtk grep -r`, `rtk find`, `rtk docker compose`.
 - `get_idf` is a shell alias that sources the ESP-IDF environment: `. $HOME/esp/esp-idf/export.sh`. Run it before any `idf.py` command in a fresh shell.
 - Use `uv` for Python package management (e.g. `rtk uv pip install -r requirements.txt`).
 

@@ -41,6 +41,8 @@
 #include "tusb_msc_storage.h"
 #include "sdkconfig.h"
 
+static constexpr char kTag[] = "HTTP";
+
 static bool internal_flash_fs_mounted = false;
 static wl_handle_t internal_flash_wl_handle = WL_INVALID_HANDLE;
 
@@ -768,7 +770,7 @@ static bool MoveStepperBlockingSigned(int signed_steps, int step_delay_us, const
   });
   for (int i = 0; i < steps; ++i) {
     if (CopyState().stepper_abort) {
-      ESP_LOGW(TAG, "%s offset aborted after %d/%d steps", log_context, i, steps);
+      ESP_LOGW(kTag, "%s offset aborted after %d/%d steps", log_context, i, steps);
       return false;
     }
     StepperPulseOnce();
@@ -803,7 +805,7 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
 
   while (!IsHallTriggered() && result.hall_steps < max_steps) {
     if (CopyState().stepper_abort) {
-      ESP_LOGW(TAG, "%s aborted before Hall after %d steps", log_context, result.hall_steps);
+      ESP_LOGW(kTag, "%s aborted before Hall after %d steps", log_context, result.hall_steps);
       result.aborted = true;
       break;
     }
@@ -818,7 +820,7 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
 
   result.hall_found = IsHallTriggered();
   if (result.hall_found && !result.aborted) {
-    ESP_LOGI(TAG, "%s Hall detected after %d steps", log_context, result.hall_steps);
+    ESP_LOGI(kTag, "%s Hall detected after %d steps", log_context, result.hall_steps);
     const int offset = app_config.stepper_home_offset_steps;
     UpdateState([](SharedState& s) {
       s.stepper_position = 0;
@@ -828,7 +830,7 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
     result.offset_steps = offset;
     result.offset_done = MoveStepperBlockingSigned(offset, step_delay_us, log_context);
   } else if (!result.aborted) {
-    ESP_LOGW(TAG, "%s Hall NOT detected, stopped after %d steps", log_context, result.hall_steps);
+    ESP_LOGW(kTag, "%s Hall NOT detected, stopped after %d steps", log_context, result.hall_steps);
   }
 
   UpdateState([&](SharedState& s) {
@@ -859,13 +861,13 @@ static StepperHomeResult HomeStepperToUserZeroWithRetries(bool enable_motor, con
     last = HomeStepperToUserZeroBlocking(enable_motor, log_context);
     if (StepperHomeSucceeded(last)) {
       if (attempt > 1) {
-        ESP_LOGI(TAG, "%s succeeded on attempt %d/%d", log_context, attempt, attempts);
+        ESP_LOGI(kTag, "%s succeeded on attempt %d/%d", log_context, attempt, attempts);
       }
       ErrorManagerClear(ErrorCode::kStepperHoming);
       return last;
     }
 
-    ESP_LOGW(TAG, "%s failed attempt %d/%d (hall=%s offset=%s aborted=%s hall_steps=%d offset_steps=%d)",
+    ESP_LOGW(kTag, "%s failed attempt %d/%d (hall=%s offset=%s aborted=%s hall_steps=%d offset_steps=%d)",
              log_context,
              attempt,
              attempts,
@@ -888,7 +890,7 @@ static StepperHomeResult HomeStepperToUserZeroWithRetries(bool enable_motor, con
 
 void FindZeroTask(void*) {
   const bool hall_initial = IsHallTriggered();
-  ESP_LOGI(TAG, "FindZero: start, hall_triggered=%s, offset=%d",
+  ESP_LOGI(kTag, "FindZero: start, hall_triggered=%s, offset=%d",
            hall_initial ? "yes" : "no", app_config.stepper_home_offset_steps);
   (void)HomeStepperToUserZeroBlocking(false, "FindZero");
   find_zero_task = nullptr;
@@ -932,7 +934,7 @@ bool MountLogSd() {
 
   esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &log_sd_card);
   if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "SD mount for logging failed: %s", esp_err_to_name(ret));
+    ESP_LOGE(kTag, "SD mount for logging failed: %s", esp_err_to_name(ret));
     ErrorManagerSet(ErrorCode::kSdMount, ErrorSeverity::kError,
                     std::string("SD mount failed: ") + esp_err_to_name(ret));
     return false;
@@ -958,7 +960,7 @@ bool MountInternalFlashFs() {
                                                          ESP_PARTITION_SUBTYPE_DATA_FAT,
                                                          INTERNAL_FLASH_PARTITION_LABEL);
   if (!part) {
-    ESP_LOGE(TAG, "Internal flash FAT partition '%s' not found", INTERNAL_FLASH_PARTITION_LABEL);
+    ESP_LOGE(kTag, "Internal flash FAT partition '%s' not found", INTERNAL_FLASH_PARTITION_LABEL);
     return false;
   }
 
@@ -973,14 +975,14 @@ bool MountInternalFlashFs() {
                                                     &internal_flash_wl_handle);
   if (ret != ESP_OK) {
     internal_flash_wl_handle = WL_INVALID_HANDLE;
-    ESP_LOGE(TAG, "Internal flash FS mount failed: %s (heap=%u largest=%u)",
+    ESP_LOGE(kTag, "Internal flash FS mount failed: %s (heap=%u largest=%u)",
              esp_err_to_name(ret),
              static_cast<unsigned>(esp_get_free_heap_size()),
              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
     return false;
   }
   internal_flash_fs_mounted = true;
-  ESP_LOGI(TAG, "Internal flash FS mounted at %s", INTERNAL_FLASH_MOUNT_POINT);
+  ESP_LOGI(kTag, "Internal flash FS mounted at %s", INTERNAL_FLASH_MOUNT_POINT);
   return true;
 }
 
@@ -990,12 +992,12 @@ static void UnmountInternalFlashFs() {
   }
   esp_err_t ret = esp_vfs_fat_spiflash_unmount_rw_wl(INTERNAL_FLASH_MOUNT_POINT, internal_flash_wl_handle);
   if (ret != ESP_OK) {
-    ESP_LOGW(TAG, "Internal flash FS unmount failed: %s", esp_err_to_name(ret));
+    ESP_LOGW(kTag, "Internal flash FS unmount failed: %s", esp_err_to_name(ret));
     return;
   }
   internal_flash_wl_handle = WL_INVALID_HANDLE;
   internal_flash_fs_mounted = false;
-  ESP_LOGI(TAG, "Internal flash FS unmounted");
+  ESP_LOGI(kTag, "Internal flash FS unmounted");
 }
 
 const char* ActiveStorageMountPoint() {
@@ -1146,13 +1148,13 @@ static std::string BuildConfigText(const AppConfig& cfg, const PidConfig& pid, U
 
 static bool SaveConfigTextToInternalFlash(const std::string& text) {
   if (text.empty() || text.size() > 8192) {
-    ESP_LOGE(TAG, "Internal config save rejected, size=%u", static_cast<unsigned>(text.size()));
+    ESP_LOGE(kTag, "Internal config save rejected, size=%u", static_cast<unsigned>(text.size()));
     return false;
   }
   nvs_handle_t handle;
   esp_err_t err = nvs_open(CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "NVS open for config failed: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "NVS open for config failed: %s", esp_err_to_name(err));
     return false;
   }
   err = nvs_set_blob(handle, CONFIG_NVS_KEY, text.c_str(), text.size() + 1);
@@ -1161,10 +1163,10 @@ static bool SaveConfigTextToInternalFlash(const std::string& text) {
   }
   nvs_close(handle);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "NVS config save failed: %s", esp_err_to_name(err));
+    ESP_LOGE(kTag, "NVS config save failed: %s", esp_err_to_name(err));
     return false;
   }
-  ESP_LOGI(TAG, "Config synced to ESP internal flash");
+  ESP_LOGI(kTag, "Config synced to ESP internal flash");
   return true;
 }
 
@@ -1206,7 +1208,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   const bool internal_saved = SaveConfigTextToInternalFlash(config_text);
   SdLockGuard guard;
   if (!guard.locked()) {
-    ESP_LOGW(TAG, "SD mutex unavailable, config saved only to ESP internal flash");
+    ESP_LOGW(kTag, "SD mutex unavailable, config saved only to ESP internal flash");
     ErrorManagerSet(ErrorCode::kSdMutex, ErrorSeverity::kWarning, "SD mutex unavailable during config save");
     return internal_saved;
   }
@@ -1214,7 +1216,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   const bool already_mounted = log_sd_mounted;
   if (!already_mounted) {
     if (!MountLogSd()) {
-      ESP_LOGW(TAG, "SD unavailable, config saved only to ESP internal flash");
+      ESP_LOGW(kTag, "SD unavailable, config saved only to ESP internal flash");
       return internal_saved;
     }
   }
@@ -1222,14 +1224,14 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   const char* backup_path = "/sdcard/config.bak";
   FILE* f = fopen(tmp_path, "w");
   if (!f) {
-    ESP_LOGE(TAG, "Failed to open %s for writing", tmp_path);
+    ESP_LOGE(kTag, "Failed to open %s for writing", tmp_path);
     if (!already_mounted && !log_file) {
       UnmountLogSd();
     }
     return internal_saved;
   }
   if (fwrite(config_text.data(), 1, config_text.size(), f) != config_text.size()) {
-    ESP_LOGE(TAG, "Failed to write %s", tmp_path);
+    ESP_LOGE(kTag, "Failed to write %s", tmp_path);
     fclose(f);
     remove(tmp_path);
     if (!already_mounted && !log_file) {
@@ -1249,7 +1251,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
     write_ok = false;
   }
   if (!write_ok) {
-    ESP_LOGE(TAG, "Failed to flush %s", tmp_path);
+    ESP_LOGE(kTag, "Failed to flush %s", tmp_path);
     remove(tmp_path);
     if (!already_mounted && !log_file) {
       UnmountLogSd();
@@ -1258,10 +1260,10 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   }
   remove(backup_path);
   if (rename(CONFIG_FILE_PATH, backup_path) != 0 && errno != ENOENT) {
-    ESP_LOGW(TAG, "Failed to backup %s to %s: %d", CONFIG_FILE_PATH, backup_path, errno);
+    ESP_LOGW(kTag, "Failed to backup %s to %s: %d", CONFIG_FILE_PATH, backup_path, errno);
   }
   if (rename(tmp_path, CONFIG_FILE_PATH) != 0) {
-    ESP_LOGE(TAG, "Failed to replace %s with %s: %d", CONFIG_FILE_PATH, tmp_path, errno);
+    ESP_LOGE(kTag, "Failed to replace %s with %s: %d", CONFIG_FILE_PATH, tmp_path, errno);
     rename(backup_path, CONFIG_FILE_PATH);
     remove(tmp_path);
     if (!already_mounted && !log_file) {
@@ -1274,7 +1276,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
   if (!already_mounted && !log_file) {
     UnmountLogSd();
   }
-  ESP_LOGI(TAG, "Config saved to %s", CONFIG_FILE_PATH);
+  ESP_LOGI(kTag, "Config saved to %s", CONFIG_FILE_PATH);
   return internal_saved;
 }
 
@@ -1334,7 +1336,7 @@ void LoggingTask(void*) {
     const int step_delay_us = std::max(CopyState().stepper_speed_us, 1);
     for (int i = 0; i < steps; ++i) {
       if (CopyState().stepper_abort) {
-        ESP_LOGW(TAG, "Logging move aborted after %d/%d steps", i, steps);
+        ESP_LOGW(kTag, "Logging move aborted after %d/%d steps", i, steps);
         break;
       }
       gpio_set_level(STEPPER_STEP, 1);
@@ -1364,7 +1366,7 @@ void LoggingTask(void*) {
     while ((esp_timer_get_time() / 1000ULL - start) < duration_ms) {
       SharedState snap = CopyState();
       if (log_config.use_motor && (snap.stepper_moving || snap.homing)) {
-        ESP_LOGW(TAG, "Logging: stepper moved during averaging, discarding samples");
+        ESP_LOGW(kTag, "Logging: stepper moved during averaging, discarding samples");
         return false;
       }
       sum_v1 += snap.voltage1;
@@ -1405,7 +1407,7 @@ void LoggingTask(void*) {
       const std::string msg = StepperHomeFailureMessage("Logging stopped: homing",
                                                         home_result,
                                                         kStepperHomeRetryAttempts);
-      ESP_LOGW(TAG, "%s", msg.c_str());
+      ESP_LOGW(kTag, "%s", msg.c_str());
       ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, msg);
       StopLogging();
       vTaskDelete(nullptr);
@@ -1416,7 +1418,7 @@ void LoggingTask(void*) {
     const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(nullptr);
     if (watermark_words > 0 && watermark_words < kLogStackLowWords) {
       ErrorManagerSet(ErrorCode::kLogTaskStack, ErrorSeverity::kWarning, "log_task stack low");
-      ESP_LOGW(TAG, "log_task stack low: %u words", static_cast<unsigned>(watermark_words));
+      ESP_LOGW(kTag, "log_task stack low: %u words", static_cast<unsigned>(watermark_words));
     } else {
       ErrorManagerClear(ErrorCode::kLogTaskStack);
     }
@@ -1430,7 +1432,7 @@ void LoggingTask(void*) {
     // Rotate log every hour
     const uint64_t now_us = esp_timer_get_time();
     if (log_config.file_start_us > 0 && (now_us - log_config.file_start_us) >= 3'600'000'000ULL) {
-      ESP_LOGI(TAG, "Rotating log file after 1 hour");
+      ESP_LOGI(kTag, "Rotating log file after 1 hour");
       (void)QueueCurrentLogForUpload();
       if (!OpenLogFileWithPostfix(log_config.postfix)) {
         StopLogging();
@@ -1444,7 +1446,7 @@ void LoggingTask(void*) {
         vTaskDelay(settle_delay);
         SharedState avg{};
         if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg)) {
-          ESP_LOGW(TAG, "Logging: no samples collected, retrying");
+          ESP_LOGW(kTag, "Logging: no samples collected, retrying");
           vTaskDelay(pdMS_TO_TICKS(500));
           continue;
         }
@@ -1454,7 +1456,7 @@ void LoggingTask(void*) {
         has_pending_base = true;
         pending_motor_steps = std::clamp(app_config.logging_motor_steps, 1, 20000);
         if (!move_blocking(pending_motor_steps, true)) {
-          ESP_LOGW(TAG, "Logging aborted during stepper move");
+          ESP_LOGW(kTag, "Logging aborted during stepper move");
           StopLogging();
           vTaskDelete(nullptr);
         }
@@ -1466,18 +1468,18 @@ void LoggingTask(void*) {
       vTaskDelay(settle_delay);
       SharedState avg{};
       if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg)) {
-        ESP_LOGW(TAG, "Logging: no samples collected, retrying");
+        ESP_LOGW(kTag, "Logging: no samples collected, retrying");
         vTaskDelay(pdMS_TO_TICKS(500));
         continue;
       }
       if (!has_pending_base) {
-        ESP_LOGW(TAG, "Logging: got cal without base, skipping");
+        ESP_LOGW(kTag, "Logging: got cal without base, skipping");
       } else {
         GpsPositionSnapshot gps{};
         (void)RequestGpsPositionOnce(kGpsPositionTimeoutMs, &gps);
         SdLockGuard guard(pdMS_TO_TICKS(2000));
         if (!guard.locked()) {
-          ESP_LOGW(TAG, "SD mutex unavailable, retrying logging write");
+          ESP_LOGW(kTag, "SD mutex unavailable, retrying logging write");
           vTaskDelay(pdMS_TO_TICKS(200));
           continue;
         }
@@ -1494,7 +1496,7 @@ void LoggingTask(void*) {
         AppendGpsCsvFields(log_file, gps);
         fprintf(log_file, "\n");
         FlushLogFile();
-        ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+        ESP_LOGD(kTag, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
         PublishLogMeasurement(iso, ts_ms, pending_base, &avg, row_time.source, gps);
         UpdateState([&](SharedState& s) {
           s.voltage1_cal = avg.voltage1;
@@ -1510,7 +1512,7 @@ void LoggingTask(void*) {
           const std::string msg = StepperHomeFailureMessage("Logging stopped: return homing",
                                                             home_result,
                                                             kStepperHomeRetryAttempts);
-          ESP_LOGW(TAG, "%s", msg.c_str());
+          ESP_LOGW(kTag, "%s", msg.c_str());
           ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, msg);
           StopLogging();
           vTaskDelete(nullptr);
@@ -1519,7 +1521,7 @@ void LoggingTask(void*) {
         // Быстрый возврат: отъехать назад на то же число шагов, без повторного поиска Hall.
         const int return_steps = std::max(pending_motor_steps, 1);
         if (!move_blocking(return_steps, false)) {
-          ESP_LOGW(TAG, "Logging aborted during stepper return");
+          ESP_LOGW(kTag, "Logging aborted during stepper return");
           ErrorManagerSet(ErrorCode::kStepperHoming, ErrorSeverity::kError, "Logging stopped: step return failed");
           StopLogging();
           vTaskDelete(nullptr);
@@ -1541,7 +1543,7 @@ void LoggingTask(void*) {
     // Без мотора — обычный замер
     SharedState avg1{};
     if (!collect_avg(log_config.duration_s, log_config.temp_sensor_count, &avg1)) {
-      ESP_LOGW(TAG, "Logging: no samples collected, retrying");
+      ESP_LOGW(kTag, "Logging: no samples collected, retrying");
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
@@ -1552,7 +1554,7 @@ void LoggingTask(void*) {
 
     SdLockGuard guard(pdMS_TO_TICKS(2000));
     if (!guard.locked()) {
-      ESP_LOGW(TAG, "SD mutex unavailable, retrying logging write");
+      ESP_LOGW(kTag, "SD mutex unavailable, retrying logging write");
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
@@ -1571,7 +1573,7 @@ void LoggingTask(void*) {
     AppendGpsCsvFields(log_file, gps);
     fprintf(log_file, "\n");
     FlushLogFile();
-    ESP_LOGD(TAG, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
+    ESP_LOGD(kTag, "Logging: wrote row ts=%llu iso=%s", (unsigned long long)ts_ms, iso.c_str());
     PublishLogMeasurement(iso, ts_ms, avg1, nullptr, row_time.source, gps);
     UpdateState([&](SharedState& s) {
       s.voltage1_cal = avg1.voltage1;
@@ -1583,7 +1585,7 @@ void LoggingTask(void*) {
 
 bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode) {
   if (current_usb_mode == UsbMode::kMsc) {
-    ESP_LOGW(TAG, "Cannot start logging in MSC mode");
+    ESP_LOGW(kTag, "Cannot start logging in MSC mode");
     return false;
   }
   const std::string postfix = SanitizePostfix(postfix_raw);
@@ -1601,7 +1603,7 @@ bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode
   if (log_task == nullptr) {
     xTaskCreatePinnedToCore(&LoggingTask, "log_task", 12288, nullptr, 2, &log_task, 0);
   }
-  ESP_LOGI(TAG, "Logging started");
+  ESP_LOGI(kTag, "Logging started");
   UpdateState([&](SharedState& s) {
     s.logging = true;
     s.log_use_motor = log_config.use_motor;
@@ -2733,12 +2735,12 @@ static const char* StorageName(StorageBackend backend) {
 static bool CopyFileThenRemove(const std::string& src, const std::string& dst) {
   FILE* in = fopen(src.c_str(), "rb");
   if (!in) {
-    ESP_LOGW(TAG, "Transfer open source failed %s errno=%d", src.c_str(), errno);
+    ESP_LOGW(kTag, "Transfer open source failed %s errno=%d", src.c_str(), errno);
     return false;
   }
   FILE* out = fopen(dst.c_str(), "wb");
   if (!out) {
-    ESP_LOGW(TAG, "Transfer open destination failed %s errno=%d", dst.c_str(), errno);
+    ESP_LOGW(kTag, "Transfer open destination failed %s errno=%d", dst.c_str(), errno);
     fclose(in);
     return false;
   }
@@ -2760,7 +2762,7 @@ static bool CopyFileThenRemove(const std::string& src, const std::string& dst) {
     return false;
   }
   if (remove(src.c_str()) != 0) {
-    ESP_LOGW(TAG, "Transfer remove source failed %s errno=%d", src.c_str(), errno);
+    ESP_LOGW(kTag, "Transfer remove source failed %s errno=%d", src.c_str(), errno);
     return false;
   }
   return true;
@@ -3348,7 +3350,7 @@ httpd_handle_t StartHttpServer() {
   config.stack_size = 8192;
 
   if (httpd_start(&http_server, &config) != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to start HTTP server");
+    ESP_LOGE(kTag, "Failed to start HTTP server");
     return nullptr;
   }
 
@@ -3433,6 +3435,6 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &flash_clear_uploaded_uri);
   httpd_register_uri_handler(http_server, &transfer_flash_to_sd_uri);
   httpd_register_uri_handler(http_server, &transfer_sd_to_flash_uri);
-  ESP_LOGI(TAG, "HTTP server started");
+  ESP_LOGI(kTag, "HTTP server started");
   return http_server;
 }

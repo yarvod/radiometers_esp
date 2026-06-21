@@ -25,7 +25,6 @@ inline constexpr char DEFAULT_WIFI_SSID[] = "Altai INASAN";
 inline constexpr char DEFAULT_WIFI_PASS[] = "89852936257";
 inline constexpr size_t WIFI_SSID_MAX_LEN = 32;
 inline constexpr size_t WIFI_PASSWORD_MAX_LEN = 64;
-inline constexpr char TAG[] = "APP";
 inline constexpr char TO_UPLOAD_DIR[] = "/sdcard/to_upload";
 inline constexpr char UPLOADED_DIR[] = "/sdcard/uploaded";
 
@@ -65,6 +64,8 @@ struct AppConfig {
   NetPriority net_priority;
   std::vector<uint16_t> gps_rtcm_types;
   std::string gps_mode;
+  int meteo_poll_interval_s;  // WN90LP poll interval; default 60
+  bool meteo_enabled;         // set false in config.txt to skip UART init entirely
 };
 
 struct PidConfig {
