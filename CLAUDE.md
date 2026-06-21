@@ -48,7 +48,8 @@ Or inside the Dev Container (`.devcontainer/Dockerfile` uses the official `espre
 | `main/web_ui.cpp` | Embedded web UI (served from flash/SD) |
 | `main/mqtt_bridge.cpp` | MQTT publish of `{deviceId}/measure`, `{deviceId}/state`, `{deviceId}/error` |
 | `main/ltc2440.cpp` | LTC2440 24-bit ADC SPI driver |
-| `main/gps_unicore.cpp` | Unicore GPS UART driver |
+| `main/gps_unicore.cpp` | Unicore GPS UART driver (UART2, GPIO 9/10) |
+| `main/wn90lp.h/.cpp` | WN90LP weather station driver (UART1, RS485, GPIO 11/12/13) |
 
 ### Architecture notes
 
@@ -56,6 +57,15 @@ Or inside the Dev Container (`.devcontainer/Dockerfile` uses the official `espre
 - State is global (`extern AppConfig app_config; extern SharedState state;`) protected by `state_mutex`. Use `CopyState()` / `UpdateState()` helpers — never lock manually.
 - Configuration is loaded at boot from `config.txt` on the SD card (or NVS fallback), then merged with compiled-in defaults in `main/app_state.h`.
 - USB operates in CDC (default) or MSC mode, toggled at runtime via the web UI and persisted in NVS.
+
+### WN90LP weather station (RS485 / Modbus RTU)
+
+- **Protocol**: Modbus RTU, default device address `0x90`, 9600 8N1, CRC16 (poly 0xA001 reflected).
+- **Single bulk request** reads all 9 registers `0x0165–0x016D` in one frame: light, UVI, temperature, humidity, wind speed, gust speed, wind direction, rainfall, ABS pressure. Sensor reporting interval is 8.8 s; we poll every 60 s.
+- **Graceful absence**: if the station doesn't respond, `MeteoData::online = false`; the task keeps running silently. No `ESP_LOGE` on simple timeout.
+- **CSV log**: each successful poll appends a row to `/sdcard/meteo_YYYYMMDD.txt` (header written once on first write).
+- **Wiring** (`hw_pins.h`): `METEO_RS485_TX=GPIO13`, `METEO_RS485_RX=GPIO11`, `METEO_RS485_RTS=GPIO12`.
+- Register decode rules: light × 10 lux; UVI / 10; temperature = (raw − 400) / 10 °C; wind/gust × 0.1 m/s; pressure × 0.1 hPa. Invalid sentinel: `0xFFFF` (temperature: `0x07FF`) → field set to `NaN`.
 
 ---
 
@@ -113,6 +123,20 @@ rtk npm run build
 ```
 
 The frontend subscribes to the MQTT broker directly over WebSocket (port 9001) for live data, and calls the REST API (`NUXT_PUBLIC_API_BASE`) for historical data. State is managed in `stores/devices.ts` (Pinia). Charts use Chart.js; maps use Leaflet.
+
+---
+
+## Project docs (`docs/`)
+
+| File | Purpose |
+|---|---|
+| `docs/WORKPLAN.md` | In-progress and TODO tasks with checkboxes |
+| `docs/CHANGELOG.md` | What changed and when |
+| `docs/BUGS.md` | Known open/closed bugs |
+
+Keep these up to date as features are implemented.
+
+---
 
 ### Deployment
 

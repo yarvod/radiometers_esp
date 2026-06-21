@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "sdmmc_cmd.h"
+#include "wn90lp.h"
 
 constexpr int MAX_TEMP_SENSORS = 16;
 inline constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
@@ -162,6 +163,7 @@ struct SharedState {
   uint32_t heap_psram_largest_free_block_bytes;
   uint32_t minio_upload_attempts;
   uint64_t minio_last_attempt_ms;
+  MeteoData meteo;
 };
 
 enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };

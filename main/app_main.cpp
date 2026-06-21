@@ -1358,6 +1358,11 @@ static bool IsGpsLogFilename(const char* name) {
   return std::strncmp(name, "gps_", 4) == 0;
 }
 
+static bool IsMeteoLogFilename(const char* name) {
+  if (!name) return false;
+  return std::strncmp(name, "meteo_", 6) == 0;
+}
+
 static int CountFilesInDir(const char* dir_path, bool only_data_logs) {
   if (!dir_path) return 0;
   DIR* dir = opendir(dir_path);
@@ -1597,6 +1602,30 @@ static int MoveRootGpsFilesToUploadLocked(const std::string& active_path) {
     if (ent->d_name[0] == '.') continue;
     if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
     if (!IsGpsLogFilename(ent->d_name)) continue;
+    if (!active_name.empty() && active_name == ent->d_name) continue;
+    const std::string src = std::string(mount_point) + "/" + ent->d_name;
+    if (MoveFileToDir(src, to_upload.c_str(), nullptr)) {
+      moved++;
+    }
+  }
+  closedir(dir);
+  return moved;
+}
+
+// Move all completed meteo_*.txt files at the root to to_upload (skips active_path).
+static int MoveRootMeteoFilesToUploadLocked(const std::string& active_path) {
+  if (!EnsureUploadDirs()) return 0;
+  const char* mount_point = ActiveStorageMountPoint();
+  const std::string to_upload = ActiveToUploadDir();
+  DIR* dir = opendir(mount_point);
+  if (!dir) return 0;
+  const std::string active_name = Basename(active_path);
+  int moved = 0;
+  struct dirent* ent = nullptr;
+  while ((ent = readdir(dir)) != nullptr) {
+    if (ent->d_name[0] == '.') continue;
+    if (ent->d_type != DT_REG && ent->d_type != DT_UNKNOWN) continue;
+    if (!IsMeteoLogFilename(ent->d_name)) continue;
     if (!active_name.empty() && active_name == ent->d_name) continue;
     const std::string src = std::string(mount_point) + "/" + ent->d_name;
     if (MoveFileToDir(src, to_upload.c_str(), nullptr)) {
@@ -2062,6 +2091,8 @@ static bool UploadFileToMinio(const std::string& path) {
   std::string object_prefix = "radiometers";
   if (IsGpsLogFilename(filename.c_str())) {
     object_prefix = "gps";
+  } else if (IsMeteoLogFilename(filename.c_str())) {
+    object_prefix = "meteo";
   } else if (IsDataLogFilename(filename.c_str())) {
     object_prefix = "radiometers";
   }
@@ -2453,6 +2484,16 @@ static void SdStatsTask(void*) {
 void UploadTask(void*) {
   const TickType_t interval = pdMS_TO_TICKS(10 * 60 * 1000);
   vTaskDelay(pdMS_TO_TICKS(2 * 60 * 1000));  // let Wi-Fi/MQTT/GNSS settle before TLS uploads
+  // Move any stale meteo files left at the root from a previous boot.
+  {
+    SdLockGuard guard(pdMS_TO_TICKS(1000));
+    if (guard.locked() && MountActiveStorage()) {
+      MoveRootMeteoFilesToUploadLocked("");
+      if (app_config.storage_backend == StorageBackend::kSd && !log_file) {
+        UnmountLogSd();
+      }
+    }
+  }
   while (true) {
     UploadPendingOnce();
     vTaskDelay(interval);

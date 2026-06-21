@@ -12,8 +12,8 @@ idf_component_register(
         "app_utils.cpp"
         "sd_maintenance.cpp"
         "gps_unicore.cpp"
-       
-       
+        "wn90lp.cpp"
+
     PRIV_REQUIRES
         esp_wifi
         esp_http_server
