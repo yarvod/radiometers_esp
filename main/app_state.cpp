@@ -64,7 +64,6 @@ LoggingConfig log_config{
 };
 
 SemaphoreHandle_t state_mutex = nullptr;
-SemaphoreHandle_t sd_mutex = nullptr;
 
 httpd_handle_t http_server = nullptr;
 UsbMode usb_mode = UsbMode::kCdc;
@@ -75,21 +74,9 @@ TaskHandle_t upload_task = nullptr;
 TaskHandle_t mqtt_state_task = nullptr;
 
 sdmmc_card_t* sd_card = nullptr;
-sdmmc_card_t* log_sd_card = nullptr;
 FILE* log_file = nullptr;
-bool log_sd_mounted = false;
 std::string current_log_path;
 static uint32_t boot_id = 0;
-
-SdLockGuard::SdLockGuard(TickType_t timeout_ticks) {
-  locked_ = (sd_mutex && xSemaphoreTake(sd_mutex, timeout_ticks) == pdTRUE);
-}
-
-SdLockGuard::~SdLockGuard() {
-  if (locked_ && sd_mutex) {
-    xSemaphoreGive(sd_mutex);
-  }
-}
 
 SharedState CopyState() {
   SharedState snapshot;

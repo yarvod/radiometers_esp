@@ -12,6 +12,7 @@ idf_component_register(
         "app_utils.cpp"
         "sd_maintenance.cpp"
         "config_loader.cpp"
+        "storage_manager.cpp"
         "gps_unicore.cpp"
         "wn90lp.cpp"
 

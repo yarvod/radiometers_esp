@@ -11,8 +11,8 @@
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "sdmmc_cmd.h"
 #include "wn90lp.h"
+#include "storage_manager.h"
 
 constexpr int MAX_TEMP_SENSORS = 16;
 inline constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";
@@ -185,7 +185,6 @@ extern SharedState state;
 extern LoggingConfig log_config;
 
 extern SemaphoreHandle_t state_mutex;
-extern SemaphoreHandle_t sd_mutex;
 
 extern httpd_handle_t http_server;
 extern UsbMode usb_mode;
@@ -196,9 +195,7 @@ extern TaskHandle_t upload_task;
 extern TaskHandle_t mqtt_state_task;
 
 extern sdmmc_card_t* sd_card;
-extern sdmmc_card_t* log_sd_card;
 extern FILE* log_file;
-extern bool log_sd_mounted;
 extern std::string current_log_path;
 
 SharedState CopyState();
@@ -209,12 +206,3 @@ void SaveUsbModeToNvs(UsbMode mode);
 uint32_t LoadAndIncrementBootId();
 uint32_t GetBootId();
 
-class SdLockGuard {
- public:
-  explicit SdLockGuard(TickType_t timeout_ticks = pdMS_TO_TICKS(2000));
-  ~SdLockGuard();
-  bool locked() const { return locked_; }
-
- private:
-  bool locked_ = false;
-};

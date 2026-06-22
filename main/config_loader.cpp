@@ -441,7 +441,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode curr
     return internal_saved;
   }
   ErrorManagerClear(ErrorCode::kSdMutex);
-  const bool already_mounted = log_sd_mounted;
+  const bool already_mounted = IsLogSdMounted();
   if (!already_mounted) {
     if (!MountLogSd()) {
       ESP_LOGW(kTag, "SD unavailable, config saved only to ESP internal flash");

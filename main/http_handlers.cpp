@@ -44,8 +44,6 @@
 
 static constexpr char kTag[] = "HTTP";
 
-static bool internal_flash_fs_mounted = false;
-static wl_handle_t internal_flash_wl_handle = WL_INVALID_HANDLE;
 
 template <typename T>
 struct PsramAllocator {
@@ -313,10 +311,10 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "sdToUploadFiles", snapshot.sd_to_upload_files);
   cJSON_AddNumberToObject(root, "sdUploadedFiles", snapshot.sd_uploaded_files);
   cJSON_AddStringToObject(root, "storageBackend", StorageBackendToString(app_config.storage_backend).c_str());
-  cJSON_AddBoolToObject(root, "sdMounted", log_sd_mounted);
-  cJSON_AddBoolToObject(root, "internalFlashMounted", internal_flash_fs_mounted);
+  cJSON_AddBoolToObject(root, "sdMounted", IsLogSdMounted());
+  cJSON_AddBoolToObject(root, "internalFlashMounted", IsInternalFlashMounted());
   cJSON_AddBoolToObject(root, "activeStorageMounted",
-                        app_config.storage_backend == StorageBackend::kInternalFlash ? internal_flash_fs_mounted : log_sd_mounted);
+                        app_config.storage_backend == StorageBackend::kInternalFlash ? IsInternalFlashMounted() : IsLogSdMounted());
   cJSON_AddNumberToObject(root, "heapFreeBytes", static_cast<double>(snapshot.heap_free_bytes));
   cJSON_AddNumberToObject(root, "heapMinFreeBytes", static_cast<double>(snapshot.heap_min_free_bytes));
   cJSON_AddNumberToObject(root, "heapLargestFreeBlockBytes", static_cast<double>(snapshot.heap_largest_free_block_bytes));
@@ -911,151 +909,6 @@ bool StartFindZeroTask(std::string* out_message) {
   });
   xTaskCreatePinnedToCore(&FindZeroTask, "find_zero", 4096, nullptr, 4, &find_zero_task, 1);
   if (out_message) *out_message = "homing_started";
-  return true;
-}
-
-bool MountLogSd() {
-  if (log_sd_mounted) {
-    return true;
-  }
-  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.flags |= SDMMC_HOST_FLAG_1BIT;
-
-  sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-  slot_config.width = 1;
-  slot_config.clk = SD_CLK;
-  slot_config.cmd = SD_CMD;
-  slot_config.d0 = SD_D0;
-  slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
-  esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
-  mount_config.format_if_mount_failed = false;
-  mount_config.max_files = 4;
-  mount_config.allocation_unit_size = 0;
-
-  esp_err_t ret = esp_vfs_fat_sdmmc_mount(CONFIG_MOUNT_POINT, &host, &slot_config, &mount_config, &log_sd_card);
-  if (ret != ESP_OK) {
-    ESP_LOGE(kTag, "SD mount for logging failed: %s", esp_err_to_name(ret));
-    ErrorManagerSet(ErrorCode::kSdMount, ErrorSeverity::kError,
-                    std::string("SD mount failed: ") + esp_err_to_name(ret));
-    return false;
-  }
-  log_sd_mounted = true;
-  ErrorManagerClear(ErrorCode::kSdMount);
-  return true;
-}
-
-void UnmountLogSd() {
-  if (log_sd_mounted) {
-    esp_vfs_fat_sdcard_unmount(CONFIG_MOUNT_POINT, log_sd_card);
-    log_sd_mounted = false;
-    log_sd_card = nullptr;
-  }
-}
-
-bool MountInternalFlashFs() {
-  if (internal_flash_fs_mounted) {
-    return true;
-  }
-  const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
-                                                         ESP_PARTITION_SUBTYPE_DATA_FAT,
-                                                         INTERNAL_FLASH_PARTITION_LABEL);
-  if (!part) {
-    ESP_LOGE(kTag, "Internal flash FAT partition '%s' not found", INTERNAL_FLASH_PARTITION_LABEL);
-    return false;
-  }
-
-  esp_vfs_fat_mount_config_t mount_config = {};
-  mount_config.max_files = 3;
-  mount_config.format_if_mount_failed = true;
-  mount_config.allocation_unit_size = 32768;
-
-  esp_err_t ret = esp_vfs_fat_spiflash_mount_rw_wl(INTERNAL_FLASH_MOUNT_POINT,
-                                                    INTERNAL_FLASH_PARTITION_LABEL,
-                                                    &mount_config,
-                                                    &internal_flash_wl_handle);
-  if (ret != ESP_OK) {
-    internal_flash_wl_handle = WL_INVALID_HANDLE;
-    ESP_LOGE(kTag, "Internal flash FS mount failed: %s (heap=%u largest=%u)",
-             esp_err_to_name(ret),
-             static_cast<unsigned>(esp_get_free_heap_size()),
-             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
-    return false;
-  }
-  internal_flash_fs_mounted = true;
-  ESP_LOGI(kTag, "Internal flash FS mounted at %s", INTERNAL_FLASH_MOUNT_POINT);
-  return true;
-}
-
-static void UnmountInternalFlashFs() {
-  if (!internal_flash_fs_mounted || internal_flash_wl_handle == WL_INVALID_HANDLE) {
-    return;
-  }
-  esp_err_t ret = esp_vfs_fat_spiflash_unmount_rw_wl(INTERNAL_FLASH_MOUNT_POINT, internal_flash_wl_handle);
-  if (ret != ESP_OK) {
-    ESP_LOGW(kTag, "Internal flash FS unmount failed: %s", esp_err_to_name(ret));
-    return;
-  }
-  internal_flash_wl_handle = WL_INVALID_HANDLE;
-  internal_flash_fs_mounted = false;
-  ESP_LOGI(kTag, "Internal flash FS unmounted");
-}
-
-const char* ActiveStorageMountPoint() {
-  return app_config.storage_backend == StorageBackend::kInternalFlash
-             ? INTERNAL_FLASH_MOUNT_POINT
-             : CONFIG_MOUNT_POINT;
-}
-
-std::string ActiveToUploadDir() {
-  return std::string(ActiveStorageMountPoint()) + "/to_upload";
-}
-
-std::string ActiveUploadedDir() {
-  return std::string(ActiveStorageMountPoint()) + "/uploaded";
-}
-
-bool MountActiveStorage() {
-  if (app_config.storage_backend == StorageBackend::kInternalFlash) {
-    return MountInternalFlashFs();
-  }
-  return MountLogSd();
-}
-
-static bool ValidateStorageFilename(const std::string& name) {
-  if (name.empty() || name.size() > 255) return false;
-  for (char c : name) {
-    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.')) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool BuildActiveStorageFilenamePath(const std::string& name, std::string* out_full) {
-  if (!ValidateStorageFilename(name)) return false;
-  if (out_full) {
-    *out_full = std::string(ActiveStorageMountPoint()) + "/" + name;
-  }
-  return true;
-}
-
-bool BuildActiveStorageRelativePath(const std::string& rel_path_raw, std::string* out_full) {
-  if (rel_path_raw.empty() || rel_path_raw.size() > 256) return false;
-  std::string rel_path = rel_path_raw;
-  if (!rel_path.empty() && rel_path[0] == '/') rel_path.erase(rel_path.begin());
-  if (rel_path.empty() || rel_path.size() > 256) return false;
-  if (rel_path.find("..") != std::string::npos) return false;
-  if (rel_path.find("//") != std::string::npos) return false;
-  for (char c : rel_path) {
-    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '/' || c == ' ' ||
-          c == '(' || c == ')')) {
-      return false;
-    }
-  }
-  if (out_full) {
-    *out_full = std::string(ActiveStorageMountPoint()) + "/" + rel_path;
-  }
   return true;
 }
 
@@ -3116,8 +2969,8 @@ esp_err_t StorageRemountHandler(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   std::string resp = std::string("{\"status\":\"storage_remounted\",\"backend\":\"") +
                      StorageBackendToString(app_config.storage_backend) +
-                     "\",\"sdMounted\":" + (log_sd_mounted ? "true" : "false") +
-                     ",\"internalFlashMounted\":" + (internal_flash_fs_mounted ? "true" : "false") + "}";
+                     "\",\"sdMounted\":" + (IsLogSdMounted() ? "true" : "false") +
+                     ",\"internalFlashMounted\":" + (IsInternalFlashMounted() ? "true" : "false") + "}";
   return httpd_resp_sendstr(req, resp.c_str());
 }
 

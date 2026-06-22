@@ -1289,24 +1289,6 @@ LTC2440 adc1(ADC_CS1, ADC_MISO, false);
 LTC2440 adc2(ADC_CS2, ADC_MISO);
 LTC2440 adc3(ADC_CS3, ADC_MISO);
 
-bool EnsureDirExists(const char* path) {
-  if (!path) return false;
-  struct stat st {};
-  if (stat(path, &st) == 0) {
-    return S_ISDIR(st.st_mode);
-  }
-  if (mkdir(path, 0775) == 0) {
-    return true;
-  }
-  ESP_LOGE(kTag, "mkdir %s failed: %d", path, errno);
-  return false;
-}
-
-bool EnsureUploadDirs() {
-  const std::string to_upload = ActiveToUploadDir();
-  const std::string uploaded = ActiveUploadedDir();
-  return EnsureDirExists(to_upload.c_str()) && EnsureDirExists(uploaded.c_str());
-}
 
 static std::string Basename(const std::string& path) {
   const size_t pos = path.find_last_of('/');
@@ -1777,7 +1759,7 @@ static void GpsLogTask(void*) {
     if (IsGnssLogRotationDue(esp_timer_get_time())) {
       SdLockGuard guard(pdMS_TO_TICKS(1000));
       if (guard.locked() && MountActiveStorage()) {
-        const bool already_mounted = log_sd_mounted;
+        const bool already_mounted = IsLogSdMounted();
         (void)RotateStaleGnssLogLocked(esp_timer_get_time());
         if (app_config.storage_backend == StorageBackend::kSd && !already_mounted && !log_file) {
           UnmountLogSd();
@@ -1834,7 +1816,7 @@ static void GpsLogTask(void*) {
         continue;
       }
 
-      const bool already_mounted = log_sd_mounted;
+      const bool already_mounted = IsLogSdMounted();
       if (MountActiveStorage()) {
         (void)WriteGnssFrameLocked(frame);
         if (app_config.storage_backend == StorageBackend::kSd && !already_mounted && !log_file) {
@@ -2436,7 +2418,7 @@ static void UpdateSdStats() {
   if (!guard.locked()) {
     return;
   }
-  const bool already_mounted = log_sd_mounted;
+  const bool already_mounted = IsLogSdMounted();
   if (!already_mounted && !MountLogSd()) {
     UpdateState([](SharedState& s) {
       s.sd_total_bytes = 0;
@@ -3573,7 +3555,7 @@ extern "C" void app_main(void) {
   esp_task_wdt_deinit();
 
   state_mutex = xSemaphoreCreateMutex();
-  sd_mutex = xSemaphoreCreateMutex();
+  StorageManagerInit();
 
   LoadConfigFromSdCard(&app_config);
 
