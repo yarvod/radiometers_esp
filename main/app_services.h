@@ -114,9 +114,8 @@ bool EnsureDirExists(const char* path);
 bool EnsureUploadDirs();
 bool StartUploadedClearTask(int max_files, std::string* out_status);
 bool QueueCurrentLogForUpload();
-bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
-bool SyncConfigToInternalFlash();
-bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
+// Config load/save/parse — declarations live in config_loader.h
+#include "config_loader.h"
 bool OpenLogFileWithPostfix(const std::string& postfix);
 
 bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode);

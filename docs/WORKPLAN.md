@@ -2,114 +2,193 @@
 
 ---
 
-## 1. WN90LP weather station integration
+## Firmware refactoring — DI / module split
 
-### Done
-- [x] `main/wn90lp.h/.cpp` — Modbus RTU over RS485 (UART1, 9600 8N1, GPIO 11/12/13), bulk read 9 registers, CRC16, graceful absent-station handling
-- [x] Hourly rotation: `{ActiveStorageMountPoint()}/meteo_YYYYMMDD_HH.txt` → `to_upload/` on hour boundary
-- [x] Storage-backend agnostic: uses `ActiveStorageMountPoint()`; safe on SD↔flash switch
-- [x] Poll interval from `app_config.meteo_poll_interval_s` (default 60 s, min 10, configurable in `config.txt`)
-- [x] `meteo_enabled` flag in `AppConfig` / `config.txt` — set `false` to skip UART init entirely
-- [x] `SharedState.meteo` — last reading available to all tasks
-- [x] `main/app_main.cpp` — `IsMeteoLogFilename`, `MoveRootMeteoFilesToUploadLocked`, startup sweep, `UploadFileToMinio` routes `meteo_*.txt` → S3 prefix `meteo/`
+**Goal:** `app_main.cpp` (4230 lines) → entry point ~300 lines. Each domain becomes an isolated `.h`/`.cpp` module. `AppContext` is the DI container passed explicitly to every FreeRTOS task. No global `extern` access to config/state outside of designated accessors.
 
-### TODO — Firmware
-- [ ] Wire in `app_main.cpp` (after hardware UART init): `if (app_config.meteo_enabled) { meteo_client.initUart(); meteo_client.startTask(); }`
-- [ ] `/data` HTTP response (`http_handlers.cpp`): add meteo fields from SharedState — no new endpoints, just extend existing JSON: `meteoOnline`, `meteoTempC`, `meteoHumidityPct`, `meteoWindSpeedMs`, `meteoWindDirDeg`, `meteoGustSpeedMs`, `meteoPressureHpa`, `meteoLightLux`, `meteoUvi`, `meteoRainfallMm`, `meteoTimestampMs`
-- [ ] MQTT `state` publish (`mqtt_bridge.cpp`): include meteo snapshot in `{deviceId}/state` JSON — same fields, NOT a separate topic
+### Acceptance criteria (every phase)
+1. `rtk idf.py build` exits 0 — zero errors, zero new warnings
+2. Binary size ≤ previous phase + 2 KB (or justified in commit message)
+3. All `extern` references to moved symbols are gone from `app_main.cpp`
+4. No new file-scope `static` state added to `app_main.cpp`
+5. Commit message records: lines removed from `app_main.cpp`, binary size delta
 
-### TODO — Backend
-- [ ] `worker.py` `handle_state()`: detect `meteoOnline: true` → `devices.upsert_meteo_config(device_id, has_meteo=True)` — same pattern as GPS via `extract_gps_config`
-- [ ] DB: `has_meteo: bool` field on `Device` model; migration `000N_meteo_config.py`
-- [ ] `repositories/interfaces.py` + `sqlalchemy.py`: `upsert_meteo_config(device_id, has_meteo)`
-- [ ] API schema: expose `has_meteo` in `DeviceResponse`
-- [ ] **Measurements — DEFERRED**: separate `MeteoReading` table linked to `Device`; don't add to existing `Measurement`/ADC stream (different timescales, different semantics)
-
-### TODO — Frontend
-- [ ] `stores/devices.ts`: parse meteo fields from incoming MQTT `state` messages
-- [ ] `pages/[deviceId].vue`: "Meteo station" card — visible only when `device.has_meteo == true`, shows last known values reactively from MQTT store
+### Phase 0 — Prerequisites ✅ DONE
+- [x] Remove `inline constexpr char TAG[] = "APP"` from `app_state.h` (was leaking into every TU)
+- [x] `app_main.cpp`: add local `static constexpr char kTag[] = "APP"`, replace all 153 `TAG` → `kTag`
+- [x] `http_handlers.cpp`: local `static constexpr char kTag[] = "HTTP"`, replace 48 `TAG` → `kTag`
+- [x] `wn90lp.cpp`: uses `kTag` from day one — no collision
 
 ---
 
-## 2. Firmware refactoring — DI and module split
+### Phase 1 — `AppContext` skeleton + `ConfigLoader` 🔜 NEXT
+**Risk: LOW** — pure parsing logic, no task changes, no mutex touching.
 
-**Goal:** split `app_main.cpp` (4230 lines, 140 KB) into focused modules. Each module is a `.h`/`.cpp` pair with a class that owns its state and receives its dependencies explicitly. Introduce `AppContext` as the DI container passed to all FreeRTOS tasks instead of globals.
+Files to create: `main/app_context.h`, `main/config_loader.h`, `main/config_loader.cpp`
 
-### Current problems (from code audit)
-- `app_main.cpp` contains 8 unrelated domains: config loading, networking, storage, upload pipeline, data logging, GPS, sensor hub, motion/thermal — all as `static` free functions calling each other
-- All tasks receive `nullptr` as `void*` arg and find deps via `extern` globals (`app_config`, `log_file`, `sd_mutex`, etc.)
-- `inline constexpr char TAG[] = "APP"` in `app_state.h` leaks into every TU (already caused compile error in `wn90lp.cpp`)
-- `SdLockGuard` grabs global `sd_mutex` directly — no injection point
-- Task-local state (e.g. `current_gnss_log_path`, `gps_reconfigure_requested`) is file-scope in `app_main.cpp`
-
-### Target: `AppContext` (DI container)
-
+**`AppContext`** — skeleton only, grows in later phases:
 ```cpp
-// main/app_context.h
 struct AppContext {
-  AppConfig&          config;
-  PidConfig&          pid_config;
-  SharedState&        state;
-  SemaphoreHandle_t   state_mutex;
-
-  StorageManager      storage;      // owns sd_mutex, mount/path logic
-  NetworkManager      network;      // owns wifi/eth/sntp
-  UploadPipeline      upload;       // owns minio upload + SigV4
-  DataLogger          data_logger;  // owns log_file, current_log_path
-  ConfigLoader        config_loader;
-
-  // Optional — nullptr when disabled/absent
-  GpsModule*          gps    = nullptr;
-  SensorHub*          sensors = nullptr;
-  MotionController*   motion  = nullptr;
-  Wn90lpClient*       meteo   = nullptr;
+  AppConfig&        config;
+  PidConfig&        pid_config;
+  // modules added here in subsequent phases
 };
 ```
 
-All FreeRTOS tasks get `AppContext*` as `void*` arg:
-```cpp
-// Before: xTaskCreate(..., nullptr, ...)  → task uses globals
-// After:  xTaskCreate(..., &ctx, ...)     → task uses ctx.storage, ctx.config, etc.
-```
+**`ConfigLoader`** extracts from `app_main.cpp`:
+- `ParseConfigText()` (~371 lines of key=value parsing)
+- `ParseConfigFile()`, `LoadConfigFromSdCard()`, `LoadConfigFromInternalFlash()`
+- `SaveConfigToSdCard()`, `SaveConfigToInternalFlash()`, `SyncConfigToInternalFlash()`
 
-`SdLockGuard` takes `StorageManager&` instead of grabbing global `sd_mutex`:
-```cpp
-SdLockGuard guard(ctx.storage);   // was: SdLockGuard guard;
-```
+`app_services.h` keeps the same declarations → `ConfigLoader` implements them → zero changes to callers.
 
-### 8 modules to extract (bottom-up migration order)
+**Test / acceptance:** build green, `app_main.cpp` loses ~550 lines, size delta ≤ +1 KB (strings move, no new code).
 
-| Order | Module | Key classes/files | Removes from app_main | Notes |
-|---|---|---|---|---|
-| 1 | `storage_manager` | `StorageManager` owns `sd_mutex`, `sd_card`, mount/unmount, path helpers, `SdLockGuard` impl | ~250 lines | Foundation for everything else; `SdLockGuard` API changes |
-| 2 | `config_loader` | `ConfigLoader` — `ParseConfigText` (371 lines!), `ParseConfigFile`, load/save to SD/flash | ~550 lines | No external deps beyond `AppConfig`/`PidConfig` structs |
-| 3 | `network_manager` | `NetworkManager` — wifi/eth init, event handlers, SNTP, `EnsureTimeSynced`, all `wifi_*` file-scope state, 6 fallback tasks | ~700 lines | Largest single domain |
-| 4 | `upload_pipeline` | `UploadPipeline` — `UploadFileToMinio` (256 lines), AWS SigV4, `UploadPendingOnce`, file-type routing | ~450 lines | Depends on `StorageManager` + `AppConfig` |
-| 5 | `data_logger` | `DataLogger` — `log_file`, `current_log_path`, `OpenLogFileWithPostfix`, `FlushLogFile`, `StopLogging`, CSV row write | ~250 lines | Depends on `StorageManager` |
-| 6 | `sensor_hub` | `SensorHub` — LTC2440×3, INA219, 1-Wire, fan tach ISR, `InitSpiBus`, `ReadAllAdc`, adc/ina/temp/fan tasks | ~250 lines | Hardware-only, minimal external deps |
-| 7 | `motion_controller` | `MotionController` — stepper, heater/fan PWM, calibration, `StepperTask`, `PidTask`; `control_actions.cpp` becomes thin delegator | ~400 lines | Already partly separate in `control_actions.cpp` |
-| 8 | `gps_module` | `GpsModule` wraps `GpsUnicoreClient`; owns gnss log task, rotation, `current_gnss_log_path`; `app_services.h` GPS free functions become methods | ~350 lines | Most complex; depends on storage + upload + time |
-| | **Total** | | **~3200 / 4230 (76%)** | `app_main.cpp` shrinks to ~1000 lines |
-
-### Migration rules (apply to each module)
-1. Extract class into new `.h`/`.cpp`, add to `CMakeLists.txt`
-2. Replace `extern` global accesses with constructor params or `init(deps...)` call
-3. File-scope `static` state becomes `private` member
-4. Replace `nullptr` task arg with `AppContext*` for that task
-5. Each module defines its own `static constexpr char kTag[]` — never `TAG`
-6. Build must stay green after each module extraction (incremental, not big-bang)
-
-### Fix `TAG` in `app_state.h` (prerequisite — do first)
-Remove `inline constexpr char TAG[] = "APP"` from `app_state.h` (line 28). Add `static constexpr char kTag[] = "APP"` at the top of `app_main.cpp`. Every other `.cpp` already defines its own tag or will when modularised.
-
-### Expected impact on binary size
-Modular split with `-ffunction-sections` + LTO means unused methods are stripped per-module. Current pain: `upload_pipeline` and `network_manager` pull in large symbol sets even when some paths are never taken. After split, unreachable code (e.g. fallback network tasks on hardware without WiFi) is more aggressively eliminated. Conservatively: 3–8 KB reduction from dead-code elimination alone.
-
-### Migration order rationale
-Start with `storage_manager` (step 1) because `SdLockGuard` is called from nearly every other module — fixing its API unblocks everything. Then `config_loader` (step 2) because it has zero deps and its 550 lines are pure parsing logic. `network_manager` (step 3) last-but-one in the hard deps because wifi/eth event handlers use `esp_event` and are tricky to decouple. `gps_module` (step 8) last because it calls storage + upload + time and its `GpsLogTask` is the most intertwined.
+**Commit:** `refactor(fw): extract ConfigLoader, add AppContext skeleton`
 
 ---
 
-## 3. Axis controls (completed in prior releases)
-- [x] Auto / min / max axis settings for all chart series
+### Phase 2 — `StorageManager`
+**Risk: MEDIUM** — `SdLockGuard` API changes touch every file that uses SD.
+
+Files to create: `main/storage_manager.h`, `main/storage_manager.cpp`
+
+`StorageManager` owns: `sd_mutex`, `sd_card`, `log_sd_card`, `log_sd_mounted`, all mount/unmount/path functions.
+
+Key API change — `SdLockGuard` constructor:
+```cpp
+// Before (grabs global sd_mutex):
+SdLockGuard guard;
+// After (takes StorageManager ref):
+SdLockGuard guard(ctx.storage);
+```
+Mechanical replacement at all ~25 call sites. `AppContext` grows `StorageManager storage`.
+
+**Test / acceptance:** build green, `app_main.cpp` loses ~250 lines, `app_state.cpp` loses `SdLockGuard` impl.
+
+**Commit:** `refactor(fw): extract StorageManager, SdLockGuard takes explicit storage ref`
+
+---
+
+### Phase 3 — `NetworkManager`
+**Risk: MEDIUM** — large, many event handlers, file-scope state.
+
+Files to create: `main/network_manager.h`, `main/network_manager.cpp`
+
+Owns: wifi/eth init, event handlers, SNTP, `EnsureTimeSynced`, all `wifi_*` + `eth_*` file-scope vars, `WifiMonitorTask`, `WifiRecoverTask`, `NetworkMonitorTask`.
+
+`AppContext` grows `NetworkManager network`. Tasks that need network status receive `AppContext*`.
+
+**Test / acceptance:** build green, `app_main.cpp` loses ~700 lines.
+
+**Commit:** `refactor(fw): extract NetworkManager`
+
+---
+
+### Phase 4 — `UploadPipeline`
+**Risk: LOW-MEDIUM** — self-contained, depends on StorageManager + AppConfig.
+
+Files to create: `main/upload_pipeline.h`, `main/upload_pipeline.cpp`
+
+Owns: `UploadFileToMinio` (256 lines + SigV4 helpers), `UploadPendingOnce`, file-type detection (`IsDataLogFilename`, `IsGpsLogFilename`, `IsMeteoLogFilename`), `MoveRootXxxFilesToUploadLocked` helpers.
+
+`UploadTask` shrinks to ~10 lines calling `ctx.upload.runOnce()`.
+
+**Test / acceptance:** build green, `app_main.cpp` loses ~450 lines.
+
+**Commit:** `refactor(fw): extract UploadPipeline`
+
+---
+
+### Phase 5 — `DataLogger`
+**Risk: LOW** — owns clearly-bounded state.
+
+Files to create: `main/data_logger.h`, `main/data_logger.cpp`
+
+Owns: `log_file`, `current_log_path`, `log_config`, `OpenLogFileWithPostfix`, `FlushLogFile`, `StartLoggingToFile`, `StopLogging`, `BuildLogFilename`, `QueueCurrentLogForUpload`, log CSV row-write path.
+
+`AppContext` grows `DataLogger data_logger`. `AdcTask` receives `AppContext*`, calls `ctx.data_logger.writeRow(...)`.
+
+**Test / acceptance:** build green, `app_main.cpp` loses ~250 lines, `log_file` is no longer `extern`.
+
+**Commit:** `refactor(fw): extract DataLogger`
+
+---
+
+### Phase 6 — `SensorHub`
+**Risk: LOW** — hardware init + tasks, minimal external deps.
+
+Files to create: `main/sensor_hub.h`, `main/sensor_hub.cpp`
+
+Owns: LTC2440 ×3 instances, INA219 (`i2c_bus`, `ina219_dev`), 1-Wire, fan tach ISR, `InitSpiBus`, `ReadAllAdc`, `InitIna219`, `ReadIna219`, `BuildTempMeta`. Tasks (`AdcTask`, `Ina219Task`, `TempTask`, `FanTachTask`) become `SensorHub` methods.
+
+`AppContext` grows `SensorHub* sensors`. Tasks receive `AppContext*`.
+
+**Test / acceptance:** build green, `app_main.cpp` loses ~250 lines.
+
+**Commit:** `refactor(fw): extract SensorHub`
+
+---
+
+### Phase 7 — `MotionController`
+**Risk: LOW** — `control_actions.cpp` already partially separate.
+
+Files to create: `main/motion_controller.h`, `main/motion_controller.cpp`
+
+Owns stepper, heater/fan PWM, calibration. `control_actions.cpp` becomes thin delegator to `MotionController`. `StepperTask`, `PidTask`, `CalibrationTask`, `FindZeroTask` become methods.
+
+`AppContext` grows `MotionController* motion`.
+
+**Test / acceptance:** build green, `app_main.cpp` loses ~400 lines, `control_actions.cpp` shrinks to delegators.
+
+**Commit:** `refactor(fw): extract MotionController`
+
+---
+
+### Phase 8 — `GpsModule`
+**Risk: HIGH** — most complex, depends on storage + upload + time.
+
+Files to create: `main/gps_module.h`, `main/gps_module.cpp`
+
+Wraps `GpsUnicoreClient`. Owns `GpsLogTask` logic, `current_gnss_log_path`, `gps_reconfigure_requested`, `RotateStaleGnssLogLocked`, `MoveRootGpsFilesToUploadLocked`. Free functions in `app_services.h` (`GetGpsCurrentMode`, `GetGpsReceiverStatus`, `RequestGpsPositionOnce`) become `GpsModule` methods; `app_services.h` declarations become thin wrappers for backward compat or are removed.
+
+`AppContext` grows `GpsModule* gps`.
+
+**Test / acceptance:** build green, `app_main.cpp` loses ~350 lines, `app_services.h` GPS section removed.
+
+**Commit:** `refactor(fw): extract GpsModule`
+
+---
+
+### Phase 9 — Final `app_main.cpp` cleanup
+After all 8 modules extracted:
+- `app_main()` is ~300 lines: GPIO init, `AppContext` construction, task spawn table
+- `app_services.h` shrinks from 130 → ~20 lines (time utils, `IsoUtcNow`, `FormatUtcIso`)
+- Wire `Wn90lpClient` into `AppContext` as `meteo` member
+- Remove all `extern` that no longer need to be extern
+- Enable `CONFIG_COMPILER_OPTIMIZATION_SIZE` for non-critical TUs if binary is still tight
+
+**Commit:** `refactor(fw): finalize app_main as entry point, wire meteo into AppContext`
+
+---
+
+## WN90LP weather station integration
+
+### Done
+- [x] `main/wn90lp.h/.cpp` — Modbus RTU, bulk read, CRC16, graceful absent-station, hourly rotation, storage-agnostic
+- [x] `app_config.meteo_poll_interval_s` / `meteo_enabled` — runtime config from `config.txt`
+- [x] `SharedState.meteo`, S3 prefix `meteo/`, `MoveRootMeteoFilesToUploadLocked`
+
+### TODO (after Phase 9 — wired into AppContext)
+- [ ] `/data` HTTP response: add meteo fields from SharedState (no new endpoints)
+- [ ] MQTT `state` publish: include meteo snapshot in `{deviceId}/state` JSON
+- [ ] Backend: detect `meteoOnline` in state → `upsert_meteo_config`, `has_meteo: bool` on Device, migration
+- [ ] Frontend: "Meteo station" card on device detail (visible when `has_meteo == true`)
+- [ ] **Measurements — DEFERRED**: standalone `MeteoReading` table; don't mix with ADC stream
+
+---
+
+## Completed
+- [x] Axis controls: auto / min / max for all chart series
 - [x] Temperature outlier filter configuration
+- [x] Atmosphere coefficient retrieval and management
