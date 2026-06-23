@@ -66,6 +66,10 @@ const char* UtcTimeSourceName(UtcTimeSource source);
 uint64_t UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot);
 std::string FormatUtcIso(const UtcTimeSnapshot& snapshot);
 bool FlushLogFile();
+std::string Basename(const std::string& path);
+bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::string* out_new_path);
+bool IsGpsLogFilename(const char* name);
+bool IsMeteoLogFilename(const char* name);
 inline std::string SanitizeId(const std::string& raw) {
   std::string out;
   out.reserve(raw.size());
@@ -98,15 +102,13 @@ bool IsGpsAntennaShort();
 
 #include "network_manager.h"
 
-bool StartUploadedClearTask(int max_files, std::string* out_status);
-bool QueueCurrentLogForUpload();
+#include "upload_pipeline.h"
 // Config load/save/parse — declarations live in config_loader.h
 #include "config_loader.h"
 bool OpenLogFileWithPostfix(const std::string& postfix);
 
 bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode);
 void StopLogging();
-void UploadTask(void*);
 
 std::string GetGpsCurrentMode();
 bool GetGpsCurrentModeText(char* out, size_t out_len);
