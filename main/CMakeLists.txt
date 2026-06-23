@@ -15,6 +15,7 @@ idf_component_register(
         "storage_manager.cpp"
         "network_manager.cpp"
         "upload_pipeline.cpp"
+        "data_logger.cpp"
         "gps_unicore.cpp"
         "wn90lp.cpp"
 

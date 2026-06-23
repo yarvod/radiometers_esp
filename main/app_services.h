@@ -65,7 +65,8 @@ UtcTimeSnapshot GetBestUtcTimeForGps();
 const char* UtcTimeSourceName(UtcTimeSource source);
 uint64_t UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot);
 std::string FormatUtcIso(const UtcTimeSnapshot& snapshot);
-bool FlushLogFile();
+bool WaitForTempSensors(int timeout_ms);
+#include "data_logger.h"
 std::string Basename(const std::string& path);
 bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::string* out_new_path);
 bool IsGpsLogFilename(const char* name);
@@ -105,7 +106,6 @@ bool IsGpsAntennaShort();
 #include "upload_pipeline.h"
 // Config load/save/parse — declarations live in config_loader.h
 #include "config_loader.h"
-bool OpenLogFileWithPostfix(const std::string& postfix);
 
 bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode);
 void StopLogging();
