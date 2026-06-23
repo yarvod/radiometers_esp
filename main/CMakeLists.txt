@@ -13,6 +13,7 @@ idf_component_register(
         "sd_maintenance.cpp"
         "config_loader.cpp"
         "storage_manager.cpp"
+        "network_manager.cpp"
         "gps_unicore.cpp"
         "wn90lp.cpp"
 
@@ -35,6 +36,7 @@ idf_component_register(
         spi_flash
         wear_levelling
         onewire_bus
+        efuse
     mqtt
     INCLUDE_DIRS "."
     EMBED_TXTFILES

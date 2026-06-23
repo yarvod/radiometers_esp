@@ -96,10 +96,7 @@ bool CycleExternalPower(uint32_t off_ms);
 int GetGpsAntennaShortRaw();
 bool IsGpsAntennaShort();
 
-void InitWifi(const std::string& ssid, const std::string& password, bool ap_mode);
-void ApplyNetworkConfig();
-
-bool EnsureTimeSynced(int timeout_ms);
+#include "network_manager.h"
 
 bool StartUploadedClearTask(int max_files, std::string* out_status);
 bool QueueCurrentLogForUpload();
