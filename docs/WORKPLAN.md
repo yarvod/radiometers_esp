@@ -110,11 +110,11 @@
 
 ---
 
-### Phase 9 — Final cleanup
-- [ ] Wire `Wn90lpClient` into remaining code (remove any remaining global externs)
-- [ ] Review remaining `app_main.cpp` externs — eliminate or wrap
-- [ ] `app_main.cpp` target: ≤ 500 lines (pure wiring / init)
-- [ ] Build green, commit `refactor(fw): final cleanup — app_main.cpp wiring only`
+### Phase 9 — Final cleanup ✅ DONE
+- [x] Wire `Wn90lpClient`: `static Wn90lpClient s_meteo_client`; `initUart()` + `startTask()` gated on `meteo_enabled && METEO_RS485_TX != GPIO_NUM_NC`
+- [x] Prune ~25 unused `#include` directives from `app_main.cpp`; remove dead `#if 0` block
+- [x] Build green: binary `0x16dc60` (+5 KB for Wn90lp UART linkage), zero warnings
+- [x] **app_main.cpp: 437 lines ✅ (target: ≤500)**
 
 ---
 
