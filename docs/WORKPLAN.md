@@ -99,17 +99,14 @@
 
 ---
 
-### Phase 8 — GpsModule
-**Risk: MEDIUM** — depends on storage + upload + time.
-
-Files to create: `main/gps_module.h`, `main/gps_module.cpp`
-
-- [ ] Create `main/gps_module.h` — `StartGpsClient`, `GpsLogTask`, `GetGpsCurrentMode`, `GetGpsReceiverStatus`, `RequestGpsPositionOnce`, `RequestGpsReconfigure`
-- [ ] Create `main/gps_module.cpp` — wrap `GpsUnicoreClient`, own `gps_client`, `gps_log_task`, `current_gnss_log_path`, `gps_reconfigure_requested`, GNSS log rotation (~350 lines)
-- [ ] Remove extracted code from `app_main.cpp`; remove fwd decls from `app_services.h`
-- [ ] Replace `GpsLogTask` `xTaskCreatePinnedToCore` with `GpsModuleStartTask()`
-- [ ] Update `CMakeLists.txt`
-- [ ] Build green, commit `refactor(fw): extract GpsModule`
+### Phase 8 — GpsModule ✅ DONE
+- [x] Move `UtcTimeSnapshot`, `UtcTimeSource`, `GpsPositionSnapshot`, `GpsReceiverStatus`, `ClearUploadedFilesResult` from `app_services.h` to `app_state.h` (breaks potential circular include)
+- [x] Create `main/gps_module.h` — `StartGpsModule`, `StartGpsLogTask`, GPS query functions, UTC time utilities, `IsGpsLogFilename`, `IsMeteoLogFilename`
+- [x] Create `main/gps_module.cpp` — all UTC time math (DaysFromCivil, GpsDateTimeToUnix, MaybeDisciplineSystemTimeFromGps), `GetBestUtcTimeForData/Gps`, `UtcTimeSourceName`, `UtcTimeToUnixMs`, GPS receiver control, GNSS log helpers, `GpsLogTask` (~430 lines)
+- [x] Remove 591 lines from `app_main.cpp` (1075 → 484); replace `StartGpsClient+GpsLogTask create` with `StartGpsModule()` + `StartGpsLogTask(mode)`
+- [x] Refactor `app_services.h` to only include domain headers; clean up struct definitions
+- [x] Add `gps_module.cpp` to `CMakeLists.txt`
+- [x] Build green: binary `0x16c8d0` (-144 bytes vs Phase 7), zero warnings; **app_main.cpp at 483 lines ✅**
 
 ---
 
