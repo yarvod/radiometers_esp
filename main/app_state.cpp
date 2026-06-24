@@ -24,7 +24,7 @@ AppConfig app_config{
     1500,               // stepper_speed_us
     0,                  // stepper_home_offset_steps
     0,                  // motor_hall_active_level
-    "dev2",             // device_id
+    "dev3",             // device_id
     "",                 // minio_endpoint
     "",                 // minio_access_key
     "",                 // minio_secret_key
