@@ -1,98 +1,46 @@
-#include <algorithm>
-#include <cctype>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
-#include <functional>
-#include <cmath>
-#include <array>
+#include <cstring>
 #include <string>
-#include <vector>
-#include <set>
-#include <ctime>
-#include <cstdint>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <cerrno>
-#include <dirent.h>
-#include <memory>
-#include "isrgrootx1.pem.h"
 
-#include "cJSON.h"
-#include "app_state.h"
 #include "app_services.h"
+#include "app_state.h"
 #include "app_utils.h"
-#include "web_ui.h"
-#include "http_handlers.h"
 #include "driver/gpio.h"
-#include "driver/spi_common.h"
-#include "driver/spi_master.h"
-#include "driver/ledc.h"
-#include "esp_check.h"
-#include "esp_event.h"
-#include "esp_eth.h"
-#include "esp_eth_mac.h"
-#include "esp_eth_netif_glue.h"
-#include "esp_eth_phy.h"
-#include "esp_http_server.h"
-#include "esp_http_client.h"
-#include "esp_log.h"
-#include "esp_heap_caps.h"
-#include "esp_mac.h"
-#include "esp_netif.h"
-#if CONFIG_SPIRAM
-#include "esp_psram.h"
-#endif
-#include "esp_system.h"
-#include "esp_timer.h"
-#include "esp_task_wdt.h"
-#include "driver/i2c_master.h"
-#include "esp_wifi.h"
-#include "esp_sntp.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
-#include "freertos/task.h"
-#include "freertos/timers.h"
-#include "freertos/semphr.h"
-#include "ltc2440.h"
-#include "nvs_flash.h"
-#include "mbedtls/md.h"
-#include "mbedtls/sha256.h"
-#include "mqtt_bridge.h"
 #include "error_manager.h"
-#include "sd_maintenance.h"
-#include "gps_unicore.h"
-#include "nvs.h"
-#include "esp_partition.h"
-#include "sdmmc_cmd.h"
+#include "esp_check.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
+#include "esp_timer.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "gps_module.h"
+#include "http_handlers.h"
+#include "hw_pins.h"
+#include "motion_controller.h"
+#include "mqtt_bridge.h"
+#include "network_manager.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "onewire_m1820.h"
+#include "sd_maintenance.h"
+#include "sdmmc_cmd.h"
+#include "sdkconfig.h"
+#include "sensor_hub.h"
 #include "tinyusb.h"
 #include "tusb.h"
 #include "class/msc/msc.h"
 #include "tusb_msc_storage.h"
-#include "esp_rom_sys.h"
-#include "onewire_m1820.h"
-#include "sdkconfig.h"
-#include <dirent.h>
-#include <sys/stat.h>
-
-#include "hw_pins.h"
-#include "config_loader.h"
-#include "gps_module.h"
-#include "motion_controller.h"
-#include "network_manager.h"
-#include "sensor_hub.h"
 #include "upload_pipeline.h"
+#include "web_ui.h"
+#include "wn90lp.h"
 
 static constexpr char kTag[] = "APP";
 
-#if 0  // legacy addresses kept for reference
-[[maybe_unused]] constexpr uint64_t TEMP_ADDR_RAD = 0x77062223A096AD28ULL;
-[[maybe_unused]] constexpr uint64_t TEMP_ADDR_LOAD = 0xE80000105FF4E228ULL;
-#endif
-
-
 constexpr char MSC_BASE_PATH[] = "/usb_msc";
+static Wn90lpClient s_meteo_client;
 
 
 static uint64_t GpioMask(gpio_num_t pin) {
@@ -416,6 +364,12 @@ extern "C" void app_main(void) {
       s.stepper_home_status = "idle";
     }
   });
+  if (app_config.meteo_enabled && METEO_RS485_TX != GPIO_NUM_NC) {
+    esp_err_t wn_err = s_meteo_client.initUart();
+    if (wn_err == ESP_OK) wn_err = s_meteo_client.startTask();
+    if (wn_err != ESP_OK)
+      ESP_LOGW(kTag, "WN90LP init failed: %s", esp_err_to_name(wn_err));
+  }
   const esp_err_t gps_err = StartGpsModule();
   ApplyNetworkConfig();
   StartSntp();
