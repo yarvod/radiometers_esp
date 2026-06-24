@@ -83,32 +83,13 @@ inline std::string SanitizeId(const std::string& raw) {
   return out;
 }
 
-void CalibrateZero();
-void CalibrationTask(void*);
-
-void EnableStepper();
-void DisableStepper();
-void StopStepper();
-void StartStepperMove(int steps, bool forward, int speed_us);
-bool IsHallTriggered();
-void FindZeroTask(void*);
-bool StartFindZeroTask(std::string* out_message);
-
-void HeaterSetPowerPercent(float percent);
-void FanSetPowerPercent(float percent);
-void SetExternalPower(bool enabled);
-bool CycleExternalPower(uint32_t off_ms);
-int GetGpsAntennaShortRaw();
-bool IsGpsAntennaShort();
+#include "motion_controller.h"
 
 #include "network_manager.h"
 
 #include "upload_pipeline.h"
 // Config load/save/parse — declarations live in config_loader.h
 #include "config_loader.h"
-
-bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode);
-void StopLogging();
 
 std::string GetGpsCurrentMode();
 bool GetGpsCurrentModeText(char* out, size_t out_len);

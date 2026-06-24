@@ -78,6 +78,7 @@
 
 #include "hw_pins.h"
 #include "config_loader.h"
+#include "motion_controller.h"
 #include "network_manager.h"
 #include "sensor_hub.h"
 #include "upload_pipeline.h"
@@ -93,8 +94,6 @@ static constexpr char kTag[] = "APP";
 constexpr char MSC_BASE_PATH[] = "/usb_msc";
 static GpsUnicoreClient gps_client;
 static TaskHandle_t gps_log_task = nullptr;
-static TaskHandle_t external_power_cycle_task = nullptr;
-constexpr uint32_t kExternalPowerCycleStackBytes = 6144;
 static uint64_t gps_log_file_start_us = 0;
 static constexpr uint64_t kGnssLogRotateUs = 3'600'000'000ULL;
 static std::string current_gnss_log_path;
@@ -110,46 +109,6 @@ static uint64_t GpioMask(gpio_num_t pin) {
 }
 
 
-bool IsHallTriggered() {
-  return gpio_get_level(MT_HALL_SEN) == app_config.motor_hall_active_level;
-}
-
-void SetExternalPower(bool enabled) {
-  gpio_set_level(EXT_PWR_ON, enabled ? 1 : 0);
-  UpdateState([&](SharedState& s) { s.external_power_on = enabled; });
-  ESP_LOGI(kTag, "External module power %s", enabled ? "ON" : "OFF");
-}
-
-static void ExternalPowerCycleTask(void* arg) {
-  const uint32_t delay_ms = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
-  SetExternalPower(false);
-  vTaskDelay(pdMS_TO_TICKS(delay_ms));
-  SetExternalPower(true);
-  external_power_cycle_task = nullptr;
-  vTaskDelete(nullptr);
-}
-
-bool CycleExternalPower(uint32_t off_ms) {
-  if (external_power_cycle_task != nullptr) {
-    return false;
-  }
-  off_ms = std::clamp<uint32_t>(off_ms, 100, 30000);
-  BaseType_t ok = xTaskCreate(&ExternalPowerCycleTask, "ext_pwr_cycle", kExternalPowerCycleStackBytes,
-                              reinterpret_cast<void*>(static_cast<uintptr_t>(off_ms)), 4,
-                              &external_power_cycle_task);
-  return ok == pdPASS;
-}
-
-int GetGpsAntennaShortRaw() {
-  if (GPS_ANT_SHORT == GPIO_NUM_NC) {
-    return -1;
-  }
-  return gpio_get_level(GPS_ANT_SHORT);
-}
-
-bool IsGpsAntennaShort() {
-  return GetGpsAntennaShortRaw() == 0;
-}
 
 std::string GetGpsCurrentMode() {
   std::string mode;
@@ -859,74 +818,6 @@ void InitGpios() {
   SensorHubInitGpios();
 }
 
-void InitHeaterPwm() {
-  ledc_timer_config_t t = {};
-  t.speed_mode = LEDC_LOW_SPEED_MODE;
-  t.duty_resolution = LEDC_TIMER_10_BIT;
-  t.timer_num = LEDC_TIMER_0;
-  t.freq_hz = 1000;
-  t.clk_cfg = LEDC_AUTO_CLK;
-  ESP_ERROR_CHECK(ledc_timer_config(&t));
-
-  ledc_channel_config_t c = {};
-  c.gpio_num = HEATER_PWM;
-  c.speed_mode = LEDC_LOW_SPEED_MODE;
-  c.channel = LEDC_CHANNEL_0;
-  c.timer_sel = LEDC_TIMER_0;
-  c.duty = 0;
-  ESP_ERROR_CHECK(ledc_channel_config(&c));
-}
-
-void HeaterSetPowerPercent(float p) {
-  if (p < 0.0f) p = 0.0f;
-  if (p > 100.0f) p = 100.0f;
-  const uint32_t duty = static_cast<uint32_t>(p * 1023.0f / 100.0f);  // 10-bit scale
-  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
-  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-  UpdateState([&](SharedState& s) { s.heater_power = p; });
-}
-
-[[maybe_unused]] void HeaterOn() { HeaterSetPowerPercent(100.0f); }
-[[maybe_unused]] void HeaterOff() { HeaterSetPowerPercent(0.0f); }
-
-void FanSetPowerPercent(float p) {
-  if (p < 0.0f) p = 0.0f;
-  if (p > 100.0f) p = 100.0f;
-  if (FAN_PWM == GPIO_NUM_NC) {
-    UpdateState([&](SharedState& s) { s.fan_power = 100.0f; });
-    return;
-  }
-  const uint32_t duty = static_cast<uint32_t>(p * 1023.0f / 100.0f);
-  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty);
-  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-  UpdateState([&](SharedState& s) { s.fan_power = p; });
-}
-
-void InitFanPwm() {
-  if (FAN_PWM == GPIO_NUM_NC) {
-    UpdateState([](SharedState& s) { s.fan_power = 100.0f; });
-    return;
-  }
-  ledc_timer_config_t t = {};
-  t.speed_mode = LEDC_LOW_SPEED_MODE;
-  t.duty_resolution = LEDC_TIMER_10_BIT;
-  t.timer_num = LEDC_TIMER_1;
-  t.freq_hz = 25000;
-  t.clk_cfg = LEDC_AUTO_CLK;
-  ESP_ERROR_CHECK(ledc_timer_config(&t));
-
-  ledc_channel_config_t c = {};
-  c.gpio_num = FAN_PWM;
-  c.speed_mode = LEDC_LOW_SPEED_MODE;
-  c.channel = LEDC_CHANNEL_1;
-  c.timer_sel = LEDC_TIMER_1;
-  c.duty = 0;
-  ESP_ERROR_CHECK(ledc_channel_config(&c));
-
-  // Default to full power
-  FanSetPowerPercent(100.0f);
-}
-
 
 esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
   bool host_init = false;
@@ -1006,279 +897,6 @@ esp_err_t StartUsbMsc(sdmmc_card_t* card) {
   return ESP_OK;
 }
 
-void EnableStepper() {
-  gpio_set_level(STEPPER_EN, 0);
-  UpdateState([](SharedState& s) {
-    s.stepper_enabled = true;
-  });
-}
-
-void DisableStepper() {
-  gpio_set_level(STEPPER_EN, 1);
-  UpdateState([](SharedState& s) {
-    s.stepper_enabled = false;
-    s.stepper_moving = false;
-  });
-}
-
-void StopStepper() {
-  UpdateState([](SharedState& s) {
-    s.stepper_moving = false;
-    s.stepper_abort = true;
-    s.homing = false;
-  });
-}
-
-void StartStepperMove(int steps, bool forward, int speed_us) {
-  const int clamped_speed = std::max(speed_us, 1);
-  UpdateState([=](SharedState& s) {
-    if (!s.stepper_enabled) {
-      return;
-    }
-    s.stepper_abort = false;
-    s.stepper_direction_forward = forward;
-    s.stepper_speed_us = clamped_speed;
-    s.stepper_target = s.stepper_position + (forward ? steps : -steps);
-    s.stepper_moving = true;
-    s.last_step_timestamp_us = esp_timer_get_time();
-  });
-  gpio_set_level(STEPPER_DIR, forward ? 1 : 0);
-}
-
-struct StepperTaskSnapshot {
-  bool homing = false;
-  bool stepper_abort = false;
-  bool stepper_enabled = false;
-  bool stepper_moving = false;
-  bool stepper_direction_forward = true;
-  int stepper_speed_us = 1;
-  int64_t last_step_timestamp_us = 0;
-};
-
-static StepperTaskSnapshot ReadStepperTaskSnapshot() {
-  StepperTaskSnapshot out{};
-  if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    out.homing = state.homing;
-    out.stepper_abort = state.stepper_abort;
-    out.stepper_enabled = state.stepper_enabled;
-    out.stepper_moving = state.stepper_moving;
-    out.stepper_direction_forward = state.stepper_direction_forward;
-    out.stepper_speed_us = state.stepper_speed_us;
-    out.last_step_timestamp_us = state.last_step_timestamp_us;
-    xSemaphoreGive(state_mutex);
-  }
-  out.stepper_speed_us = std::max(out.stepper_speed_us, 1);
-  return out;
-}
-
-void StepperTask(void*) {
-  const TickType_t idle_delay_active = pdMS_TO_TICKS(1);
-  const TickType_t idle_delay_idle = pdMS_TO_TICKS(5);
-  while (true) {
-    StepperTaskSnapshot snapshot = ReadStepperTaskSnapshot();
-    if (snapshot.homing && !snapshot.stepper_abort) {
-      vTaskDelay(idle_delay_idle);
-      continue;
-    }
-    if (snapshot.stepper_enabled && snapshot.stepper_moving && !snapshot.stepper_abort) {
-      // Reassert direction each loop to avoid spurious flips from noise
-      gpio_set_level(STEPPER_DIR, snapshot.stepper_direction_forward ? 1 : 0);
-
-      const int64_t now = esp_timer_get_time();
-      if (now - snapshot.last_step_timestamp_us >= snapshot.stepper_speed_us) {
-        gpio_set_level(STEPPER_STEP, 1);
-        esp_rom_delay_us(4);
-        gpio_set_level(STEPPER_STEP, 0);
-
-        UpdateState([&](SharedState& s) {
-          if (!s.stepper_moving || !s.stepper_enabled) {
-            return;
-          }
-          s.stepper_position += s.stepper_direction_forward ? 1 : -1;
-          s.last_step_timestamp_us = now;
-          if ((s.stepper_direction_forward && s.stepper_position >= s.stepper_target) ||
-              (!s.stepper_direction_forward && s.stepper_position <= s.stepper_target)) {
-            s.stepper_moving = false;
-          }
-        });
-        // Yield after step to let lower-priority/idle run
-        vTaskDelay(idle_delay_active);
-      }
-    } else if (snapshot.stepper_abort) {
-      UpdateState([](SharedState& s) {
-        s.stepper_moving = false;
-      });
-    }
-    vTaskDelay(snapshot.stepper_moving ? idle_delay_active : idle_delay_idle);
-  }
-}
-
-
-void PidTask(void*) {
-  float integral = 0.0f;
-  float prev_error = 0.0f;
-  int64_t prev_update_us = 0;
-  bool have_prev_error = false;
-  // Auto-enable PID if it was enabled in config
-  SharedState initial = CopyState();
-  if (pid_config.from_file && initial.pid_enabled) {
-    UpdateState([](SharedState& s) { s.pid_enabled = true; });
-  }
-  while (true) {
-    SharedState snapshot = CopyState();
-    if (!snapshot.pid_enabled) {
-      integral = 0.0f;
-      prev_error = 0.0f;
-      prev_update_us = 0;
-      have_prev_error = false;
-      UpdateState([](SharedState& s) {
-        s.pid_temperature = 0.0f;
-        s.pid_error = 0.0f;
-        s.pid_integral = 0.0f;
-        s.pid_integral_candidate = 0.0f;
-        s.pid_derivative = 0.0f;
-        s.pid_p_term = 0.0f;
-        s.pid_i_term = 0.0f;
-        s.pid_d_term = 0.0f;
-        s.pid_raw_output = 0.0f;
-        s.pid_dt = 0.0f;
-        s.pid_saturated_high = false;
-        s.pid_saturated_low = false;
-        s.pid_integral_held = false;
-      });
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      continue;
-    }
-    if (snapshot.temp_sensor_count <= 0) {
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      continue;
-    }
-    uint16_t mask = snapshot.pid_sensor_mask;
-    if (mask == 0) {
-      int idx = std::clamp(snapshot.pid_sensor_index, 0, snapshot.temp_sensor_count - 1);
-      mask = static_cast<uint16_t>(1u << idx);
-    }
-    float temp_sum = 0.0f;
-    int temp_count = 0;
-    for (int i = 0; i < snapshot.temp_sensor_count && i < MAX_TEMP_SENSORS; ++i) {
-      if ((mask & (1u << i)) == 0) continue;
-      float t = snapshot.temps_c[i];
-      if (!std::isfinite(t)) continue;
-      temp_sum += t;
-      temp_count++;
-    }
-    if (temp_count == 0) {
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      continue;
-    }
-    float temp = temp_sum / static_cast<float>(temp_count);
-    const int64_t now_us = esp_timer_get_time();
-    float dt = prev_update_us > 0 ? static_cast<float>(now_us - prev_update_us) / 1000000.0f : 1.0f;
-    bool valid_dt = std::isfinite(dt) && dt > 0.0f && dt <= 10.0f;
-    if (!valid_dt) {
-      dt = 1.0f;
-    }
-    float error = snapshot.pid_setpoint - temp;
-    float derivative = (have_prev_error && valid_dt) ? (error - prev_error) / dt : 0.0f;
-    float candidate_integral = std::clamp(integral + error * dt, 0.0f, 1500.0f);
-    float p_term = snapshot.pid_kp * error;
-    float i_term = snapshot.pid_ki * candidate_integral;
-    float d_term = snapshot.pid_kd * derivative;
-    float raw_output = p_term + i_term + d_term;
-    float output = std::clamp(raw_output, 0.0f, 100.0f);
-    bool saturated_high = raw_output > 100.0f;
-    bool saturated_low = raw_output < 0.0f;
-    bool integral_held = true;
-    if ((!saturated_high && !saturated_low) ||
-        (saturated_high && error < 0.0f) ||
-        (saturated_low && error > 0.0f)) {
-      integral = candidate_integral;
-      integral_held = false;
-    }
-    output = std::clamp(output, 0.0f, 100.0f);
-    HeaterSetPowerPercent(output);
-    UpdateState([&](SharedState& s) {
-      s.pid_output = output;
-      s.pid_temperature = temp;
-      s.pid_error = error;
-      s.pid_integral = integral;
-      s.pid_integral_candidate = candidate_integral;
-      s.pid_derivative = derivative;
-      s.pid_p_term = p_term;
-      s.pid_i_term = i_term;
-      s.pid_d_term = d_term;
-      s.pid_raw_output = raw_output;
-      s.pid_dt = dt;
-      s.pid_saturated_high = saturated_high;
-      s.pid_saturated_low = saturated_low;
-      s.pid_integral_held = integral_held;
-    });
-    prev_error = error;
-    prev_update_us = now_us;
-    have_prev_error = true;
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-
-void CalibrateZero() {
-  bool already_running = false;
-  UpdateState([&](SharedState& s) {
-    already_running = s.calibrating;
-    if (!s.calibrating) {
-      s.calibrating = true;
-    }
-  });
-  if (already_running) {
-    ESP_LOGW(kTag, "Calibration already in progress");
-    return;
-  }
-
-  gpio_set_level(RELAY_PIN, 1);
-  vTaskDelay(pdMS_TO_TICKS(1000));
-
-  const int samples = 100;
-  const int ignore_samples = 10;
-  float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
-  int valid = 0;
-
-  for (int i = 0; i < samples; ++i) {
-    float v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
-    if (ReadAllAdc(&v1, &v2, &v3) == ESP_OK && i >= ignore_samples) {
-      sum1 += v1;
-      sum2 += v2;
-      sum3 += v3;
-      valid++;
-    }
-    vTaskDelay(pdMS_TO_TICKS(200));
-  }
-
-  if (valid > 0) {
-    const float new_offset1 = sum1 / valid;
-    const float new_offset2 = sum2 / valid;
-    const float new_offset3 = sum3 / valid;
-    UpdateState([&](SharedState& s) {
-      s.offset1 = new_offset1;
-      s.offset2 = new_offset2;
-      s.offset3 = new_offset3;
-      s.calibrating = false;
-    });
-    ESP_LOGI(kTag, "Calibration done: offsets %.6f, %.6f, %.6f", new_offset1, new_offset2, new_offset3);
-  } else {
-    UpdateState([](SharedState& s) {
-      s.calibrating = false;
-    });
-    ESP_LOGW(kTag, "Calibration collected no samples");
-  }
-
-  gpio_set_level(RELAY_PIN, 0);
-}
-
-void CalibrationTask(void*) {
-  CalibrateZero();
-  calibration_task = nullptr;
-  vTaskDelete(nullptr);
-}
-
 extern "C" void app_main(void) {
   bool init_ok = true;
   bool msc_ok = true;
@@ -1354,8 +972,7 @@ extern "C" void app_main(void) {
     ErrorManagerClear(ErrorCode::kUsbMscInit);
   }
 
-  InitHeaterPwm();
-  InitFanPwm();
+  MotionControllerInit();
   bool temp_ok = M1820Init(TEMP_1WIRE);
   if (!temp_ok) {
     ESP_LOGW(kTag, "M1820 init failed or no sensors found");
@@ -1416,10 +1033,8 @@ extern "C" void app_main(void) {
   }
   StartHttpServer();
 
-  // Stepper on core 1 (prio 3); sensor tasks on core 0 via SensorHubStartTasks
-  xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
   SensorHubStartTasks(ina_err == ESP_OK, temp_ok);
-  xTaskCreatePinnedToCore(&PidTask, "pid_task", 8192, nullptr, 2, nullptr, 0);
+  MotionControllerStartTasks();
   StartNetworkTasks();
   if (upload_task == nullptr) {
     // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.

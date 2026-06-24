@@ -88,17 +88,14 @@
 
 ---
 
-### Phase 7 — MotionController
-**Risk: LOW** — `control_actions.cpp` already partially separate.
-
-Files to create: `main/motion_controller.h`, `main/motion_controller.cpp`
-
-- [ ] Create `main/motion_controller.h` — stepper, heater/fan PWM, calibration API
-- [ ] Create `main/motion_controller.cpp` — move stepper init, `StepperTask`, `PidTask`, `CalibrationTask`, `FindZeroTask` (~400 lines)
-- [ ] `control_actions.cpp` becomes thin delegator; remove duplicates
-- [ ] Replace task create calls with `MotionControllerStartTasks()`
-- [ ] Update `app_services.h`, `CMakeLists.txt`
-- [ ] Build green, commit `refactor(fw): extract MotionController`
+### Phase 7 — MotionController ✅ DONE
+- [x] Create `main/motion_controller.h` — `MotionControllerInit`, `MotionControllerStartTasks`, stepper primitives, heater/fan/GPIO, `CalibrateZero`, `CalibrationTask`, `FindZeroTask`, `StartFindZeroTask`, `StopLogging`, `StartLoggingToFile`
+- [x] Create `main/motion_controller.cpp` — heater/fan LEDC PWM, `StepperTask`, `PidTask`, all homing helpers (moved from http_handlers anonymous namespace), `LoggingTask` (~680 lines)
+- [x] Remove 382 lines from `app_main.cpp` (1460 → 1075); replace `InitHeaterPwm+InitFanPwm` with `MotionControllerInit()`, `StepperTask+PidTask` with `MotionControllerStartTasks()`
+- [x] Remove 524 lines of motion/logging code from `http_handlers.cpp` (3072 → 2478)
+- [x] Remove orphaned helper functions from `http_handlers.cpp` (70 more lines)
+- [x] Add `#include "motion_controller.h"` to `app_services.h`, `CMakeLists.txt`
+- [x] Build green: binary `0x16c960` (shrank 448 bytes), zero warnings
 
 ---
 
