@@ -79,6 +79,7 @@
 #include "hw_pins.h"
 #include "config_loader.h"
 #include "network_manager.h"
+#include "sensor_hub.h"
 #include "upload_pipeline.h"
 
 static constexpr char kTag[] = "APP";
@@ -88,20 +89,8 @@ static constexpr char kTag[] = "APP";
 [[maybe_unused]] constexpr uint64_t TEMP_ADDR_LOAD = 0xE80000105FF4E228ULL;
 #endif
 
-constexpr float VREF = 4.096f;  // ±Vref/2 range, matches original sketch
-constexpr float ADC_SCALE = (VREF / 2.0f) / static_cast<float>(1 << 23);
 
 constexpr char MSC_BASE_PATH[] = "/usb_msc";
-// INA219 constants (32V range, hardware shunt is 0.05 ohm).
-constexpr uint8_t INA219_ADDR = 0x40;
-constexpr uint16_t INA219_CONFIG = 0x399F;           // 32V range, gain /8 (320mV), 12-bit, continuous
-constexpr uint16_t INA219_CALIBRATION = 4096;        // Register calibration kept from 0.1R setup.
-constexpr float INA219_CURRENT_LSB = 0.0002f;        // 200 uA; 0.05R shunt doubles physical current
-constexpr float INA219_POWER_LSB = INA219_CURRENT_LSB * 20.0f;
-constexpr float INA219_BUS_LSB = 0.004f;             // 4 mV
-constexpr int INA219_I2C_FREQ_HZ = 100000;
-constexpr TickType_t INA219_I2C_TIMEOUT = pdMS_TO_TICKS(250);
-static bool shared_spi_bus_inited = false;
 static GpsUnicoreClient gps_client;
 static TaskHandle_t gps_log_task = nullptr;
 static TaskHandle_t external_power_cycle_task = nullptr;
@@ -111,11 +100,7 @@ static constexpr uint64_t kGnssLogRotateUs = 3'600'000'000ULL;
 static std::string current_gnss_log_path;
 static volatile bool gps_reconfigure_requested = false;
 
-volatile uint32_t fan1_pulse_count = 0;
-volatile uint32_t fan2_pulse_count = 0;
 
-i2c_master_bus_handle_t i2c_bus = nullptr;
-i2c_master_dev_handle_t ina219_dev = nullptr;
 
 static uint64_t GpioMask(gpio_num_t pin) {
   if (pin == GPIO_NUM_NC) {
@@ -124,28 +109,6 @@ static uint64_t GpioMask(gpio_num_t pin) {
   return 1ULL << static_cast<uint32_t>(pin);
 }
 
-static void IRAM_ATTR FanTachIsr(void* arg) {
-  uint32_t gpio = (uint32_t)arg;
-  if (gpio == static_cast<uint32_t>(FAN1_TACH)) {
-    __atomic_fetch_add(&fan1_pulse_count, 1, __ATOMIC_RELAXED);
-  } else if (gpio == static_cast<uint32_t>(FAN2_TACH)) {
-    __atomic_fetch_add(&fan2_pulse_count, 1, __ATOMIC_RELAXED);
-  }
-}
-
-static void EnsureGpioIsrServiceInstalled() {
-  static bool installed = false;
-  if (installed) {
-    return;
-  }
-  esp_err_t err = gpio_install_isr_service(0);
-  if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
-    installed = true;
-    return;
-  }
-  ESP_LOGE(kTag, "gpio_install_isr_service failed: %s", esp_err_to_name(err));
-  ESP_ERROR_CHECK(err);
-}
 
 bool IsHallTriggered() {
   return gpio_get_level(MT_HALL_SEN) == app_config.motor_hall_active_level;
@@ -187,9 +150,6 @@ int GetGpsAntennaShortRaw() {
 bool IsGpsAntennaShort() {
   return GetGpsAntennaShortRaw() == 0;
 }
-
-esp_err_t InitSpiBus();
-
 
 std::string GetGpsCurrentMode() {
   std::string mode;
@@ -476,24 +436,6 @@ GpsReceiverStatus GetGpsReceiverStatus() {
   return status;
 }
 
-bool WaitForTempSensors(int timeout_ms) {
-  if (timeout_ms <= 0) {
-    return CopyState().temp_sensor_count > 0;
-  }
-  const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
-  while (esp_timer_get_time() < deadline) {
-    if (CopyState().temp_sensor_count > 0) {
-      return true;
-    }
-    vTaskDelay(pdMS_TO_TICKS(200));
-  }
-  return CopyState().temp_sensor_count > 0;
-}
-
-// Devices
-LTC2440 adc1(ADC_CS1, ADC_MISO, false);
-LTC2440 adc2(ADC_CS2, ADC_MISO);
-LTC2440 adc3(ADC_CS3, ADC_MISO);
 
 
 std::string Basename(const std::string& path) {
@@ -865,55 +807,6 @@ const tusb_desc_device_qualifier_t kDeviceQualifier = {
 };
 #endif
 
-esp_err_t InitSpiBus() {
-  if (shared_spi_bus_inited) {
-    return ESP_OK;
-  }
-  spi_bus_config_t buscfg = {};
-  buscfg.mosi_io_num = SPI_MOSI;
-  buscfg.miso_io_num = SPI_MISO;
-  buscfg.sclk_io_num = SPI_SCK;
-  buscfg.quadwp_io_num = -1;
-  buscfg.quadhd_io_num = -1;
-  buscfg.max_transfer_sz = 1536;
-  esp_err_t ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-  if (ret == ESP_ERR_INVALID_STATE) {
-    shared_spi_bus_inited = true;
-    return ESP_OK;
-  }
-  if (ret == ESP_OK) {
-    shared_spi_bus_inited = true;
-  }
-  return ret;
-}
-
-struct TempMeta {
-  std::array<std::string, MAX_TEMP_SENSORS> labels{};
-  std::array<std::string, MAX_TEMP_SENSORS> addresses{};
-};
-
-std::string FormatOneWireAddress(uint64_t address) {
-  char buf[20];
-  std::snprintf(buf, sizeof(buf), "0x%016llX", static_cast<unsigned long long>(address));
-  return std::string(buf);
-}
-
-TempMeta BuildTempMeta(int count) {
-  TempMeta meta{};
-  uint64_t addrs[MAX_TEMP_SENSORS] = {};
-  const int addr_count = M1820GetAddresses(addrs, MAX_TEMP_SENSORS);
-  const int capped_count = std::min(count, MAX_TEMP_SENSORS);
-
-  for (int i = 0; i < capped_count; ++i) {
-    meta.labels[i] = "t" + std::to_string(i + 1);
-  }
-  for (int i = 0; i < std::min(addr_count, MAX_TEMP_SENSORS); ++i) {
-    if (addrs[i] != 0) {
-      meta.addresses[i] = FormatOneWireAddress(addrs[i]);
-    }
-  }
-  return meta;
-}
 
 void InitGpios() {
   gpio_config_t io_conf = {};
@@ -963,28 +856,7 @@ void InitGpios() {
     ESP_ERROR_CHECK(gpio_config(&gps_ant_conf));
   }
 
-  if (ETH_INT != GPIO_NUM_NC || FAN1_TACH != GPIO_NUM_NC || FAN2_TACH != GPIO_NUM_NC) {
-    EnsureGpioIsrServiceInstalled();
-  }
-
-  // Tachometer inputs with interrupts
-  gpio_config_t tach_conf = {};
-  tach_conf.intr_type = GPIO_INTR_POSEDGE;
-  tach_conf.mode = GPIO_MODE_INPUT;
-  tach_conf.pin_bit_mask = GpioMask(FAN1_TACH) | GpioMask(FAN2_TACH);
-  tach_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-  tach_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-  if (tach_conf.pin_bit_mask == 0) {
-    return;
-  }
-  ESP_ERROR_CHECK(gpio_config(&tach_conf));
-
-  if (FAN1_TACH != GPIO_NUM_NC) {
-    ESP_ERROR_CHECK(gpio_isr_handler_add(FAN1_TACH, FanTachIsr, (void*)FAN1_TACH));
-  }
-  if (FAN2_TACH != GPIO_NUM_NC) {
-    ESP_ERROR_CHECK(gpio_isr_handler_add(FAN2_TACH, FanTachIsr, (void*)FAN2_TACH));
-  }
+  SensorHubInitGpios();
 }
 
 void InitHeaterPwm() {
@@ -1055,98 +927,6 @@ void InitFanPwm() {
   FanSetPowerPercent(100.0f);
 }
 
-esp_err_t InitIna219() {
-  if (!i2c_bus) {
-    i2c_master_bus_config_t bus_cfg = {};
-    bus_cfg.i2c_port = I2C_NUM_0;
-    bus_cfg.sda_io_num = INA_SDA;
-    bus_cfg.scl_io_num = INA_SCL;
-    bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
-    bus_cfg.glitch_ignore_cnt = 7;
-    bus_cfg.intr_priority = 0;
-    bus_cfg.trans_queue_depth = 0;
-    bus_cfg.flags.enable_internal_pullup = true;
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &i2c_bus), kTag, "I2C bus init failed");
-  }
-
-  if (!ina219_dev) {
-    i2c_device_config_t dev_cfg = {};
-    dev_cfg.device_address = INA219_ADDR;
-    dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-    dev_cfg.scl_speed_hz = INA219_I2C_FREQ_HZ;
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &ina219_dev), kTag, "INA219 attach failed");
-  }
-
-  auto write_reg = [](uint8_t reg, uint16_t value) -> esp_err_t {
-    uint8_t payload[3] = {
-        reg,
-        static_cast<uint8_t>((value >> 8) & 0xFF),
-        static_cast<uint8_t>(value & 0xFF),
-    };
-    return i2c_master_transmit(ina219_dev, payload, sizeof(payload), INA219_I2C_TIMEOUT);
-  };
-
-  ESP_RETURN_ON_ERROR(write_reg(0x00, INA219_CONFIG), kTag, "INA219 config failed");
-  ESP_RETURN_ON_ERROR(write_reg(0x05, INA219_CALIBRATION), kTag, "INA219 calibration failed");
-  ESP_LOGI(kTag, "INA219 initialized");
-  return ESP_OK;
-}
-
-esp_err_t ReadIna219() {
-  if (!ina219_dev) {
-    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning, "INA219 not initialized");
-    return ESP_ERR_INVALID_STATE;
-  }
-  auto read_reg = [](uint8_t reg, uint16_t* value) -> esp_err_t {
-    if (!value) {
-      return ESP_ERR_INVALID_ARG;
-    }
-    uint8_t reg_addr = reg;
-    uint8_t rx[2] = {};
-    esp_err_t res =
-        i2c_master_transmit_receive(ina219_dev, &reg_addr, sizeof(reg_addr), rx, sizeof(rx), INA219_I2C_TIMEOUT);
-    if (res == ESP_OK) {
-      *value = static_cast<uint16_t>(static_cast<uint16_t>(rx[0]) << 8 | static_cast<uint16_t>(rx[1]));
-    }
-    return res;
-  };
-
-  uint16_t bus_raw = 0;
-  uint16_t current_raw = 0;
-  uint16_t power_raw = 0;
-
-  esp_err_t err = read_reg(0x02, &bus_raw);
-  if (err != ESP_OK) {
-    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                         std::string("INA219 read bus failed (i2c): ") + esp_err_to_name(err));
-    return err;
-  }
-  err = read_reg(0x04, &current_raw);
-  if (err != ESP_OK) {
-    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                         std::string("INA219 read current failed (i2c): ") + esp_err_to_name(err));
-    return err;
-  }
-  err = read_reg(0x03, &power_raw);
-  if (err != ESP_OK) {
-    ErrorManagerSetLocal(ErrorCode::kInaRead, ErrorSeverity::kWarning,
-                         std::string("INA219 read power failed (i2c): ") + esp_err_to_name(err));
-    return err;
-  }
-
-  // Bus voltage: bits 3..15, LSB = 4 mV
-  const float bus_v = static_cast<float>((bus_raw >> 3) & 0x1FFF) * INA219_BUS_LSB;
-  const float current_a = static_cast<int16_t>(current_raw) * INA219_CURRENT_LSB;
-  const float power_w = static_cast<uint16_t>(power_raw) * INA219_POWER_LSB;
-
-  UpdateState([&](SharedState& s) {
-    s.ina_bus_voltage = bus_v;
-    s.ina_current = current_a;
-    s.ina_power = power_w;
-  });
-  ErrorManagerClearLocal(ErrorCode::kInaRead);
-  return ESP_OK;
-}
 
 esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
   bool host_init = false;
@@ -1333,141 +1113,6 @@ void StepperTask(void*) {
   }
 }
 
-esp_err_t ReadAllAdc(float* v1, float* v2, float* v3) {
-  int32_t raw1 = 0, raw2 = 0, raw3 = 0;
-  esp_err_t err = adc1.Read(&raw1);
-  if (err != ESP_OK) {
-    raw1 = 0;
-  }
-  err = adc2.Read(&raw2);
-  if (err != ESP_OK) {
-    ESP_LOGW(kTag, "ADC2 read failed: %s", esp_err_to_name(err));
-    ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC2 read failed");
-    return err;
-  }
-  err = adc3.Read(&raw3);
-  if (err != ESP_OK) {
-    ESP_LOGW(kTag, "ADC3 read failed: %s", esp_err_to_name(err));
-    ErrorManagerSet(ErrorCode::kAdcRead, ErrorSeverity::kError, "ADC3 read failed");
-    return err;
-  }
-
-  *v1 = static_cast<float>(raw1) * ADC_SCALE;
-  *v2 = static_cast<float>(raw2) * ADC_SCALE;
-  *v3 = static_cast<float>(raw3) * ADC_SCALE;
-  ErrorManagerClear(ErrorCode::kAdcRead);
-  return ESP_OK;
-}
-
-void AdcTask(void*) {
-  while (true) {
-    float v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
-    if (ReadAllAdc(&v1, &v2, &v3) == ESP_OK) {
-      const uint64_t now_ms = esp_timer_get_time() / 1000ULL;
-      const float raw1 = v1;
-      const float raw2 = v2;
-      const float raw3 = v3;
-      UpdateState([&](SharedState& s) {
-        s.voltage1 = raw1 - s.offset1;
-        s.voltage2 = raw2 - s.offset2;
-        s.voltage3 = raw3 - s.offset3;
-        s.voltage1_cal = raw1;
-        s.voltage2_cal = raw2;
-        s.voltage3_cal = raw3;
-        s.last_update_ms = now_ms;
-      });
-    }
-    vTaskDelay(pdMS_TO_TICKS(200));
-  }
-}
-
-void Ina219Task(void*) {
-  int consecutive_failures = 0;
-  int64_t last_log_us = 0;
-  int64_t last_reinit_us = 0;
-  while (true) {
-    esp_err_t err = ReadIna219();
-    if (err != ESP_OK) {
-      consecutive_failures++;
-      const int64_t now_us = esp_timer_get_time();
-      if (consecutive_failures == 1 || now_us - last_log_us > 10'000'000) {
-        ESP_LOGW(kTag, "INA219 read failed: %s (consecutive=%d)", esp_err_to_name(err), consecutive_failures);
-        last_log_us = now_us;
-      }
-      if (consecutive_failures >= 3 && now_us - last_reinit_us > 10'000'000) {
-        last_reinit_us = now_us;
-        ESP_LOGW(kTag, "Reinitializing INA219 after I2C failures");
-        esp_err_t init_err = InitIna219();
-        if (init_err != ESP_OK) {
-          ESP_LOGW(kTag, "INA219 reinit failed: %s", esp_err_to_name(init_err));
-        }
-      }
-    } else if (consecutive_failures > 0) {
-      ESP_LOGI(kTag, "INA219 recovered after %d failed read(s)", consecutive_failures);
-      consecutive_failures = 0;
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-
-void FanTachTask(void*) {
-  const uint32_t pulses_per_rev = 2;
-  while (true) {
-    uint32_t c1 = fan1_pulse_count;
-    uint32_t c2 = fan2_pulse_count;
-    fan1_pulse_count = 0;
-    fan2_pulse_count = 0;
-
-    const uint32_t rpm1 = (c1 * 60U) / pulses_per_rev;
-    const uint32_t rpm2 = (c2 * 60U) / pulses_per_rev;
-
-    UpdateState([&](SharedState& s) {
-      s.fan1_rpm = rpm1;
-      s.fan2_rpm = rpm2;
-    });
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-void TempTask(void*) {
-  std::array<float, MAX_TEMP_SENSORS> temps{};
-  while (true) {
-    int count = 0;
-    if (M1820ReadTemperatures(temps.data(), MAX_TEMP_SENSORS, &count)) {
-      ErrorManagerClear(ErrorCode::kTempSensor);
-      const auto meta = BuildTempMeta(count);
-      UpdateState([&](SharedState& s) {
-        s.temp_sensor_count = count;
-        s.temps_c = temps;
-        s.temp_labels = meta.labels;
-        s.temp_addresses = meta.addresses;
-        if (count > 0) {
-          const uint16_t available_mask = static_cast<uint16_t>((1u << std::min(count, MAX_TEMP_SENSORS)) - 1u);
-          uint16_t mask = static_cast<uint16_t>(s.pid_sensor_mask & available_mask);
-          if (mask == 0) {
-            int idx = s.pid_sensor_index;
-            if (idx < 0 || idx >= count) idx = 0;
-            mask = static_cast<uint16_t>(1u << idx);
-          }
-          s.pid_sensor_mask = mask;
-          if (s.pid_sensor_index >= count || s.pid_sensor_index < 0) {
-            s.pid_sensor_index = FirstSetBitIndex(mask);
-          }
-        }
-      });
-      if (count > 0) {
-        ESP_LOGD(kTag, "Temps (%d):", count);
-        for (int i = 0; i < count; ++i) {
-          ESP_LOGD(kTag, "  Sensor %d: %.2f C", i + 1, temps[i]);
-        }
-      }
-    } else {
-      ESP_LOGW(kTag, "M1820ReadTemperatures failed");
-      ErrorManagerSet(ErrorCode::kTempSensor, ErrorSeverity::kWarning, "M1820 read failed");
-    }
-    vTaskDelay(pdMS_TO_TICKS(2000));
-  }
-}
 
 void PidTask(void*) {
   float integral = 0.0f;
@@ -1717,11 +1362,8 @@ extern "C" void app_main(void) {
     ErrorManagerSet(ErrorCode::kTempSensor, ErrorSeverity::kError, "M1820 init failed");
     init_ok = false;
   }
-  ESP_ERROR_CHECK(InitSpiBus());
-  ESP_ERROR_CHECK(adc1.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
-  ESP_ERROR_CHECK(adc2.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
-  ESP_ERROR_CHECK(adc3.Init(SPI2_HOST, ADC_SPI_FREQ_HZ));
-  esp_err_t ina_err = InitIna219();
+  ESP_ERROR_CHECK(SensorHubInitAdcs());
+  esp_err_t ina_err = SensorHubInitIna();
   if (ina_err != ESP_OK) {
     ESP_LOGE(kTag, "INA219 init failed: %s", esp_err_to_name(ina_err));
     ErrorManagerSet(ErrorCode::kInaInit, ErrorSeverity::kError, "INA219 init failed");
@@ -1774,18 +1416,9 @@ extern "C" void app_main(void) {
   }
   StartHttpServer();
 
-  // Pin tasks to different cores: ADC на core0 (prio 4), шаги на core1 (prio 3) — idle0 свободен для WDT
-  xTaskCreatePinnedToCore(&AdcTask, "adc_task", 4096, nullptr, 4, nullptr, 0);
+  // Stepper on core 1 (prio 3); sensor tasks on core 0 via SensorHubStartTasks
   xTaskCreatePinnedToCore(&StepperTask, "stepper_task", 4096, nullptr, 3, nullptr, 1);
-  if (ina_err == ESP_OK) {
-    xTaskCreatePinnedToCore(&Ina219Task, "ina219_task", 5120, nullptr, 2, nullptr, 0);
-  }
-  if (FAN1_TACH != GPIO_NUM_NC || FAN2_TACH != GPIO_NUM_NC) {
-    xTaskCreatePinnedToCore(&FanTachTask, "fan_tach_task", 2048, nullptr, 2, nullptr, 0);
-  }
-  if (temp_ok) {
-    xTaskCreatePinnedToCore(&TempTask, "temp_task", 8192, nullptr, 2, nullptr, 0);
-  }
+  SensorHubStartTasks(ina_err == ESP_OK, temp_ok);
   xTaskCreatePinnedToCore(&PidTask, "pid_task", 8192, nullptr, 2, nullptr, 0);
   StartNetworkTasks();
   if (upload_task == nullptr) {

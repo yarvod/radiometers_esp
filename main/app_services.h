@@ -65,7 +65,7 @@ UtcTimeSnapshot GetBestUtcTimeForGps();
 const char* UtcTimeSourceName(UtcTimeSource source);
 uint64_t UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot);
 std::string FormatUtcIso(const UtcTimeSnapshot& snapshot);
-bool WaitForTempSensors(int timeout_ms);
+#include "sensor_hub.h"
 #include "data_logger.h"
 std::string Basename(const std::string& path);
 bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::string* out_new_path);

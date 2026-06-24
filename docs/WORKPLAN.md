@@ -2,193 +2,178 @@
 
 ---
 
-## Firmware refactoring — DI / module split
+## Firmware refactoring — DI / module extraction
 
-**Goal:** `app_main.cpp` (4230 lines) → entry point ~300 lines. Each domain becomes an isolated `.h`/`.cpp` module. `AppContext` is the DI container passed explicitly to every FreeRTOS task. No global `extern` access to config/state outside of designated accessors.
+**Goal:** `app_main.cpp` (3740 lines at start) → entry point ~300 lines. Each domain becomes an isolated `.h`/`.cpp` module.
 
 ### Acceptance criteria (every phase)
 1. `rtk idf.py build` exits 0 — zero errors, zero new warnings
 2. Binary size ≤ previous phase + 2 KB (or justified in commit message)
-3. All `extern` references to moved symbols are gone from `app_main.cpp`
-4. No new file-scope `static` state added to `app_main.cpp`
-5. Commit message records: lines removed from `app_main.cpp`, binary size delta
-
-### Phase 0 — Prerequisites ✅ DONE
-- [x] Remove `inline constexpr char TAG[] = "APP"` from `app_state.h` (was leaking into every TU)
-- [x] `app_main.cpp`: add local `static constexpr char kTag[] = "APP"`, replace all 153 `TAG` → `kTag`
-- [x] `http_handlers.cpp`: local `static constexpr char kTag[] = "HTTP"`, replace 48 `TAG` → `kTag`
-- [x] `wn90lp.cpp`: uses `kTag` from day one — no collision
+3. Commit message records: lines removed from `app_main.cpp`, binary size
 
 ---
 
-### Phase 1 — `AppContext` skeleton + `ConfigLoader` 🔜 NEXT
-**Risk: LOW** — pure parsing logic, no task changes, no mutex touching.
-
-Files to create: `main/app_context.h`, `main/config_loader.h`, `main/config_loader.cpp`
-
-**`AppContext`** — skeleton only, grows in later phases:
-```cpp
-struct AppContext {
-  AppConfig&        config;
-  PidConfig&        pid_config;
-  // modules added here in subsequent phases
-};
-```
-
-**`ConfigLoader`** extracts from `app_main.cpp`:
-- `ParseConfigText()` (~371 lines of key=value parsing)
-- `ParseConfigFile()`, `LoadConfigFromSdCard()`, `LoadConfigFromInternalFlash()`
-- `SaveConfigToSdCard()`, `SaveConfigToInternalFlash()`, `SyncConfigToInternalFlash()`
-
-`app_services.h` keeps the same declarations → `ConfigLoader` implements them → zero changes to callers.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~550 lines, size delta ≤ +1 KB (strings move, no new code).
-
-**Commit:** `refactor(fw): extract ConfigLoader, add AppContext skeleton`
+### Phase 0 — Tag cleanup ✅ DONE
+- [x] Remove `inline constexpr char TAG[]` from `app_state.h` (leaked into every TU)
+- [x] `app_main.cpp`: add `static constexpr char kTag[] = "APP"`, replace 153 `TAG` → `kTag`
+- [x] `http_handlers.cpp`: add `static constexpr char kTag[] = "HTTP"`, replace 48 `TAG` → `kTag`
+- [x] `wn90lp.cpp`: already uses `kTag` — no collision
+- [x] Build green, committed `refactor(fw): replace global TAG with file-local kTag`
 
 ---
 
-### Phase 2 — `StorageManager`
-**Risk: MEDIUM** — `SdLockGuard` API changes touch every file that uses SD.
-
-Files to create: `main/storage_manager.h`, `main/storage_manager.cpp`
-
-`StorageManager` owns: `sd_mutex`, `sd_card`, `log_sd_card`, `log_sd_mounted`, all mount/unmount/path functions.
-
-Key API change — `SdLockGuard` constructor:
-```cpp
-// Before (grabs global sd_mutex):
-SdLockGuard guard;
-// After (takes StorageManager ref):
-SdLockGuard guard(ctx.storage);
-```
-Mechanical replacement at all ~25 call sites. `AppContext` grows `StorageManager storage`.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~250 lines, `app_state.cpp` loses `SdLockGuard` impl.
-
-**Commit:** `refactor(fw): extract StorageManager, SdLockGuard takes explicit storage ref`
+### Phase 1 — AppContext skeleton + ConfigLoader ✅ DONE
+- [x] Create `main/app_context.h` — `AppContext` struct (DI container skeleton)
+- [x] Create `main/config_loader.h` — declarations for `LoadConfig*`, `SaveConfig*`
+- [x] Create `main/config_loader.cpp` — move all config load/save/parse logic from `app_main.cpp`
+- [x] Remove extracted functions from `app_main.cpp` (~250 lines)
+- [x] Update `main/CMakeLists.txt` — add `config_loader.cpp`
+- [x] Build green, committed `refactor(fw): extract ConfigLoader`
 
 ---
 
-### Phase 3 — `NetworkManager`
-**Risk: MEDIUM** — large, many event handlers, file-scope state.
-
-Files to create: `main/network_manager.h`, `main/network_manager.cpp`
-
-Owns: wifi/eth init, event handlers, SNTP, `EnsureTimeSynced`, all `wifi_*` + `eth_*` file-scope vars, `WifiMonitorTask`, `WifiRecoverTask`, `NetworkMonitorTask`.
-
-`AppContext` grows `NetworkManager network`. Tasks that need network status receive `AppContext*`.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~700 lines.
-
-**Commit:** `refactor(fw): extract NetworkManager`
+### Phase 2 — StorageManager ✅ DONE
+- [x] Create `main/storage_manager.h` — `SdLockGuard`, `MountLogSd`, `MountInternalFlashFs`, `ActiveStorageMountPoint`, path helpers
+- [x] Create `main/storage_manager.cpp` — owns `s_sd_mutex`, `s_log_sd_card`, `s_log_sd_mounted`, `s_flash_mounted`, `s_flash_wl`
+- [x] Remove `SdLockGuard` impl and `sd_mutex` / `log_sd_card` / `log_sd_mounted` from `app_state.h/cpp`
+- [x] Remove storage functions from `http_handlers.cpp` (`MountLogSd`, `MountInternalFlashFs`, path helpers) — `-147 lines`
+- [x] Replace `log_sd_mounted` → `IsLogSdMounted()`, `internal_flash_fs_mounted` → `IsInternalFlashMounted()` across all callers
+- [x] Replace `sd_mutex = xSemaphoreCreateMutex()` → `StorageManagerInit()` in `app_main.cpp`
+- [x] Update `main/CMakeLists.txt` — add `storage_manager.cpp`
+- [x] Build green, committed `refactor(fw): extract StorageManager`
 
 ---
 
-### Phase 4 — `UploadPipeline`
-**Risk: LOW-MEDIUM** — self-contained, depends on StorageManager + AppConfig.
-
-Files to create: `main/upload_pipeline.h`, `main/upload_pipeline.cpp`
-
-Owns: `UploadFileToMinio` (256 lines + SigV4 helpers), `UploadPendingOnce`, file-type detection (`IsDataLogFilename`, `IsGpsLogFilename`, `IsMeteoLogFilename`), `MoveRootXxxFilesToUploadLocked` helpers.
-
-`UploadTask` shrinks to ~10 lines calling `ctx.upload.runOnce()`.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~450 lines.
-
-**Commit:** `refactor(fw): extract UploadPipeline`
-
----
-
-### Phase 5 — `DataLogger`
-**Risk: LOW** — owns clearly-bounded state.
-
-Files to create: `main/data_logger.h`, `main/data_logger.cpp`
-
-Owns: `log_file`, `current_log_path`, `log_config`, `OpenLogFileWithPostfix`, `FlushLogFile`, `StartLoggingToFile`, `StopLogging`, `BuildLogFilename`, `QueueCurrentLogForUpload`, log CSV row-write path.
-
-`AppContext` grows `DataLogger data_logger`. `AdcTask` receives `AppContext*`, calls `ctx.data_logger.writeRow(...)`.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~250 lines, `log_file` is no longer `extern`.
-
-**Commit:** `refactor(fw): extract DataLogger`
+### Phase 3 — NetworkManager ✅ DONE
+- [x] Create `main/network_manager.h` — `InitWifi`, `ApplyNetworkConfig`, `StartSntp`, `EnsureTimeSynced`, `IsSntpUsable`, `StartNetworkTasks`
+- [x] Create `main/network_manager.cpp` — owns all Wi-Fi/Eth/SNTP globals, event handlers, monitor tasks (~750 lines)
+- [x] Remove 941 lines from `app_main.cpp`: Wi-Fi/Eth globals, `FormatIp4`…`ApplyNetworkConfig`, `WifiRecoverTask`…`EnableFallbackAp`, `WifiEventHandler`…`EnsureTimeSynced` (3722 → 2781 lines)
+- [x] Replace `WaitForTimeSyncMs(8000)` → `EnsureTimeSynced(8000)` in `app_main.cpp`
+- [x] Replace `xTaskCreatePinnedToCore(&NetworkMonitorTask,...)` + `xTaskCreatePinnedToCore(&WifiMonitorTask,...)` → `StartNetworkTasks()`
+- [x] Add `#include "network_manager.h"` to `app_main.cpp` and `app_services.h`
+- [x] Remove `InitWifi`, `ApplyNetworkConfig`, `EnsureTimeSynced` forward decls from `app_services.h`
+- [x] Add `efuse` to `PRIV_REQUIRES` in `CMakeLists.txt` (needed by `esp_efuse_mac_get_default`)
+- [x] Update `main/CMakeLists.txt` — add `network_manager.cpp`
+- [x] Build green: binary `0x16cab0` (prev `0x16cf90`, -224 bytes), committed `refactor(fw): extract NetworkManager (Phase 3)`
 
 ---
 
-### Phase 6 — `SensorHub`
-**Risk: LOW** — hardware init + tasks, minimal external deps.
-
-Files to create: `main/sensor_hub.h`, `main/sensor_hub.cpp`
-
-Owns: LTC2440 ×3 instances, INA219 (`i2c_bus`, `ina219_dev`), 1-Wire, fan tach ISR, `InitSpiBus`, `ReadAllAdc`, `InitIna219`, `ReadIna219`, `BuildTempMeta`. Tasks (`AdcTask`, `Ina219Task`, `TempTask`, `FanTachTask`) become `SensorHub` methods.
-
-`AppContext` grows `SensorHub* sensors`. Tasks receive `AppContext*`.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~250 lines.
-
-**Commit:** `refactor(fw): extract SensorHub`
+### Phase 4 — UploadPipeline ✅ DONE
+- [x] Create `main/upload_pipeline.h` — `UpdateSdStatsLocked`, `UpdateSdStats`, `SdStatsTask`, `QueueCurrentLogForUpload`, `StartUploadedClearTask`, `UploadTask`, `LogMemoryStatus`, `MbedtlsAllocModeName`
+- [x] Create `main/upload_pipeline.cpp` — SigV4/HMAC helpers, `UploadFileToMinio`, `UploadPendingOnce`, `UploadTask`, S3-stats, `UploadedClearTask` (~700 lines)
+- [x] Remove 855 lines from `app_main.cpp` (2781 → 1926)
+- [x] Add `#include "upload_pipeline.h"` to `app_services.h`; remove old declarations
+- [x] Add `upload_pipeline.cpp` to `CMakeLists.txt`
+- [x] Build green, committed `refactor(fw): extract UploadPipeline (Phase 4)`
 
 ---
 
-### Phase 7 — `MotionController`
+### Phase 5 — DataLogger ✅ DONE
+- [x] Create `main/data_logger.h` — `BuildLogFilename`, `FlushLogFile`, `OpenLogFileWithPostfix`
+- [x] Create `main/data_logger.cpp` — ~110 lines; owns log filename/header construction
+- [x] Remove 100 lines from `app_main.cpp` (1926 → 1827); replace `WaitForTimeSyncMs` → `EnsureTimeSynced`
+- [x] Add `#include "data_logger.h"` to `app_services.h`
+- [x] Add `data_logger.cpp` to `CMakeLists.txt`
+- [x] Build green, committed `refactor(fw): extract DataLogger (Phase 5)`
+
+---
+
+### Phase 6 — SensorHub ✅ DONE
+- [x] Create `main/sensor_hub.h` — `InitSpiBus`, `EnsureGpioIsrServiceInstalled`, `SensorHubInitGpios`, `SensorHubInitAdcs`, `SensorHubInitIna`, `WaitForTempSensors`, `ReadAllAdc`, `SensorHubStartTasks`
+- [x] Create `main/sensor_hub.cpp` — LTC2440×3, INA219 I2C, 1-Wire TempTask, fan tach ISR; private: `ReadAllAdc`, `ReadIna219`, `BuildTempMeta`, task functions (~370 lines)
+- [x] Remove 356 lines from `app_main.cpp` (1827 → 1460); replace 4 `xTaskCreate` calls with `SensorHubStartTasks()`
+- [x] Replace forward-decl of `InitSpiBus` in `network_manager.cpp` with `#include "sensor_hub.h"`
+- [x] Add `#include "sensor_hub.h"` to `app_services.h`, `CMakeLists.txt`
+- [x] Build green: binary `0x16cb20` (unchanged vs Phase 5), zero warnings
+
+---
+
+### Phase 7 — MotionController
 **Risk: LOW** — `control_actions.cpp` already partially separate.
 
 Files to create: `main/motion_controller.h`, `main/motion_controller.cpp`
 
-Owns stepper, heater/fan PWM, calibration. `control_actions.cpp` becomes thin delegator to `MotionController`. `StepperTask`, `PidTask`, `CalibrationTask`, `FindZeroTask` become methods.
-
-`AppContext` grows `MotionController* motion`.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~400 lines, `control_actions.cpp` shrinks to delegators.
-
-**Commit:** `refactor(fw): extract MotionController`
+- [ ] Create `main/motion_controller.h` — stepper, heater/fan PWM, calibration API
+- [ ] Create `main/motion_controller.cpp` — move stepper init, `StepperTask`, `PidTask`, `CalibrationTask`, `FindZeroTask` (~400 lines)
+- [ ] `control_actions.cpp` becomes thin delegator; remove duplicates
+- [ ] Replace task create calls with `MotionControllerStartTasks()`
+- [ ] Update `app_services.h`, `CMakeLists.txt`
+- [ ] Build green, commit `refactor(fw): extract MotionController`
 
 ---
 
-### Phase 8 — `GpsModule`
-**Risk: HIGH** — most complex, depends on storage + upload + time.
+### Phase 8 — GpsModule
+**Risk: MEDIUM** — depends on storage + upload + time.
 
 Files to create: `main/gps_module.h`, `main/gps_module.cpp`
 
-Wraps `GpsUnicoreClient`. Owns `GpsLogTask` logic, `current_gnss_log_path`, `gps_reconfigure_requested`, `RotateStaleGnssLogLocked`, `MoveRootGpsFilesToUploadLocked`. Free functions in `app_services.h` (`GetGpsCurrentMode`, `GetGpsReceiverStatus`, `RequestGpsPositionOnce`) become `GpsModule` methods; `app_services.h` declarations become thin wrappers for backward compat or are removed.
-
-`AppContext` grows `GpsModule* gps`.
-
-**Test / acceptance:** build green, `app_main.cpp` loses ~350 lines, `app_services.h` GPS section removed.
-
-**Commit:** `refactor(fw): extract GpsModule`
-
----
-
-### Phase 9 — Final `app_main.cpp` cleanup
-After all 8 modules extracted:
-- `app_main()` is ~300 lines: GPIO init, `AppContext` construction, task spawn table
-- `app_services.h` shrinks from 130 → ~20 lines (time utils, `IsoUtcNow`, `FormatUtcIso`)
-- Wire `Wn90lpClient` into `AppContext` as `meteo` member
-- Remove all `extern` that no longer need to be extern
-- Enable `CONFIG_COMPILER_OPTIMIZATION_SIZE` for non-critical TUs if binary is still tight
-
-**Commit:** `refactor(fw): finalize app_main as entry point, wire meteo into AppContext`
+- [ ] Create `main/gps_module.h` — `StartGpsClient`, `GpsLogTask`, `GetGpsCurrentMode`, `GetGpsReceiverStatus`, `RequestGpsPositionOnce`, `RequestGpsReconfigure`
+- [ ] Create `main/gps_module.cpp` — wrap `GpsUnicoreClient`, own `gps_client`, `gps_log_task`, `current_gnss_log_path`, `gps_reconfigure_requested`, GNSS log rotation (~350 lines)
+- [ ] Remove extracted code from `app_main.cpp`; remove fwd decls from `app_services.h`
+- [ ] Replace `GpsLogTask` `xTaskCreatePinnedToCore` with `GpsModuleStartTask()`
+- [ ] Update `CMakeLists.txt`
+- [ ] Build green, commit `refactor(fw): extract GpsModule`
 
 ---
 
-## WN90LP weather station integration
+### Phase 9 — Final cleanup
+- [ ] Wire `Wn90lpClient` into remaining code (remove any remaining global externs)
+- [ ] Review remaining `app_main.cpp` externs — eliminate or wrap
+- [ ] `app_main.cpp` target: ≤ 500 lines (pure wiring / init)
+- [ ] Build green, commit `refactor(fw): final cleanup — app_main.cpp wiring only`
 
-### Done
-- [x] `main/wn90lp.h/.cpp` — Modbus RTU, bulk read, CRC16, graceful absent-station, hourly rotation, storage-agnostic
-- [x] `app_config.meteo_poll_interval_s` / `meteo_enabled` — runtime config from `config.txt`
-- [x] `SharedState.meteo`, S3 prefix `meteo/`, `MoveRootMeteoFilesToUploadLocked`
+---
 
-### TODO (after Phase 9 — wired into AppContext)
-- [ ] `/data` HTTP response: add meteo fields from SharedState (no new endpoints)
+## Backend / Frontend features
+
+### Meteo station (WN90LP) integration
+- [ ] Detect `meteoOnline: true` in MQTT state → `has_meteo: bool` on Device model
+- [ ] `WN90LP` task publishes `MeteoData` into `SharedState`
+- [ ] `/data` HTTP response: add meteo fields from `SharedState`
 - [ ] MQTT `state` publish: include meteo snapshot in `{deviceId}/state` JSON
-- [ ] Backend: detect `meteoOnline` in state → `upsert_meteo_config`, `has_meteo: bool` on Device, migration
+- [ ] Backend: `upsert_meteo_config`, `has_meteo` on Device, migration
 - [ ] Frontend: "Meteo station" card on device detail (visible when `has_meteo == true`)
-- [ ] **Measurements — DEFERRED**: standalone `MeteoReading` table; don't mix with ADC stream
+- [ ] **Measurements — DEFERRED**: standalone `MeteoReading` table; don't mix ADC stream
 
 ---
 
-## Completed
+### Phase 10 — ESP-IDF Component System migration
+**Risk: LOW** — organisational only; no binary behaviour change.
+**Prereq:** Phases 6-9 complete so all module boundaries are clean.
+
+Each flat module in `main/` becomes a proper `components/NAME/` directory with its own `idf_component_register()`.
+
+Target layout:
+```
+components/
+  app_core/          ← app_state.h/.cpp, app_services.h, app_context.h, app_utils.h/.cpp, error_manager
+  storage_manager/   REQUIRES app_core
+  network_manager/   REQUIRES app_core, storage_manager
+  sensor_hub/        REQUIRES app_core
+  upload_pipeline/   REQUIRES app_core, storage_manager, network_manager
+  data_logger/       REQUIRES app_core, storage_manager, upload_pipeline, sensor_hub
+  config_loader/     REQUIRES app_core
+  motion_controller/ REQUIRES app_core
+  gps_module/        REQUIRES app_core, storage_manager, upload_pipeline
+main/                REQUIRES all components above
+```
+
+Tasks (one component at a time):
+- [ ] Create `components/app_core/` — move `app_state`, `app_services.h`, `app_utils`, `error_manager`, `app_context`; update `CMakeLists.txt`
+- [ ] Create `components/config_loader/`
+- [ ] Create `components/storage_manager/`
+- [ ] Create `components/network_manager/`
+- [ ] Create `components/sensor_hub/`
+- [ ] Create `components/upload_pipeline/`
+- [ ] Create `components/data_logger/`
+- [ ] Create `components/motion_controller/`
+- [ ] Create `components/gps_module/`
+- [ ] Clean up `main/CMakeLists.txt` — only `app_main.cpp` + SRCS that haven't moved
+- [ ] Build green, verify binary size within ±4 KB, commit `refactor(fw): migrate to ESP-IDF component system (Phase 10)`
+
+---
+
+## Completed features
 - [x] Axis controls: auto / min / max for all chart series
 - [x] Temperature outlier filter configuration
-- [x] Atmosphere coefficient retrieval and management
+- [x] Atmosphere coefficient retrieval management

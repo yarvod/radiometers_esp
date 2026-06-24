@@ -31,8 +31,7 @@
 
 static constexpr char kTag[] = "NET";
 
-// Forward declaration — InitEthernet calls InitSpiBus defined in app_main.cpp.
-esp_err_t InitSpiBus();
+#include "sensor_hub.h"
 
 // ---------- module constants ----------
 
