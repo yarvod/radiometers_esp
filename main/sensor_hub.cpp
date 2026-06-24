@@ -15,7 +15,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "app_services.h"
 #include "app_state.h"
 #include "app_utils.h"
 #include "error_manager.h"

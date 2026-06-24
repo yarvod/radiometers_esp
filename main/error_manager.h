@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <string>
 
+#include "app_state.h"  // UtcTimeSnapshot for UtcTimeGetterFn
+
+using UtcTimeGetterFn = UtcTimeSnapshot(*)();
+
 enum class ErrorCode : uint8_t {
   kWifiDisconnected = 0,
   kWifiFallback = 1,
@@ -34,6 +38,7 @@ using ErrorPublishFn = void (*)(const std::string& payload);
 
 void ErrorManagerInit();
 void ErrorManagerSetPublisher(ErrorPublishFn publisher);
+void ErrorManagerSetTimeGetter(UtcTimeGetterFn fn);
 void ErrorManagerSet(ErrorCode code, ErrorSeverity severity, const std::string& message);
 void ErrorManagerClear(ErrorCode code);
 void ErrorManagerSetLocal(ErrorCode code, ErrorSeverity severity, const std::string& message);

@@ -43,3 +43,7 @@ bool StartFindZeroTask(std::string* out_message);
 // Logging session control
 void StopLogging();
 bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode);
+
+// Register a callback for publishing measurement payloads (injected to avoid dep on mqtt_bridge).
+using MeasurementPublishFn = void (*)(const std::string& payload);
+void MotionControllerSetPublisher(MeasurementPublishFn fn);

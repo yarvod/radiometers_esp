@@ -25,6 +25,3 @@ bool IsMeteoLogFilename(const char* name);
 
 UtcTimeSnapshot GetBestUtcTimeForData();
 UtcTimeSnapshot GetBestUtcTimeForGps();
-const char*     UtcTimeSourceName(UtcTimeSource source);
-uint64_t        UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot);
-std::string     FormatUtcIso(const UtcTimeSnapshot& snapshot);

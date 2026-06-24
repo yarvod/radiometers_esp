@@ -1,27 +1,10 @@
 #pragma once
 
-#include <cstdint>
+#include "app_state.h"  // MeteoData is defined there; wn90lp.h uses it for getData() and internal storage
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-
-// Measured values from one WN90LP poll.
-// Invalid/missing fields are NaN (std::isnan to check).
-// online == false means the station did not respond at all.
-struct MeteoData {
-  float light_lux       = 0.0f;
-  float uvi             = 0.0f;
-  float temp_c          = 0.0f;
-  float humidity_pct    = 0.0f;
-  float wind_speed_ms   = 0.0f;
-  float gust_speed_ms   = 0.0f;
-  int   wind_dir_deg    = 0;
-  float rainfall_mm     = 0.0f;
-  float pressure_hpa    = 0.0f;
-  bool  online          = false;
-  uint64_t timestamp_ms = 0;
-};
 
 // Write one CSV row to {ActiveStorageMountPoint()}/meteo_YYYYMMDD_HH.txt.
 // Rotates hourly: completed file is moved to ActiveToUploadDir() for S3 upload.

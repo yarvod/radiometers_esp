@@ -52,25 +52,6 @@ static uint64_t GpioMask(gpio_num_t pin) {
 
 
 
-std::string Basename(const std::string& path) {
-  const size_t pos = path.find_last_of('/');
-  if (pos == std::string::npos) return path;
-  return path.substr(pos + 1);
-}
-
-bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::string* out_new_path) {
-  if (src_path.empty() || !dest_dir) return false;
-  if (!EnsureDirExists(dest_dir)) return false;
-  std::string dest = std::string(dest_dir) + "/" + Basename(src_path);
-  if (rename(src_path.c_str(), dest.c_str()) != 0) {
-    ESP_LOGE(kTag, "Failed to move %s -> %s (errno %d)", src_path.c_str(), dest.c_str(), errno);
-    return false;
-  }
-  if (out_new_path) {
-    *out_new_path = dest;
-  }
-  return true;
-}
 
 
 // TinyUSB MSC descriptors (single-interface device)
@@ -371,6 +352,7 @@ extern "C" void app_main(void) {
       ESP_LOGW(kTag, "WN90LP init failed: %s", esp_err_to_name(wn_err));
   }
   const esp_err_t gps_err = StartGpsModule();
+  ErrorManagerSetTimeGetter(GetBestUtcTimeForData);
   ApplyNetworkConfig();
   StartSntp();
   if (EnsureTimeSynced(8000)) {

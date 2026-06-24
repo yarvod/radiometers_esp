@@ -2,7 +2,7 @@
 
 #include <array>
 
-#include <app_services.h>
+#include "app_utils.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -56,6 +56,7 @@ static_assert(kErrorMeta.size() == static_cast<size_t>(ErrorCode::kMax), "error 
 SemaphoreHandle_t error_mutex = nullptr;
 TimerHandle_t blink_timer = nullptr;
 ErrorPublishFn publish_fn = nullptr;
+UtcTimeGetterFn s_time_getter = nullptr;
 
 std::array<ErrorEntry, static_cast<size_t>(ErrorCode::kMax)> entries{};
 
@@ -85,7 +86,7 @@ void PublishEvent(ErrorCode code, ErrorSeverity severity, const std::string& mes
   if (!publish_fn) {
     return;
   }
-  const UtcTimeSnapshot ts = GetBestUtcTimeForData();
+  const UtcTimeSnapshot ts = s_time_getter ? s_time_getter() : UtcTimeSnapshot{};
   const std::string iso = FormatUtcIso(ts);
   const uint64_t ts_ms = UtcTimeToUnixMs(ts);
 
@@ -214,6 +215,10 @@ void ErrorManagerInit() {
 
 void ErrorManagerSetPublisher(ErrorPublishFn publisher) {
   publish_fn = publisher;
+}
+
+void ErrorManagerSetTimeGetter(UtcTimeGetterFn fn) {
+  s_time_getter = fn;
 }
 
 void ErrorManagerSet(ErrorCode code, ErrorSeverity severity, const std::string& message) {

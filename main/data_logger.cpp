@@ -9,10 +9,12 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 
-#include "app_services.h"
 #include "app_state.h"
+#include "app_utils.h"
+#include "gps_module.h"
+#include "network_manager.h"
+#include "sensor_hub.h"
 #include "storage_manager.h"
-#include "upload_pipeline.h"
 
 static constexpr char kTag[] = "DLOG";
 
@@ -110,8 +112,5 @@ bool OpenLogFileWithPostfix(const std::string& postfix) {
     s.log_filename = filename;
   });
   current_log_path = full_path;
-  if (app_config.storage_backend == StorageBackend::kSd) {
-    UpdateSdStatsLocked();
-  }
   return true;
 }

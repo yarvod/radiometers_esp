@@ -15,8 +15,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "app_services.h"
 #include "app_state.h"
+#include "app_utils.h"
 #include "error_manager.h"
 #include "gps_unicore.h"
 #include "network_manager.h"
@@ -117,21 +117,6 @@ static UtcTimeSnapshot MakeSystemTimeSnapshot(UtcTimeSource source, bool valid) 
 }
 
 // ---------- public UTC time utilities ----------
-
-const char* UtcTimeSourceName(UtcTimeSource source) {
-  switch (source) {
-    case UtcTimeSource::kSntp:        return "sntp";
-    case UtcTimeSource::kGps:         return "gps";
-    case UtcTimeSource::kSystemCached: return "system_cached";
-    case UtcTimeSource::kMonotonic:   return "monotonic";
-    default:                          return "none";
-  }
-}
-
-uint64_t UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot) {
-  if (snapshot.unix_time <= 0) return esp_timer_get_time() / 1000ULL;
-  return static_cast<uint64_t>(snapshot.unix_time) * 1000ULL + snapshot.millisecond;
-}
 
 UtcTimeSnapshot GetBestUtcTimeForData() {
   if (IsSntpUsable()) return MakeSystemTimeSnapshot(UtcTimeSource::kSntp, true);

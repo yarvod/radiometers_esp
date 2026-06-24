@@ -10,9 +10,10 @@
 #include <vector>
 
 #include "control_actions.h"
-#include "app_services.h"
 #include "app_state.h"
 #include "app_utils.h"
+#include "gps_module.h"
+#include "motion_controller.h"
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "error_manager.h"
@@ -789,6 +790,7 @@ static void mqtt_event_dispatch(void* handler_args, esp_event_base_t base, int32
 }  // namespace
 
 void StartMqttBridge() {
+  MotionControllerSetPublisher(PublishMeasurementPayload);
   if (!app_config.mqtt_enabled) {
     ESP_LOGI(TAG_MQTT, "MQTT disabled by config");
     return;

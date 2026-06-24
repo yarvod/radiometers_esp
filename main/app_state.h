@@ -12,8 +12,23 @@
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "wn90lp.h"
-#include "storage_manager.h"
+#include "sdmmc_cmd.h"
+
+// Measured values from one WN90LP weather station poll.
+// Invalid/missing fields are NaN; online==false means no response.
+struct MeteoData {
+  float    light_lux    = 0.0f;
+  float    uvi          = 0.0f;
+  float    temp_c       = 0.0f;
+  float    humidity_pct = 0.0f;
+  float    wind_speed_ms  = 0.0f;
+  float    gust_speed_ms  = 0.0f;
+  int      wind_dir_deg   = 0;
+  float    rainfall_mm  = 0.0f;
+  float    pressure_hpa = 0.0f;
+  bool     online       = false;
+  uint64_t timestamp_ms = 0;
+};
 
 constexpr int MAX_TEMP_SENSORS = 16;
 inline constexpr char CONFIG_MOUNT_POINT[] = "/sdcard";

@@ -16,13 +16,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "app_services.h"
 #include "app_state.h"
 #include "app_utils.h"
 #include "data_logger.h"
 #include "error_manager.h"
 #include "hw_pins.h"
-#include "mqtt_bridge.h"
+#include "gps_module.h"
 #include "sensor_hub.h"
 #include "storage_manager.h"
 #include "upload_pipeline.h"
@@ -33,6 +32,7 @@ static constexpr char kTag[] = "MOTION";
 
 static constexpr uint32_t kExtPwrCycleStackBytes = 6144;
 static TaskHandle_t s_ext_pwr_cycle_task = nullptr;
+static MeasurementPublishFn s_publish_fn = nullptr;
 
 // ---------- GPIO helpers ----------
 
@@ -74,6 +74,8 @@ bool IsGpsAntennaShort() {
 }
 
 // ---------- heater / fan PWM ----------
+
+void MotionControllerSetPublisher(MeasurementPublishFn fn) { s_publish_fn = fn; }
 
 void MotionControllerInit() {
   // Heater: LEDC timer 0 + channel 0 at 1 kHz, 10-bit
@@ -640,7 +642,7 @@ static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const 
   }
   const char* json = cJSON_PrintUnformatted(root);
   if (json) {
-    PublishMeasurementPayload(json);
+    if (s_publish_fn) s_publish_fn(json);
   }
   cJSON_free((void*)json);
   cJSON_Delete(root);

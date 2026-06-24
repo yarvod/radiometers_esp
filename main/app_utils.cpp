@@ -2,9 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 
-#include <app_state.h>
+#include "esp_log.h"
+#include "esp_timer.h"
 
 std::string Trim(const std::string& str) {
   size_t start = 0;
@@ -214,8 +218,33 @@ std::string FormatUtcIso(const UtcTimeSnapshot& snapshot) {
   return std::string(buf);
 }
 
-std::string IsoUtcNow() {
-  return FormatUtcIso(GetBestUtcTimeForData());
+uint64_t UtcTimeToUnixMs(const UtcTimeSnapshot& snapshot) {
+  if (snapshot.unix_time <= 0) return esp_timer_get_time() / 1000ULL;
+  return static_cast<uint64_t>(snapshot.unix_time) * 1000ULL + snapshot.millisecond;
+}
+
+const char* UtcTimeSourceName(UtcTimeSource source) {
+  switch (source) {
+    case UtcTimeSource::kSntp:         return "sntp";
+    case UtcTimeSource::kGps:          return "gps";
+    case UtcTimeSource::kSystemCached: return "system_cached";
+    case UtcTimeSource::kMonotonic:    return "monotonic";
+    default:                           return "none";
+  }
+}
+
+std::string Basename(const std::string& path) {
+  const size_t pos = path.find_last_of('/');
+  if (pos == std::string::npos) return path;
+  return path.substr(pos + 1);
+}
+
+bool MoveFileToDir(const std::string& src_path, const char* dest_dir, std::string* out_new_path) {
+  if (src_path.empty() || !dest_dir) return false;
+  const std::string dest = std::string(dest_dir) + "/" + Basename(src_path);
+  if (rename(src_path.c_str(), dest.c_str()) != 0) return false;
+  if (out_new_path) *out_new_path = dest;
+  return true;
 }
 
 uint16_t ClampSensorMask(uint16_t mask, int count) {
