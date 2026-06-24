@@ -5,7 +5,6 @@ idf_component_register(
         "web_ui.cpp"
         "control_actions.cpp"
         "mqtt_bridge.cpp"
-        "wn90lp.cpp"
 
     REQUIRES
         app_core
@@ -17,6 +16,7 @@ idf_component_register(
         data_logger
         gps_module
         motion_controller
+        wn90lp
 
     PRIV_REQUIRES
         esp_wifi
