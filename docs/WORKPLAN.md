@@ -131,39 +131,48 @@
 
 ---
 
-### Phase 10 — ESP-IDF Component System migration
-**Risk: LOW** — organisational only; no binary behaviour change.
-**Prereq:** Phases 6-9 complete so all module boundaries are clean.
+### Phase 10 — ESP-IDF Component System migration ✅ DONE
 
-Each flat module in `main/` becomes a proper `components/NAME/` directory with its own `idf_component_register()`.
+Each flat module moved from `main/` to a proper `components/NAME/` directory.
 
-Target layout:
+Final layout:
 ```
 components/
-  app_core/          ← app_state.h/.cpp, app_services.h, app_context.h, app_utils.h/.cpp, error_manager
-  storage_manager/   REQUIRES app_core
-  network_manager/   REQUIRES app_core, storage_manager
-  sensor_hub/        REQUIRES app_core
-  upload_pipeline/   REQUIRES app_core, storage_manager, network_manager
-  data_logger/       REQUIRES app_core, storage_manager, upload_pipeline, sensor_hub
-  config_loader/     REQUIRES app_core
-  motion_controller/ REQUIRES app_core
-  gps_module/        REQUIRES app_core, storage_manager, upload_pipeline
-main/                REQUIRES all components above
+  app_core/          ← app_state, app_utils, error_manager, hw_pins, app_context
+  storage_manager/   PRIV_REQUIRES app_core
+  config_loader/     REQUIRES app_core; PRIV_REQUIRES storage_manager
+  network_manager/   PRIV_REQUIRES app_core, storage_manager, sensor_hub
+  sensor_hub/        PRIV_REQUIRES app_core, storage_manager
+  upload_pipeline/   PRIV_REQUIRES app_core, storage_manager, gps_module, data_logger
+  data_logger/       PRIV_REQUIRES app_core, storage_manager, gps_module, network_manager, sensor_hub
+  gps_module/        REQUIRES app_core; PRIV_REQUIRES storage_manager, network_manager, upload_pipeline
+  motion_controller/ REQUIRES app_core; PRIV_REQUIRES storage_manager, data_logger, sensor_hub, upload_pipeline, gps_module
+main/                ← app_main, http_handlers, web_ui, control_actions, mqtt_bridge, wn90lp
+                       REQUIRES all components above
 ```
 
-Tasks (one component at a time):
-- [ ] Create `components/app_core/` — move `app_state`, `app_services.h`, `app_utils`, `error_manager`, `app_context`; update `CMakeLists.txt`
-- [ ] Create `components/config_loader/`
-- [ ] Create `components/storage_manager/`
-- [ ] Create `components/network_manager/`
-- [ ] Create `components/sensor_hub/`
-- [ ] Create `components/upload_pipeline/`
-- [ ] Create `components/data_logger/`
-- [ ] Create `components/motion_controller/`
-- [ ] Create `components/gps_module/`
-- [ ] Clean up `main/CMakeLists.txt` — only `app_main.cpp` + SRCS that haven't moved
-- [ ] Build green, verify binary size within ±4 KB, commit `refactor(fw): migrate to ESP-IDF component system (Phase 10)`
+Pre-migration decoupling fixes:
+- [x] `MeteoData` moved from `wn90lp.h` → `app_state.h`; `wn90lp.h` includes `app_state.h`
+- [x] `app_state.h`: replace `#include "storage_manager.h"` with `#include "sdmmc_cmd.h"`
+- [x] UTC utilities (`FormatUtcIso`, `UtcTimeToUnixMs`, `UtcTimeSourceName`) moved to `app_utils`
+- [x] `IsoUtcNow` (dead code, never called) removed entirely
+- [x] `Basename`, `MoveFileToDir` moved from `app_main.cpp` → `app_utils.cpp`
+- [x] `error_manager`: `UtcTimeGetterFn` + `ErrorManagerSetTimeGetter` to break GPS dep
+- [x] `motion_controller`: `MeasurementPublishFn` + `MotionControllerSetPublisher` to break mqtt_bridge dep
+- [x] `data_logger`: removed `UpdateSdStatsLocked()` call to break circular dep on `upload_pipeline`
+
+Component tasks:
+- [x] Create `components/app_core/` (app_state, app_utils, error_manager, hw_pins, app_context)
+- [x] Create `components/config_loader/`
+- [x] Create `components/storage_manager/`
+- [x] Create `components/network_manager/`
+- [x] Create `components/sensor_hub/` (includes ltc2440, onewire_m1820)
+- [x] Create `components/upload_pipeline/` (includes sd_maintenance, TLS certs)
+- [x] Create `components/data_logger/`
+- [x] Create `components/motion_controller/`
+- [x] Create `components/gps_module/` (includes gps_unicore)
+- [x] Clean up `main/CMakeLists.txt` — 6 SRCS + REQUIRES all components
+- [x] Build green: binary `0x16dc90` (+48 bytes vs Phase 9), zero warnings
 
 ---
 
