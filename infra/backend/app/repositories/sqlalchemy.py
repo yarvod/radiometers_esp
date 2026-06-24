@@ -65,6 +65,7 @@ def to_device(model: DeviceModel) -> Device:
         temp_bindings=dict(model.temp_bindings or {}),
         atmosphere_config=dict(model.atmosphere_config or {}),
         adc_labels=dict(model.adc_labels or {}),
+        has_meteo=bool(model.has_meteo),
     )
 
 
@@ -449,6 +450,13 @@ class SqlDeviceRepository(DeviceRepository):
             updated_at=model.updated_at,
             created_at=model.created_at,
         )
+
+    async def set_has_meteo(self, device_id: str, value: bool) -> None:
+        result = await self._session.execute(select(DeviceModel).where(DeviceModel.id == device_id))
+        device = result.scalar_one_or_none()
+        if device:
+            device.has_meteo = value
+            await self._session.flush()
 
 
 class SqlMeasurementRepository(MeasurementRepository):

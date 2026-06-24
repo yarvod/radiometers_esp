@@ -198,3 +198,6 @@ class DeviceService:
             mode=mode,
             actual_mode=actual_mode,
         )
+
+    async def set_has_meteo(self, device_id: str, value: bool) -> None:
+        await self._devices.set_has_meteo(device_id=device_id, value=value)

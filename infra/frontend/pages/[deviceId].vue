@@ -16,6 +16,7 @@
       <button class="tab-btn" :class="{ active: activeTab === 'data' }" @click="setActiveTab('data')">Данные</button>
       <button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="setActiveTab('control')">Мониторинг и управление</button>
       <button class="tab-btn" :class="{ active: activeTab === 'gps' }" @click="setActiveTab('gps')">GPS</button>
+      <button v-if="hasMeteo" class="tab-btn" :class="{ active: activeTab === 'meteo' }" @click="setActiveTab('meteo')">Метео</button>
       <button class="tab-btn" :class="{ active: activeTab === 'calibration' }" @click="setActiveTab('calibration')">Калибровка</button>
       <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="setActiveTab('settings')">Настройки</button>
       <button class="tab-btn" :class="{ active: activeTab === 'errors' }" @click="setActiveTab('errors')">Ошибки</button>
@@ -795,6 +796,31 @@
       @update:rtcm-text="updateGpsRtcmText"
     />
 
+    <div class="card" v-show="activeTab === 'meteo'">
+      <div class="card-head">
+        <h3>Метеостанция WN90LP</h3>
+        <span v-if="!hasMeteo" class="badge subtle">не обнаружена</span>
+        <span v-else-if="meteoState.meteoOnline" class="badge success">онлайн</span>
+        <span v-else class="badge danger">офлайн</span>
+      </div>
+      <div v-if="!hasMeteo" class="muted" style="padding:1rem">
+        Метеостанция не зарегистрирована. Данные появятся после первого успешного опроса WN90LP.
+      </div>
+      <table v-else class="data-table" style="margin-top:.5rem">
+        <tbody>
+          <tr><td class="label-cell">Температура</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoTemp?.toFixed(1) + ' °C') : '—' }}</td></tr>
+          <tr><td class="label-cell">Влажность</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoHumidity?.toFixed(0) + ' %') : '—' }}</td></tr>
+          <tr><td class="label-cell">Давление</td><td>{{ meteoState.meteoOnline ? (meteoState.metroPressure?.toFixed(1) + ' hPa') : '—' }}</td></tr>
+          <tr><td class="label-cell">Ветер</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoWindSpeed?.toFixed(1) + ' м/с, ' + meteoState.meteoWindDir + '°') : '—' }}</td></tr>
+          <tr><td class="label-cell">Порывы</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoGustSpeed?.toFixed(1) + ' м/с') : '—' }}</td></tr>
+          <tr><td class="label-cell">Осадки</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoRainfall?.toFixed(1) + ' мм') : '—' }}</td></tr>
+          <tr><td class="label-cell">Освещённость</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoLight?.toFixed(0) + ' лк') : '—' }}</td></tr>
+          <tr><td class="label-cell">УФ-индекс</td><td>{{ meteoState.meteoOnline ? meteoState.meteoUvi?.toFixed(1) : '—' }}</td></tr>
+          <tr v-if="meteoState.meteoTimestampMs"><td class="label-cell">Последний опрос</td><td class="muted">{{ new Date(meteoState.meteoTimestampMs).toLocaleString() }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+
     <DeviceCalibrationPanel
       v-show="activeTab === 'calibration'"
       :device-id="deviceId"
@@ -942,6 +968,7 @@ type DeviceConfig = {
   temp_bindings: Record<string, string>
   atmosphere_config: AtmosphereConfig
   adc_labels: Record<string, string>
+  has_meteo: boolean
 }
 
 type AtmosphereBandKey = 'adc2' | 'adc3'
@@ -1067,7 +1094,7 @@ type TempConfigRow = {
   label: string
 }
 
-type DeviceTab = 'data' | 'control' | 'gps' | 'calibration' | 'settings' | 'errors'
+type DeviceTab = 'data' | 'control' | 'gps' | 'meteo' | 'calibration' | 'settings' | 'errors'
 
 const { apiFetch } = useApi()
 const route = useRoute()
@@ -1078,7 +1105,7 @@ store.init(nuxtApp.$mqtt)
 
 const device = computed(() => (deviceId.value ? store.devices.get(deviceId.value) : undefined))
 const deviceConfig = ref<DeviceConfig | null>(null)
-const validTabs = new Set<DeviceTab>(['data', 'control', 'gps', 'calibration', 'settings', 'errors'])
+const validTabs = new Set<DeviceTab>(['data', 'control', 'gps', 'meteo', 'calibration', 'settings', 'errors'])
 const tabFromQuery = (): DeviceTab => {
   const raw = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
   return raw && validTabs.has(raw as DeviceTab) ? (raw as DeviceTab) : 'control'
@@ -1222,6 +1249,10 @@ const hasGps = computed(() => {
     state.gpsPositionValid === true ||
     state.gpsTimeValid === true
 })
+const hasMeteo = computed(() =>
+  !!deviceConfig.value?.has_meteo || device.value?.state?.meteoOnline === true
+)
+const meteoState = computed(() => device.value?.state || {})
 const adcLabelDefaults: Record<string, string> = {
   adc1: 'ADC1',
   adc2: 'ADC2',

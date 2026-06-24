@@ -68,6 +68,10 @@ class DeviceRepository(ABC):
     ) -> DeviceGpsConfig:
         raise NotImplementedError
 
+    @abstractmethod
+    async def set_has_meteo(self, device_id: str, value: bool) -> None:
+        raise NotImplementedError
+
 
 class StationRepository(ABC):
     @abstractmethod

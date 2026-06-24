@@ -17,6 +17,7 @@ class Device:
     temp_bindings: dict[str, str]
     atmosphere_config: dict[str, object]
     adc_labels: dict[str, str]
+    has_meteo: bool = False
 
 
 @dataclass

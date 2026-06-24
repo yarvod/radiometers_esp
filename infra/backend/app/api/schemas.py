@@ -61,6 +61,7 @@ class DeviceOut(BaseModel):
     display_name: Optional[str] = None
     created_at: datetime
     last_seen_at: Optional[datetime] = None
+    has_meteo: bool = False
 
 
 class DeviceConfigOut(BaseModel):
@@ -74,6 +75,7 @@ class DeviceConfigOut(BaseModel):
     temp_bindings: dict[str, str] = Field(default_factory=dict)
     atmosphere_config: dict[str, object] = Field(default_factory=dict)
     adc_labels: dict[str, str] = Field(default_factory=dict)
+    has_meteo: bool = False
 
 
 class AtmosphereEffectiveTemperaturePointOut(BaseModel):

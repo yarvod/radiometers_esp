@@ -27,6 +27,7 @@ class DeviceModel(Base):
     temp_bindings: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
     atmosphere_config: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict)
     adc_labels: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
+    has_meteo: Mapped[bool] = mapped_column(Boolean, default=False)
 
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")
     radiometer_calibrations: Mapped[list[RadiometerCalibrationModel]] = relationship(

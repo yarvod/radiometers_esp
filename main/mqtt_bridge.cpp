@@ -496,6 +496,18 @@ void BuildMqttState(char* out, size_t out_len) {
   JsonAppend(&b, ",\"timestampMs\":%llu,\"timeSource\":",
              static_cast<unsigned long long>(UtcTimeToUnixMs(now)));
   JsonAppendEscaped(&b, UtcTimeSourceName(now.source));
+  {
+    const MeteoData& m = state.meteo;
+    JsonAppend(&b, ",\"meteoOnline\":%s", m.online ? "true" : "false");
+    if (m.online) {
+      JsonAppend(&b, ",\"meteoTemp\":%.2f,\"meteoHumidity\":%.2f", m.temp_c, m.humidity_pct);
+      JsonAppend(&b, ",\"meteoWindSpeed\":%.2f,\"meteoGustSpeed\":%.2f,\"meteoWindDir\":%d",
+                 m.wind_speed_ms, m.gust_speed_ms, m.wind_dir_deg);
+      JsonAppend(&b, ",\"metroPressure\":%.2f,\"meteoRainfall\":%.2f", m.pressure_hpa, m.rainfall_mm);
+      JsonAppend(&b, ",\"meteoLight\":%.1f,\"meteoUvi\":%.2f", m.light_lux, m.uvi);
+      JsonAppend(&b, ",\"meteoTimestampMs\":%llu", static_cast<unsigned long long>(m.timestamp_ms));
+    }
+  }
   JsonAppend(&b, "}");
 }
 
