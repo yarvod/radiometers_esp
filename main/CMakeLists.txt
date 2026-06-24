@@ -1,26 +1,22 @@
 idf_component_register(
     SRCS
         "app_main.cpp"
-        "app_state.cpp"
         "http_handlers.cpp"
         "web_ui.cpp"
-        "ltc2440.cpp"
-        "onewire_m1820.cpp"
         "control_actions.cpp"
         "mqtt_bridge.cpp"
-        "error_manager.cpp"
-        "app_utils.cpp"
-        "sd_maintenance.cpp"
-        "config_loader.cpp"
-        "storage_manager.cpp"
-        "network_manager.cpp"
-        "upload_pipeline.cpp"
-        "data_logger.cpp"
-        "sensor_hub.cpp"
-        "gps_module.cpp"
-        "motion_controller.cpp"
-        "gps_unicore.cpp"
         "wn90lp.cpp"
+
+    REQUIRES
+        app_core
+        storage_manager
+        config_loader
+        network_manager
+        sensor_hub
+        upload_pipeline
+        data_logger
+        gps_module
+        motion_controller
 
     PRIV_REQUIRES
         esp_wifi
@@ -42,11 +38,8 @@ idf_component_register(
         wear_levelling
         onewire_bus
         efuse
-    mqtt
+        mqtt
     INCLUDE_DIRS "."
-    EMBED_TXTFILES
-        "ca.crt"
-        "isrgrootx1.pem"
 )
 
 set_property(TARGET ${COMPONENT_LIB} PROPERTY CXX_STANDARD 17)
