@@ -1,3 +1,4 @@
+import io
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -154,17 +155,23 @@ async def import_gnss_data(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
-    content = await file.read()
+    text_stream: io.TextIOWrapper | None = None
     try:
-        text = content.decode("utf-8-sig")
+        file.file.seek(0)
+        text_stream = io.TextIOWrapper(file.file, encoding="utf-8-sig", newline=None)
+        summary = await gnss_data.import_lines(device_id=device_id, gnss_data_id=gnss_data_id, lines=text_stream)
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="GNSS file must be UTF-8 text") from exc
-    try:
-        summary = await gnss_data.import_text(device_id=device_id, gnss_data_id=gnss_data_id, raw_text=text)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="GNSS dataset not found") from exc
     except GnssDataImportError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"errors": exc.errors}) from exc
+    finally:
+        if text_stream is not None:
+            try:
+                text_stream.detach()
+            except Exception:
+                pass
     return GnssDataImportResponse(
         dataset=GnssDataOut.model_validate(summary.dataset, from_attributes=True),
         parsed_rows=summary.parsed_rows,

@@ -598,6 +598,9 @@ class SqlGnssDataRepository(GnssDataRepository):
         await self._session.refresh(model)
         return to_gnss_data(model)
 
+    async def commit(self) -> None:
+        await self._session.commit()
+
     async def list_points(
         self,
         device_id: str,

@@ -29,6 +29,7 @@ class FakeGnssRepository:
         self.dataset = make_dataset()
         self.rows: list[dict[str, object]] = []
         self.batch_sizes: list[int] = []
+        self.commits = 0
 
     async def list(self, device_id: str):
         return [self.dataset]
@@ -55,6 +56,9 @@ class FakeGnssRepository:
         self.dataset.start_at = self.rows[0]["measured_at"]
         self.dataset.end_at = self.rows[-1]["measured_at"]
         return self.dataset
+
+    async def commit(self):
+        self.commits += 1
 
     async def list_points(self, *args, **kwargs):
         return {}
@@ -132,3 +136,4 @@ async def test_import_text_chunks_large_files_under_asyncpg_parameter_limit():
 
     assert summary.upserted_rows == 4001
     assert repo.batch_sizes == [4000, 1]
+    assert repo.commits == 3

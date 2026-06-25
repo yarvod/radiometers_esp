@@ -264,6 +264,10 @@ class GnssDataRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def commit(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def list_points(
         self,
         device_id: str,

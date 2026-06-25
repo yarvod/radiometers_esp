@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Iterable, Sequence
 
 from app.domain.entities import GnssData, GnssDataMeasurementPoint
 from app.repositories.interfaces import GnssDataRepository
@@ -77,20 +77,60 @@ class GnssDataService:
         return await self._repository.delete(device_id, gnss_data_id)
 
     async def import_text(self, device_id: str, gnss_data_id: str, raw_text: str) -> GnssImportSummary:
+        return await self.import_lines(device_id, gnss_data_id, raw_text.splitlines())
+
+    async def import_lines(
+        self, device_id: str, gnss_data_id: str, lines: Iterable[str]
+    ) -> GnssImportSummary:
         dataset = await self._repository.get(device_id, gnss_data_id)
         if not dataset:
             raise LookupError("GNSS dataset not found")
 
-        rows, parsed_rows, duplicate_rows, skipped_rows, errors = self._parse_rows(raw_text)
-        if not rows:
+        chunk: dict[datetime, dict[str, object]] = {}
+        seen_times: set[datetime] = set()
+        parsed_rows = 0
+        duplicate_rows = 0
+        skipped_rows = 0
+        upserted_rows = 0
+        first_timestamp: datetime | None = None
+        last_timestamp: datetime | None = None
+        errors: list[str] = []
+
+        async def flush_chunk() -> None:
+            nonlocal upserted_rows
+            if not chunk:
+                return
+            rows = [chunk[key] for key in sorted(chunk)]
+            upserted_rows += await self._repository.upsert_measurements(gnss_data_id, rows)
+            await self._repository.commit()
+            chunk.clear()
+
+        for line_no, raw_line in enumerate(lines, start=1):
+            parsed = self._parse_line(raw_line, line_no, errors)
+            if parsed is None:
+                if raw_line.strip() and not raw_line.strip().startswith("%"):
+                    skipped_rows += 1
+                continue
+            parsed_rows += 1
+            measured_at = parsed["measured_at"]  # type: ignore[assignment]
+            if not isinstance(measured_at, datetime):
+                skipped_rows += 1
+                continue
+            if measured_at in seen_times:
+                duplicate_rows += 1
+            seen_times.add(measured_at)
+            first_timestamp = measured_at if first_timestamp is None else min(first_timestamp, measured_at)
+            last_timestamp = measured_at if last_timestamp is None else max(last_timestamp, measured_at)
+            chunk[measured_at] = parsed
+            if len(chunk) >= DEFAULT_CHUNK_SIZE:
+                await flush_chunk()
+
+        if not parsed_rows:
             raise GnssDataImportError(errors or ["No valid GNSS rows found"])
 
-        upserted_rows = 0
-        for start in range(0, len(rows), DEFAULT_CHUNK_SIZE):
-            upserted_rows += await self._repository.upsert_measurements(
-                gnss_data_id, rows[start : start + DEFAULT_CHUNK_SIZE]
-            )
+        await flush_chunk()
         refreshed = await self._repository.refresh_stats(device_id, gnss_data_id)
+        await self._repository.commit()
         dataset = refreshed or dataset
         return GnssImportSummary(
             dataset=dataset,
@@ -98,8 +138,8 @@ class GnssDataService:
             upserted_rows=upserted_rows,
             duplicate_rows=duplicate_rows,
             skipped_rows=skipped_rows,
-            first_timestamp=rows[0]["measured_at"],  # type: ignore[index]
-            last_timestamp=rows[-1]["measured_at"],  # type: ignore[index]
+            first_timestamp=first_timestamp,
+            last_timestamp=last_timestamp,
             errors=errors,
         )
 
@@ -137,36 +177,43 @@ class GnssDataService:
         errors: list[str] = []
 
         for line_no, raw_line in enumerate(raw_text.splitlines(), start=1):
-            line = raw_line.strip()
-            if not line or line.startswith("%"):
-                continue
-            parts = line.split()
-            if len(parts) != 9:
-                skipped_rows += 1
-                self._append_error(errors, line_no, "expected 9 whitespace-separated columns")
-                continue
-            try:
-                year, month, day, hour, minute, second = (int(value) for value in parts[:6])
-                measured_at = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
-                pw_mm = self._finite_float(parts[6], required=True)
-                spw_mm = self._finite_float(parts[7], required=False)
-                temperature_c = self._finite_float(parts[8], required=False)
-            except (TypeError, ValueError) as exc:
-                skipped_rows += 1
-                self._append_error(errors, line_no, str(exc))
+            parsed = self._parse_line(raw_line, line_no, errors)
+            if parsed is None:
+                if raw_line.strip() and not raw_line.strip().startswith("%"):
+                    skipped_rows += 1
                 continue
             parsed_rows += 1
+            measured_at = parsed["measured_at"]
             if measured_at in by_time:
                 duplicate_rows += 1
-            by_time[measured_at] = {
-                "measured_at": measured_at,
-                "pw_mm": pw_mm,
-                "spw_mm": spw_mm,
-                "temperature_c": temperature_c,
-            }
+            by_time[measured_at] = parsed
 
         rows = [by_time[key] for key in sorted(by_time)]
         return rows, parsed_rows, duplicate_rows, skipped_rows, errors
+
+    def _parse_line(self, raw_line: str, line_no: int, errors: list[str]) -> dict[str, object] | None:
+        line = raw_line.strip()
+        if not line or line.startswith("%"):
+            return None
+        parts = line.split()
+        if len(parts) != 9:
+            self._append_error(errors, line_no, "expected 9 whitespace-separated columns")
+            return None
+        try:
+            year, month, day, hour, minute, second = (int(value) for value in parts[:6])
+            measured_at = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+            pw_mm = self._finite_float(parts[6], required=True)
+            spw_mm = self._finite_float(parts[7], required=False)
+            temperature_c = self._finite_float(parts[8], required=False)
+        except (TypeError, ValueError) as exc:
+            self._append_error(errors, line_no, str(exc))
+            return None
+        return {
+            "measured_at": measured_at,
+            "pw_mm": pw_mm,
+            "spw_mm": spw_mm,
+            "temperature_c": temperature_c,
+        }
 
     def _append_error(self, errors: list[str], line_no: int, message: str) -> None:
         if len(errors) < MAX_IMPORT_ERRORS:
