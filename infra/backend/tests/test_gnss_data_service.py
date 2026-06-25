@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -28,6 +28,7 @@ class FakeGnssRepository:
     def __init__(self) -> None:
         self.dataset = make_dataset()
         self.rows: list[dict[str, object]] = []
+        self.batch_sizes: list[int] = []
 
     async def list(self, device_id: str):
         return [self.dataset]
@@ -45,6 +46,7 @@ class FakeGnssRepository:
         return True
 
     async def upsert_measurements(self, gnss_data_id: str, rows):
+        self.batch_sizes.append(len(rows))
         self.rows.extend(rows)
         return len(rows)
 
@@ -112,3 +114,21 @@ async def test_import_text_rejects_file_without_valid_rows():
 
     assert exc.value.errors
     assert repo.rows == []
+
+
+@pytest.mark.asyncio
+async def test_import_text_chunks_large_files_under_asyncpg_parameter_limit():
+    repo = FakeGnssRepository()
+    service = GnssDataService(repo)  # type: ignore[arg-type]
+    start = datetime(2023, 1, 1, tzinfo=timezone.utc)
+    rows = []
+    for idx in range(4001):
+        dt = start + timedelta(hours=idx)
+        rows.append(
+            f"{dt.year:04d} {dt.month:02d} {dt.day:02d} {dt.hour:02d} {dt.minute:02d} {dt.second:02d} 6.47 5.22 5.25"
+        )
+
+    summary = await service.import_text("dev-1", "gnss-1", "\n".join(rows))
+
+    assert summary.upserted_rows == 4001
+    assert repo.batch_sizes == [4000, 1]

@@ -9,7 +9,7 @@ from app.domain.entities import GnssData, GnssDataMeasurementPoint
 from app.repositories.interfaces import GnssDataRepository
 
 
-DEFAULT_CHUNK_SIZE = 5000
+DEFAULT_CHUNK_SIZE = 4000
 MAX_IMPORT_ERRORS = 20
 
 
