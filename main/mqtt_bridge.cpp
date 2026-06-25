@@ -1,6 +1,7 @@
 #include "mqtt_bridge.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
@@ -500,11 +501,22 @@ void BuildMqttState(char* out, size_t out_len) {
     const MeteoData& m = state.meteo;
     JsonAppend(&b, ",\"meteoOnline\":%s", m.online ? "true" : "false");
     if (m.online) {
-      JsonAppend(&b, ",\"meteoTemp\":%.2f,\"meteoHumidity\":%.2f", m.temp_c, m.humidity_pct);
-      JsonAppend(&b, ",\"meteoWindSpeed\":%.2f,\"meteoGustSpeed\":%.2f,\"meteoWindDir\":%d",
-                 m.wind_speed_ms, m.gust_speed_ms, m.wind_dir_deg);
-      JsonAppend(&b, ",\"metroPressure\":%.2f,\"meteoRainfall\":%.2f", m.pressure_hpa, m.rainfall_mm);
-      JsonAppend(&b, ",\"meteoLight\":%.1f,\"meteoUvi\":%.2f", m.light_lux, m.uvi);
+      // WN90LP uses 0xFFFF sentinel -> NaN; emit JSON null to keep payload valid.
+      char t1[16], t2[16], t3[16], t4[16], t5[16], t6[16], t7[16], t8[16];
+      auto fv = [](char* buf, float v, const char* fmt) -> const char* {
+        if (std::isnan(v)) return "null";
+        snprintf(buf, 16, fmt, v);
+        return buf;
+      };
+      JsonAppend(&b, ",\"meteoTemp\":%s",      fv(t1, m.temp_c,        "%.2f"));
+      JsonAppend(&b, ",\"meteoHumidity\":%s",  fv(t2, m.humidity_pct,  "%.2f"));
+      JsonAppend(&b, ",\"meteoWindSpeed\":%s", fv(t3, m.wind_speed_ms, "%.2f"));
+      JsonAppend(&b, ",\"meteoGustSpeed\":%s", fv(t4, m.gust_speed_ms, "%.2f"));
+      JsonAppend(&b, ",\"meteoWindDir\":%d",   m.wind_dir_deg);
+      JsonAppend(&b, ",\"meteoPressure\":%s",  fv(t5, m.pressure_hpa,  "%.2f"));
+      JsonAppend(&b, ",\"meteoRainfall\":%s",  fv(t6, m.rainfall_mm,   "%.2f"));
+      JsonAppend(&b, ",\"meteoLight\":%s",     fv(t7, m.light_lux,     "%.1f"));
+      JsonAppend(&b, ",\"meteoUvi\":%s",       fv(t8, m.uvi,           "%.2f"));
       JsonAppend(&b, ",\"meteoTimestampMs\":%llu", static_cast<unsigned long long>(m.timestamp_ms));
     }
   }

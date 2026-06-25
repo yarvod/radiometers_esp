@@ -810,7 +810,7 @@
         <tbody>
           <tr><td class="label-cell">Температура</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoTemp?.toFixed(1) + ' °C') : '—' }}</td></tr>
           <tr><td class="label-cell">Влажность</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoHumidity?.toFixed(0) + ' %') : '—' }}</td></tr>
-          <tr><td class="label-cell">Давление</td><td>{{ meteoState.meteoOnline ? (meteoState.metroPressure?.toFixed(1) + ' hPa') : '—' }}</td></tr>
+          <tr><td class="label-cell">Давление</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoPressure?.toFixed(1) + ' hPa') : '—' }}</td></tr>
           <tr><td class="label-cell">Ветер</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoWindSpeed?.toFixed(1) + ' м/с, ' + meteoState.meteoWindDir + '°') : '—' }}</td></tr>
           <tr><td class="label-cell">Порывы</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoGustSpeed?.toFixed(1) + ' м/с') : '—' }}</td></tr>
           <tr><td class="label-cell">Осадки</td><td>{{ meteoState.meteoOnline ? (meteoState.meteoRainfall?.toFixed(1) + ' мм') : '—' }}</td></tr>

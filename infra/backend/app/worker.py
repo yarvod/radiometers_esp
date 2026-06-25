@@ -210,9 +210,9 @@ async def handle_state(topic: str, payload: bytes | object, container=None) -> N
                 mode=gps_mode,
                 actual_mode=gps_actual_mode,
             )
+        await devices.touch_device(device_id, datetime.now(timezone.utc))
         if data.get("meteoOnline") is True:
             await devices.set_has_meteo(device_id=device_id, value=True)
-        await devices.touch_device(device_id, datetime.now(timezone.utc))
 
 
 async def handle_error(topic: str, payload: bytes, container) -> None:
