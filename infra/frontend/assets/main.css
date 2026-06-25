@@ -528,7 +528,7 @@ input { width: 100%; box-sizing: border-box; }
   .config-binding-row { grid-template-columns: 1fr; gap: 6px; }
 }
 .device-page .chart-stack { display: flex; flex-direction: column; gap: 20px; }
-.device-page .chart-box { background: transparent; border: none; padding: 0; height: 370px; display: flex; flex-direction: column; gap: 8px; }
+.device-page .chart-box { background: transparent; border: none; padding: 0; height: 481px; display: flex; flex-direction: column; gap: 8px; }
 .device-page .chart-box h4 { margin: 0; font-size: 16px; color: #1f2933; }
 .device-page .chart-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .device-page .chart-head-controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; min-width: 0; }
@@ -544,7 +544,7 @@ input { width: 100%; box-sizing: border-box; }
 .device-page .chart-body { position: relative; flex: 1; min-height: 0; }
 .device-page .chart-body canvas { width: 100% !important; height: 100% !important; }
 @media (max-width: 640px) {
-  .device-page .chart-box { height: 360px; }
+  .device-page .chart-box { height: 468px; }
   .device-page .chart-head-row, .device-page .chart-head-controls, .device-page .axis-controls { align-items: flex-start; justify-content: flex-start; }
   .device-page .axis-controls .compact input { width: 76px; }
 }
