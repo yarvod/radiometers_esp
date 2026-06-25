@@ -10,6 +10,7 @@ from dishka.integrations.fastapi import setup_dishka
 from app.api.routes import (
     auth_router,
     devices_router,
+    gnss_data_router,
     measurements_router,
     soundings_router,
     station_soundings_router,
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api")
     app.include_router(users_router, prefix="/api")
     app.include_router(devices_router, prefix="/api")
+    app.include_router(gnss_data_router, prefix="/api")
     app.include_router(measurements_router, prefix="/api")
     app.include_router(stations_router, prefix="/api")
     app.include_router(soundings_router, prefix="/api")

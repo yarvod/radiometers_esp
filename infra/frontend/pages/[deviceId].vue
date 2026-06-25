@@ -14,9 +14,10 @@
 
     <div class="tabs">
       <button class="tab-btn" :class="{ active: activeTab === 'data' }" @click="setActiveTab('data')">Данные</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="setActiveTab('control')">Мониторинг и управление</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'gps' }" @click="setActiveTab('gps')">GPS</button>
-      <button v-if="hasMeteo" class="tab-btn" :class="{ active: activeTab === 'meteo' }" @click="setActiveTab('meteo')">Метео</button>
+<button class="tab-btn" :class="{ active: activeTab === 'control' }" @click="setActiveTab('control')">Мониторинг и управление</button>
+<button class="tab-btn" :class="{ active: activeTab === 'gps' }" @click="setActiveTab('gps')">GPS</button>
+<button class="tab-btn" :class="{ active: activeTab === 'gnss' }" @click="setActiveTab('gnss')">GNSS данные</button>
+<button v-if="hasMeteo" class="tab-btn" :class="{ active: activeTab === 'meteo' }" @click="setActiveTab('meteo')">Метео</button>
       <button class="tab-btn" :class="{ active: activeTab === 'calibration' }" @click="setActiveTab('calibration')">Калибровка</button>
       <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="setActiveTab('settings')">Настройки</button>
       <button class="tab-btn" :class="{ active: activeTab === 'errors' }" @click="setActiveTab('errors')">Ошибки</button>
@@ -652,10 +653,84 @@
               <span class="muted" v-if="pwvRadiometerStatus">{{ pwvRadiometerStatus }}</span>
             </div>
           </div>
+          <div class="gnss-panel">
+            <div class="chip-select" v-if="gnssDataSets.length">
+              <button
+                v-for="item in gnssDataSets"
+                :key="item.id"
+                class="chip-option"
+                :class="{ selected: gnssSelectedIds.includes(item.id) }"
+                type="button"
+                @click="toggleGnssDataset(item.id)"
+              >
+                {{ item.name }} · {{ item.measurement_count }}
+              </button>
+            </div>
+            <p class="muted" v-else>GNSS источники добавляются во вкладке GNSS данные</p>
+            <p class="muted" v-if="gnssStatus">{{ gnssStatus }}</p>
+          </div>
           <div class="axis-error" v-if="chartAxisError('pwv')">{{ chartAxisError('pwv') }}</div>
           <div class="chart-body">
             <canvas ref="pwvAtmosphereChartEl"></canvas>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" v-show="activeTab === 'gnss'">
+      <div class="card-head">
+        <h3>GNSS данные</h3>
+        <button class="btn ghost sm" type="button" @click="loadGnssDataSets" :disabled="gnssLoading">Обновить</button>
+      </div>
+      <div class="gnss-admin">
+        <div class="gnss-list">
+          <div class="inline fields">
+            <label class="compact">Новый источник
+              <input v-model="gnssCreateForm.name" placeholder="Например: внешняя станция" />
+            </label>
+            <button class="btn primary sm" type="button" @click="createGnssDataset" :disabled="gnssLoading">Добавить</button>
+          </div>
+          <div v-if="gnssDataSets.length" class="gnss-list-items">
+            <button
+              v-for="item in gnssDataSets"
+              :key="`gnss-admin-${item.id}`"
+              class="gnss-list-item"
+              :class="{ selected: gnssSelectedDatasetId === item.id }"
+              type="button"
+              @click="selectGnssDataset(item.id)"
+            >
+              <span>{{ item.name }}</span>
+              <span class="muted small">{{ item.measurement_count }} точек</span>
+            </button>
+          </div>
+          <p v-else class="muted">GNSS источники пока не добавлены</p>
+        </div>
+        <div class="gnss-detail" v-if="selectedGnssDataset">
+          <div class="inline fields">
+            <label class="compact">Название
+              <input v-model="gnssEditForm.name" />
+            </label>
+          </div>
+          <div class="form-group">
+            <label>Описание</label>
+            <textarea v-model="gnssEditForm.description" rows="3"></textarea>
+          </div>
+          <div class="status-row">
+            <span class="chip subtle">Точек: {{ selectedGnssDataset.measurement_count }}</span>
+            <span class="chip subtle">Начало: {{ formatOptionalDate(selectedGnssDataset.start_at) }}</span>
+            <span class="chip subtle">Конец: {{ formatOptionalDate(selectedGnssDataset.end_at) }}</span>
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="button" @click="updateGnssDataset" :disabled="gnssLoading">Сохранить</button>
+            <button class="btn danger ghost" type="button" @click="deleteGnssDataset" :disabled="gnssLoading">Удалить источник</button>
+          </div>
+          <div class="inline fields">
+            <input type="file" accept=".txt,text/plain" @change="onGnssFileChange" />
+            <button class="btn primary sm" type="button" @click="importGnssData" :disabled="gnssImporting || !gnssImportFile">
+              Импортировать файл
+            </button>
+          </div>
+          <p class="muted" v-if="gnssStatus">{{ gnssStatus }}</p>
         </div>
       </div>
     </div>
@@ -1067,6 +1142,49 @@ type AtmosphereResponse = {
   temp_outlier_filter?: TempOutlierFilterStats
 }
 
+type GnssData = {
+  id: string
+  device_id: string
+  name: string
+  description: string | null
+  measurement_count: number
+  start_at: string | null
+  end_at: string | null
+  last_import_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+type GnssDataMeasurementPoint = {
+  measured_at: string
+  timestamp_ms: number | null
+  pw_mm: number
+  spw_mm: number | null
+  temperature_c: number | null
+}
+
+type GnssDataSeries = {
+  dataset: GnssData
+  points: GnssDataMeasurementPoint[]
+  capped: boolean
+}
+
+type GnssDataSeriesResponse = {
+  items: GnssDataSeries[]
+  limit_per_dataset: number
+}
+
+type GnssDataImportResponse = {
+  dataset: GnssData
+  parsed_rows: number
+  upserted_rows: number
+  duplicate_rows: number
+  skipped_rows: number
+  first_timestamp: string | null
+  last_timestamp: string | null
+  errors: string[]
+}
+
 type TempOutlierFilterStats = {
   enabled: boolean
   window: number
@@ -1094,7 +1212,7 @@ type TempConfigRow = {
   label: string
 }
 
-type DeviceTab = 'data' | 'control' | 'gps' | 'meteo' | 'calibration' | 'settings' | 'errors'
+type DeviceTab = 'data' | 'control' | 'gps' | 'gnss' | 'meteo' | 'calibration' | 'settings' | 'errors'
 
 const { apiFetch } = useApi()
 const route = useRoute()
@@ -1105,7 +1223,7 @@ store.init(nuxtApp.$mqtt)
 
 const device = computed(() => (deviceId.value ? store.devices.get(deviceId.value) : undefined))
 const deviceConfig = ref<DeviceConfig | null>(null)
-const validTabs = new Set<DeviceTab>(['data', 'control', 'gps', 'meteo', 'calibration', 'settings', 'errors'])
+const validTabs = new Set<DeviceTab>(['data', 'control', 'gps', 'gnss', 'meteo', 'calibration', 'settings', 'errors'])
 const tabFromQuery = (): DeviceTab => {
   const raw = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab
   return raw && validTabs.has(raw as DeviceTab) ? (raw as DeviceTab) : 'control'
@@ -1302,7 +1420,6 @@ const selectedAtmosphereStations = computed(() => {
     byId.get(id) || { station_id: id, name: atmosphereData.value?.station_labels?.[id] || null }
   ))
 })
-
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({
   steps: 400,
@@ -1357,6 +1474,25 @@ const historyTempAddresses = ref<string[]>([])
 const historyTempBindings = ref<Record<string, string>>({})
 const historyBrightnessLabels = ref<Record<string, string>>({})
 const atmosphereData = ref<AtmosphereResponse | null>(null)
+const gnssDataSets = ref<GnssData[]>([])
+const gnssSeries = ref<GnssDataSeries[]>([])
+const gnssSelectedIds = ref<string[]>([])
+const gnssSelectedDatasetId = ref('')
+const gnssImportDatasetId = ref('')
+const gnssImportFile = ref<File | null>(null)
+const gnssLoading = ref(false)
+const gnssImporting = ref(false)
+const gnssStatus = ref('')
+const gnssCreateForm = reactive({
+  name: '',
+})
+const gnssEditForm = reactive({
+  name: '',
+  description: '',
+})
+const selectedGnssDataset = computed(() => (
+  gnssDataSets.value.find((item) => item.id === gnssSelectedDatasetId.value) || null
+))
 const atmosphereCoefficientDefaults = ref<AtmosphereCoefficientDefaults | null>(null)
 const atmosphereStatus = ref('')
 const atmosphereAverage = ref(false)
@@ -1640,6 +1776,7 @@ const formatTimestamp = (value: string) => {
     hour12: false,
   })
 }
+const formatOptionalDate = (value: string | null) => value ? formatTimestamp(value) : '—'
 
 const stationLabel = (station: StationOption) => {
   return station.name ? `${station.station_id} · ${station.name}` : station.station_id
@@ -1900,6 +2037,7 @@ const palette = [
 ]
 const atmosphereRadiometerPalette = [palette[0], palette[1], palette[2]]
 const pwvProfilePalette = palette.slice(3)
+const gnssPalette = ['#111827', '#0f766e', '#b45309', '#be123c', '#4338ca', '#047857']
 
 type AdcSeriesOption = {
   key: string
@@ -2129,29 +2267,37 @@ const buildTauDatasets = () => {
 
 const buildPwvAtmosphereDatasets = () => {
   const response = atmosphereData.value
-  if (!response) return { labels: [], datasets: [] }
-  const measurementEntries = response.measurement_points.map((point, idx) => ({
+  const measurementEntries = (response?.measurement_points || []).map((point, idx) => ({
     key: `m:${idx}`,
     timestamp: point.timestamp,
   }))
-  const profileEntries = response.t_eff_points.map((point) => ({
+  const profileEntries = (response?.t_eff_points || []).map((point) => ({
     key: `p:${point.station_id}:${dateTimeKey(point.sounding_time)}`,
     timestamp: point.sounding_time,
   }))
-  const timeline = buildTimeline([...measurementEntries, ...profileEntries])
-  const radiometerDatasets = atmosphereAdcSeries.value
-    .map((series) => {
-      const key = `pwv${series.key}` as keyof AtmosphereMeasurementPoint
-      const values = new Map<string, number>()
-      response.measurement_points.forEach((point, idx) => {
-        const y = point[key]
-        if (Number.isFinite(y)) values.set(`m:${idx}`, Number(y))
-      })
-      return buildAtmosphereDataset(`${series.label} PWV`, mapTimelineValues(timeline, values), series.color)
-    })
-    .filter((dataset) => dataset.data.some((value: number | null) => Number.isFinite(value)))
+  const gnssEntries = gnssSeries.value.flatMap((series) =>
+    series.points.map((point) => ({
+      key: `g:${series.dataset.id}:${dateTimeKey(point.measured_at)}`,
+      timestamp: point.measured_at,
+    })),
+  )
+  const timeline = buildTimeline([...measurementEntries, ...profileEntries, ...gnssEntries])
+  if (!timeline.length) return { labels: [], datasets: [] }
+  const radiometerDatasets = response
+    ? atmosphereAdcSeries.value
+        .map((series) => {
+          const key = `pwv${series.key}` as keyof AtmosphereMeasurementPoint
+          const values = new Map<string, number>()
+          response.measurement_points.forEach((point, idx) => {
+            const y = point[key]
+            if (Number.isFinite(y)) values.set(`m:${idx}`, Number(y))
+          })
+          return buildAtmosphereDataset(`${series.label} PWV`, mapTimelineValues(timeline, values), series.color)
+        })
+        .filter((dataset) => dataset.data.some((value: number | null) => Number.isFinite(value)))
+    : []
   const byStation = new Map<string, Map<string, number>>()
-  response.t_eff_points.forEach((point) => {
+  ;(response?.t_eff_points || []).forEach((point) => {
     if (!Number.isFinite(point.pwv_profile)) return
     if (!byStation.has(point.station_id)) byStation.set(point.station_id, new Map())
     byStation.get(point.station_id)!.set(`p:${point.station_id}:${dateTimeKey(point.sounding_time)}`, Number(point.pwv_profile))
@@ -2166,7 +2312,28 @@ const buildPwvAtmosphereDatasets = () => {
     dataset.pointRadius = 2
     return dataset
   })
-  return { labels: timeline.map((entry) => entry.label), datasets: [...radiometerDatasets, ...profileDatasets] }
+  const gnssDatasets = gnssSeries.value
+    .map((series, idx) => {
+      const values = new Map<string, number>()
+      series.points.forEach((point) => {
+        if (Number.isFinite(point.pw_mm)) {
+          values.set(`g:${series.dataset.id}:${dateTimeKey(point.measured_at)}`, Number(point.pw_mm))
+        }
+      })
+      const dataset = buildAtmosphereDataset(
+        `${series.dataset.name} GNSS`,
+        mapTimelineValues(timeline, values),
+        gnssPalette[idx % gnssPalette.length],
+      )
+      dataset.pointRadius = 2
+      dataset.borderWidth = 2
+      return dataset
+    })
+    .filter((dataset) => dataset.data.some((value: number | null) => Number.isFinite(value)))
+  return {
+    labels: timeline.map((entry) => entry.label),
+    datasets: [...radiometerDatasets, ...profileDatasets, ...gnssDatasets],
+  }
 }
 
 const countFiniteAtmosphereValues = (key: keyof AtmosphereMeasurementPoint) => {
@@ -2290,6 +2457,7 @@ const renderCharts = () => {
   const adcHidden = new Map<string, boolean>()
   const brightnessHidden = new Map<string, boolean>()
   const loadCheckHidden = new Map<string, boolean>()
+  const pwvHidden = new Map<string, boolean>()
   if (tempChart?.data?.datasets) {
     tempChart.data.datasets.forEach((dataset: any) => {
       if (dataset?.label) tempHidden.set(dataset.label, !!dataset.hidden)
@@ -2310,6 +2478,11 @@ const renderCharts = () => {
       if (dataset?.label) loadCheckHidden.set(dataset.label, !!dataset.hidden)
     })
   }
+  if (pwvAtmosphereChart?.data?.datasets) {
+    pwvAtmosphereChart.data.datasets.forEach((dataset: any) => {
+      if (dataset?.label) pwvHidden.set(dataset.label, !!dataset.hidden)
+    })
+  }
   tempDatasets.forEach((dataset) => {
     if (tempHidden.has(dataset.label)) dataset.hidden = tempHidden.get(dataset.label)
   })
@@ -2321,6 +2494,9 @@ const renderCharts = () => {
   })
   loadCheckDatasets.forEach((dataset) => {
     if (loadCheckHidden.has(dataset.label)) dataset.hidden = loadCheckHidden.get(dataset.label)
+  })
+  pwvChartData.datasets.forEach((dataset: any) => {
+    if (pwvHidden.has(dataset.label)) dataset.hidden = pwvHidden.get(dataset.label)
   })
 
   if (!tempChart) {
@@ -2967,6 +3143,180 @@ function toggleAtmosphereStation(stationId: string) {
   configDirty.value = true
 }
 
+function toggleGnssDataset(datasetId: string) {
+  if (gnssSelectedIds.value.includes(datasetId)) {
+    gnssSelectedIds.value = gnssSelectedIds.value.filter((item) => item !== datasetId)
+  } else {
+    gnssSelectedIds.value = [...gnssSelectedIds.value, datasetId]
+  }
+  loadGnssSeries()
+}
+
+function onGnssFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  gnssImportFile.value = input.files?.[0] || null
+}
+
+function seedGnssEditForm(item: GnssData | null) {
+  gnssEditForm.name = item?.name || ''
+  gnssEditForm.description = item?.description || ''
+}
+
+function selectGnssDataset(datasetId: string) {
+  gnssSelectedDatasetId.value = datasetId
+  gnssImportDatasetId.value = datasetId
+  seedGnssEditForm(gnssDataSets.value.find((item) => item.id === datasetId) || null)
+}
+
+async function loadGnssDataSets() {
+  if (!deviceId.value) return
+  gnssLoading.value = true
+  try {
+    const items = await apiFetch<GnssData[]>(`/api/devices/${deviceId.value}/gnss-data`)
+    gnssDataSets.value = items || []
+    const available = new Set(gnssDataSets.value.map((item) => item.id))
+    const selected = gnssSelectedIds.value.filter((item) => available.has(item))
+    gnssSelectedIds.value = selected.length ? selected : gnssDataSets.value.map((item) => item.id)
+    if (!gnssSelectedDatasetId.value || !available.has(gnssSelectedDatasetId.value)) {
+      gnssSelectedDatasetId.value = gnssDataSets.value[0]?.id || ''
+    }
+    if (!gnssImportDatasetId.value || !available.has(gnssImportDatasetId.value)) {
+      gnssImportDatasetId.value = gnssSelectedDatasetId.value || gnssDataSets.value[0]?.id || ''
+    }
+    seedGnssEditForm(gnssDataSets.value.find((item) => item.id === gnssSelectedDatasetId.value) || null)
+  } catch (e: any) {
+    gnssStatus.value = e?.data?.detail || e?.message || 'Не удалось загрузить GNSS источники'
+  } finally {
+    gnssLoading.value = false
+  }
+}
+
+async function createGnssDataset() {
+  if (!deviceId.value) return
+  try {
+    const item = await apiFetch<GnssData>(`/api/devices/${deviceId.value}/gnss-data`, {
+        method: 'POST',
+        body: {
+          name: gnssCreateForm.name,
+        },
+      })
+    gnssCreateForm.name = ''
+    gnssDataSets.value = [...gnssDataSets.value, item]
+    selectGnssDataset(item.id)
+    gnssSelectedIds.value = [...new Set([...gnssSelectedIds.value, item.id])]
+    gnssStatus.value = 'GNSS источник добавлен'
+    await loadGnssSeries()
+  } catch (e: any) {
+    gnssStatus.value = e?.data?.detail || e?.message || 'Не удалось добавить GNSS источник'
+  }
+}
+
+async function updateGnssDataset() {
+  if (!deviceId.value || !gnssSelectedDatasetId.value) return
+  gnssLoading.value = true
+  try {
+    const item = await apiFetch<GnssData>(
+      `/api/devices/${deviceId.value}/gnss-data/${gnssSelectedDatasetId.value}`,
+      {
+        method: 'PATCH',
+        body: {
+          name: gnssEditForm.name,
+          description: gnssEditForm.description || null,
+        },
+      },
+    )
+    gnssDataSets.value = gnssDataSets.value.map((existing) => existing.id === item.id ? item : existing)
+    seedGnssEditForm(item)
+    gnssStatus.value = 'GNSS источник обновлен'
+    await loadGnssSeries()
+  } catch (e: any) {
+    gnssStatus.value = e?.data?.detail || e?.message || 'Не удалось обновить GNSS источник'
+  } finally {
+    gnssLoading.value = false
+  }
+}
+
+async function deleteGnssDataset() {
+  if (!deviceId.value || !gnssSelectedDatasetId.value) return
+  const item = selectedGnssDataset.value
+  if (process.client && item && !window.confirm(`Удалить GNSS источник "${item.name}" вместе со всеми точками?`)) return
+  gnssLoading.value = true
+  try {
+    const deletedId = gnssSelectedDatasetId.value
+    await apiFetch(`/api/devices/${deviceId.value}/gnss-data/${deletedId}`, { method: 'DELETE' })
+    gnssDataSets.value = gnssDataSets.value.filter((existing) => existing.id !== deletedId)
+    gnssSelectedIds.value = gnssSelectedIds.value.filter((id) => id !== deletedId)
+    gnssSelectedDatasetId.value = gnssDataSets.value[0]?.id || ''
+    gnssImportDatasetId.value = gnssSelectedDatasetId.value
+    seedGnssEditForm(gnssDataSets.value[0] || null)
+    gnssStatus.value = 'GNSS источник удален'
+    await loadGnssSeries()
+  } catch (e: any) {
+    gnssStatus.value = e?.data?.detail || e?.message || 'Не удалось удалить GNSS источник'
+  } finally {
+    gnssLoading.value = false
+  }
+}
+
+async function importGnssData() {
+  if (!deviceId.value || !gnssImportDatasetId.value || !gnssImportFile.value) return
+  gnssImporting.value = true
+  gnssStatus.value = 'Загружаю GNSS файл...'
+  try {
+    const form = new FormData()
+    form.append('file', gnssImportFile.value)
+    const response = await apiFetch<GnssDataImportResponse>(
+      `/api/devices/${deviceId.value}/gnss-data/${gnssImportDatasetId.value}/import`,
+      {
+        method: 'POST',
+        body: form,
+      },
+    )
+    await loadGnssDataSets()
+    if (!gnssSelectedIds.value.includes(response.dataset.id)) {
+      gnssSelectedIds.value = [...gnssSelectedIds.value, response.dataset.id]
+    }
+    await loadGnssSeries()
+    gnssStatus.value = `GNSS импорт: ${response.upserted_rows} строк, дублей в файле ${response.duplicate_rows}, пропущено ${response.skipped_rows}`
+    gnssImportFile.value = null
+  } catch (e: any) {
+    const detail = e?.data?.detail
+    gnssStatus.value = Array.isArray(detail?.errors)
+      ? detail.errors.join('; ')
+      : detail || e?.message || 'Не удалось импортировать GNSS файл'
+  } finally {
+    gnssImporting.value = false
+  }
+}
+
+async function loadGnssSeries() {
+  if (!deviceId.value || !historyFilters.from || !historyFilters.to || !gnssSelectedIds.value.length) {
+    gnssSeries.value = []
+    renderCharts()
+    return
+  }
+  const from = localInputToIso(historyFilters.from)
+  const to = historyAutoRefresh.value ? new Date().toISOString() : localInputToIso(historyFilters.to)
+  if (!from || !to) return
+  try {
+    const params = new URLSearchParams({ from, to, limit_per_dataset: '10000' })
+    gnssSelectedIds.value.forEach((id) => params.append('ids', id))
+    const response = await apiFetch<GnssDataSeriesResponse>(
+      `/api/devices/${deviceId.value}/gnss-data/series?${params.toString()}`,
+    )
+    gnssSeries.value = response.items || []
+    const capped = gnssSeries.value.filter((item) => item.capped).map((item) => item.dataset.name)
+    if (capped.length) {
+      gnssStatus.value = `GNSS ряд обрезан лимитом: ${capped.join(', ')}`
+    }
+    renderCharts()
+  } catch (e: any) {
+    gnssSeries.value = []
+    gnssStatus.value = e?.data?.detail || e?.message || 'Не удалось загрузить GNSS ряд'
+    renderCharts()
+  }
+}
+
 async function loadStationOptions(query = stationSearchQuery.value) {
   stationOptionsLoading.value = true
   try {
@@ -3102,6 +3452,7 @@ async function loadHistory() {
       historyStatus.value = `Получено ${response.points.length} точек`
     }
     await loadAtmosphere()
+    await loadGnssSeries()
   } catch (e: any) {
     historyStatus.value = e?.message || 'Не удалось загрузить историю'
   } finally {
@@ -3289,7 +3640,7 @@ onMounted(() => {
   loadStationOptions()
   loadDeviceConfig()
   loadDeviceGpsConfig()
-  loadLatestWindow().then(loadHistory)
+  Promise.all([loadGnssDataSets(), loadLatestWindow()]).then(loadHistory)
   if (process.client) {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local'
     const offsetMin = new Date().getTimezoneOffset()

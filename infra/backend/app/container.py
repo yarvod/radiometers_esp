@@ -12,6 +12,7 @@ from arq.connections import ArqRedis, RedisSettings, create_pool
 from app.repositories.interfaces import (
     DeviceRepository,
     ErrorRepository,
+    GnssDataRepository,
     MeasurementRepository,
     RadiometerCalibrationRepository,
     SoundingExportJobRepository,
@@ -26,6 +27,7 @@ from app.repositories.interfaces import (
 from app.repositories.sqlalchemy import (
     SqlDeviceRepository,
     SqlErrorRepository,
+    SqlGnssDataRepository,
     SqlMeasurementRepository,
     SqlRadiometerCalibrationRepository,
     SqlSoundingExportJobRepository,
@@ -42,6 +44,7 @@ from app.services.atmosphere import AtmosphereService
 from app.services.calibrations import RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
+from app.services.gnss_data import GnssDataService
 from app.services.measurements import MeasurementService
 from app.services.soundings import SoundingService
 from app.services.stations import StationService
@@ -88,6 +91,10 @@ class AppProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def provide_measurement_repo(self, session: AsyncSession) -> MeasurementRepository:
         return SqlMeasurementRepository(session)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_gnss_data_repo(self, session: AsyncSession) -> GnssDataRepository:
+        return SqlGnssDataRepository(session)
 
     @provide(scope=Scope.REQUEST)
     def provide_radiometer_calibration_repo(self, session: AsyncSession) -> RadiometerCalibrationRepository:
@@ -140,6 +147,10 @@ class AppProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def provide_measurement_service(self, measurements: MeasurementRepository) -> MeasurementService:
         return MeasurementService(measurements)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_gnss_data_service(self, gnss_data: GnssDataRepository) -> GnssDataService:
+        return GnssDataService(gnss_data)
 
     @provide(scope=Scope.REQUEST)
     def provide_radiometer_calibration_service(

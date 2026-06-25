@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,6 +30,9 @@ class DeviceModel(Base):
     has_meteo: Mapped[bool] = mapped_column(Boolean, default=False)
 
     measurements: Mapped[list[MeasurementModel]] = relationship("MeasurementModel", back_populates="device")
+    gnss_data_sets: Mapped[list[GnssDataModel]] = relationship(
+        "GnssDataModel", back_populates="device", cascade="all, delete-orphan"
+    )
     radiometer_calibrations: Mapped[list[RadiometerCalibrationModel]] = relationship(
         "RadiometerCalibrationModel", back_populates="device"
     )
@@ -63,6 +66,48 @@ class StationModel(Base):
     src: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GnssDataModel(Base):
+    __tablename__ = "gnss_data"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    measurement_count: Mapped[int] = mapped_column(Integer, default=0)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_import_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="gnss_data_sets")
+    measurements: Mapped[list[GnssDataMeasurementModel]] = relationship(
+        "GnssDataMeasurementModel", back_populates="gnss_data", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (UniqueConstraint("device_id", "name", name="uq_gnss_data_device_name"),)
+
+
+class GnssDataMeasurementModel(Base):
+    __tablename__ = "gnss_data_measurements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    gnss_data_id: Mapped[str] = mapped_column(String(36), ForeignKey("gnss_data.id", ondelete="CASCADE"))
+    measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    pw_mm: Mapped[float] = mapped_column(Float)
+    spw_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temperature_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    gnss_data: Mapped[GnssDataModel] = relationship("GnssDataModel", back_populates="measurements")
+
+    __table_args__ = (
+        UniqueConstraint("gnss_data_id", "measured_at", name="uq_gnss_data_measurement_time"),
+        Index("ix_gnss_data_measurements_dataset_time", "gnss_data_id", "measured_at"),
+    )
 
 
 class MeasurementModel(Base):

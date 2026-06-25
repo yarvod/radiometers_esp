@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
@@ -11,6 +13,8 @@ from app.domain.entities import (
     Device,
     DeviceGpsConfig,
     ErrorEvent,
+    GnssData,
+    GnssDataMeasurementPoint,
     Measurement,
     MeasurementPoint,
     RadiometerCalibration,
@@ -27,6 +31,8 @@ from app.db.models import (
     DeviceModel,
     DeviceGpsConfigModel,
     ErrorEventModel,
+    GnssDataMeasurementModel,
+    GnssDataModel,
     MeasurementModel,
     RadiometerCalibrationModel,
     SoundingExportJobModel,
@@ -40,6 +46,7 @@ from app.db.models import (
 from app.repositories.interfaces import (
     DeviceRepository,
     ErrorRepository,
+    GnssDataRepository,
     MeasurementRepository,
     RadiometerCalibrationRepository,
     SoundingJobRepository,
@@ -66,6 +73,31 @@ def to_device(model: DeviceModel) -> Device:
         atmosphere_config=dict(model.atmosphere_config or {}),
         adc_labels=dict(model.adc_labels or {}),
         has_meteo=bool(model.has_meteo),
+    )
+
+
+def to_gnss_data(model: GnssDataModel) -> GnssData:
+    return GnssData(
+        id=model.id,
+        device_id=model.device_id,
+        name=model.name,
+        description=model.description,
+        measurement_count=int(model.measurement_count or 0),
+        start_at=model.start_at,
+        end_at=model.end_at,
+        last_import_at=model.last_import_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def to_gnss_data_measurement_point(model: GnssDataMeasurementModel) -> GnssDataMeasurementPoint:
+    return GnssDataMeasurementPoint(
+        measured_at=model.measured_at,
+        timestamp_ms=int(model.measured_at.timestamp() * 1000) if model.measured_at else None,
+        pw_mm=float(model.pw_mm),
+        spw_mm=float(model.spw_mm) if model.spw_mm is not None else None,
+        temperature_c=float(model.temperature_c) if model.temperature_c is not None else None,
     )
 
 
@@ -457,6 +489,147 @@ class SqlDeviceRepository(DeviceRepository):
         if device:
             device.has_meteo = value
             await self._session.flush()
+
+
+class SqlGnssDataRepository(GnssDataRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list(self, device_id: str) -> Sequence[GnssData]:
+        result = await self._session.execute(
+            select(GnssDataModel).where(GnssDataModel.device_id == device_id).order_by(GnssDataModel.created_at.asc())
+        )
+        return [to_gnss_data(model) for model in result.scalars().all()]
+
+    async def get(self, device_id: str, gnss_data_id: str) -> GnssData | None:
+        model = await self._get_model(device_id, gnss_data_id)
+        return to_gnss_data(model) if model else None
+
+    async def create(
+        self,
+        device_id: str,
+        name: str,
+        description: str | None,
+    ) -> GnssData:
+        model = GnssDataModel(
+            device_id=device_id,
+            name=name,
+            description=description,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_gnss_data(model)
+
+    async def update(
+        self,
+        device_id: str,
+        gnss_data_id: str,
+        name: str | None,
+        description: str | None,
+        description_set: bool,
+    ) -> GnssData | None:
+        model = await self._get_model(device_id, gnss_data_id)
+        if not model:
+            return None
+        if name is not None:
+            model.name = name
+        if description_set:
+            model.description = description
+        model.updated_at = datetime.now(timezone.utc)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_gnss_data(model)
+
+    async def delete(self, device_id: str, gnss_data_id: str) -> bool:
+        result = await self._session.execute(
+            delete(GnssDataModel).where(GnssDataModel.device_id == device_id, GnssDataModel.id == gnss_data_id)
+        )
+        return bool(result.rowcount)
+
+    async def upsert_measurements(self, gnss_data_id: str, rows: Sequence[dict[str, object]]) -> int:
+        if not rows:
+            return 0
+        now = datetime.now(timezone.utc)
+        values = [
+            {
+                "id": str(uuid.uuid4()),
+                "gnss_data_id": gnss_data_id,
+                "measured_at": row["measured_at"],
+                "pw_mm": row["pw_mm"],
+                "spw_mm": row.get("spw_mm"),
+                "temperature_c": row.get("temperature_c"),
+                "updated_at": now,
+            }
+            for row in rows
+        ]
+        stmt = pg_insert(GnssDataMeasurementModel).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[GnssDataMeasurementModel.gnss_data_id, GnssDataMeasurementModel.measured_at],
+            set_={
+                "pw_mm": stmt.excluded.pw_mm,
+                "spw_mm": stmt.excluded.spw_mm,
+                "temperature_c": stmt.excluded.temperature_c,
+                "updated_at": now,
+            },
+        )
+        result = await self._session.execute(stmt)
+        return int(result.rowcount or 0)
+
+    async def refresh_stats(self, device_id: str, gnss_data_id: str) -> GnssData | None:
+        model = await self._get_model(device_id, gnss_data_id)
+        if not model:
+            return None
+        result = await self._session.execute(
+            select(
+                func.count(GnssDataMeasurementModel.id),
+                func.min(GnssDataMeasurementModel.measured_at),
+                func.max(GnssDataMeasurementModel.measured_at),
+            ).where(GnssDataMeasurementModel.gnss_data_id == gnss_data_id)
+        )
+        count, start_at, end_at = result.one()
+        now = datetime.now(timezone.utc)
+        model.measurement_count = int(count or 0)
+        model.start_at = start_at
+        model.end_at = end_at
+        model.last_import_at = now
+        model.updated_at = now
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_gnss_data(model)
+
+    async def list_points(
+        self,
+        device_id: str,
+        gnss_data_ids: Sequence[str],
+        start: datetime,
+        end: datetime,
+        limit_per_dataset: int,
+    ) -> dict[str, Sequence[GnssDataMeasurementPoint]]:
+        if not gnss_data_ids:
+            return {}
+        grouped: dict[str, list[GnssDataMeasurementPoint]] = {item: [] for item in gnss_data_ids}
+        for dataset_id in gnss_data_ids:
+            result = await self._session.execute(
+                select(GnssDataMeasurementModel)
+                .join(GnssDataModel, GnssDataModel.id == GnssDataMeasurementModel.gnss_data_id)
+                .where(
+                    GnssDataModel.device_id == device_id,
+                    GnssDataModel.id == dataset_id,
+                    GnssDataMeasurementModel.measured_at >= start,
+                    GnssDataMeasurementModel.measured_at <= end,
+                )
+                .order_by(GnssDataMeasurementModel.measured_at.asc())
+                .limit(limit_per_dataset)
+            )
+            grouped[dataset_id] = [to_gnss_data_measurement_point(model) for model in result.scalars().all()]
+        return grouped
+
+    async def _get_model(self, device_id: str, gnss_data_id: str) -> GnssDataModel | None:
+        result = await self._session.execute(
+            select(GnssDataModel).where(GnssDataModel.device_id == device_id, GnssDataModel.id == gnss_data_id)
+        )
+        return result.scalar_one_or_none()
 
 
 class SqlMeasurementRepository(MeasurementRepository):

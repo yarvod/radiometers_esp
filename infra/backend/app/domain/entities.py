@@ -32,6 +32,29 @@ class DeviceGpsConfig:
 
 
 @dataclass
+class GnssData:
+    id: str
+    device_id: str
+    name: str
+    description: Optional[str]
+    measurement_count: int
+    start_at: Optional[datetime]
+    end_at: Optional[datetime]
+    last_import_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class GnssDataMeasurementPoint:
+    measured_at: datetime
+    timestamp_ms: Optional[int]
+    pw_mm: float
+    spw_mm: Optional[float]
+    temperature_c: Optional[float]
+
+
+@dataclass
 class Measurement:
     id: str
     device_id: str

@@ -9,6 +9,8 @@ from app.domain.entities import (
     Device,
     DeviceGpsConfig,
     ErrorEvent,
+    GnssData,
+    GnssDataMeasurementPoint,
     Measurement,
     MeasurementPoint,
     RadiometerCalibration,
@@ -217,6 +219,59 @@ class SoundingScheduleConfigRepository(ABC):
 
     @abstractmethod
     async def update(self, interval_hours: int | None, offset_hours: int | None) -> SoundingScheduleConfig:
+        raise NotImplementedError
+
+
+class GnssDataRepository(ABC):
+    @abstractmethod
+    async def list(self, device_id: str) -> Sequence[GnssData]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, device_id: str, gnss_data_id: str) -> GnssData | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create(
+        self,
+        device_id: str,
+        name: str,
+        description: str | None,
+    ) -> GnssData:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update(
+        self,
+        device_id: str,
+        gnss_data_id: str,
+        name: str | None,
+        description: str | None,
+        description_set: bool,
+    ) -> GnssData | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete(self, device_id: str, gnss_data_id: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def upsert_measurements(self, gnss_data_id: str, rows: Sequence[dict[str, object]]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def refresh_stats(self, device_id: str, gnss_data_id: str) -> GnssData | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_points(
+        self,
+        device_id: str,
+        gnss_data_ids: Sequence[str],
+        start: datetime,
+        end: datetime,
+        limit_per_dataset: int,
+    ) -> dict[str, Sequence[GnssDataMeasurementPoint]]:
         raise NotImplementedError
 
 

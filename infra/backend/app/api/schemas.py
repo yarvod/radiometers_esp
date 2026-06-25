@@ -78,6 +78,59 @@ class DeviceConfigOut(BaseModel):
     has_meteo: bool = False
 
 
+class GnssDataOut(BaseModel):
+    id: str
+    device_id: str
+    name: str
+    description: Optional[str] = None
+    measurement_count: int = 0
+    start_at: Optional[datetime] = None
+    end_at: Optional[datetime] = None
+    last_import_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class GnssDataCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    description: Optional[str] = None
+
+
+class GnssDataUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128)
+    description: Optional[str] = None
+
+
+class GnssDataMeasurementPointOut(BaseModel):
+    measured_at: datetime
+    timestamp_ms: Optional[int] = None
+    pw_mm: float
+    spw_mm: Optional[float] = None
+    temperature_c: Optional[float] = None
+
+
+class GnssDataSeriesOut(BaseModel):
+    dataset: GnssDataOut
+    points: list[GnssDataMeasurementPointOut] = Field(default_factory=list)
+    capped: bool = False
+
+
+class GnssDataSeriesResponse(BaseModel):
+    items: list[GnssDataSeriesOut] = Field(default_factory=list)
+    limit_per_dataset: int
+
+
+class GnssDataImportResponse(BaseModel):
+    dataset: GnssDataOut
+    parsed_rows: int
+    upserted_rows: int
+    duplicate_rows: int
+    skipped_rows: int
+    first_timestamp: Optional[datetime] = None
+    last_timestamp: Optional[datetime] = None
+    errors: list[str] = Field(default_factory=list)
+
+
 class AtmosphereEffectiveTemperaturePointOut(BaseModel):
     station_id: str
     station_name: Optional[str] = None

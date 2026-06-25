@@ -554,6 +554,14 @@ input { width: 100%; box-sizing: border-box; }
 .device-page .error-title { font-size: 16px; font-weight: 700; color: #1f2d3d; }
 .device-page .error-tags { display: flex; gap: 8px; flex-wrap: wrap; }
 .device-page .error-message { font-size: 14px; color: #1f2933; }
+.device-page .gnss-panel { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 4px; }
+.device-page .gnss-admin { display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.4fr); gap: 16px; align-items: start; }
+.device-page .gnss-list, .device-page .gnss-detail { display: flex; flex-direction: column; gap: 12px; }
+.device-page .gnss-list-items { display: flex; flex-direction: column; gap: 8px; }
+.device-page .gnss-list-item { border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 10px 12px; display: flex; justify-content: space-between; gap: 12px; align-items: center; text-align: left; cursor: pointer; }
+.device-page .gnss-list-item.selected { border-color: rgba(37, 99, 235, 0.45); background: #eef5ff; color: #1f4f99; }
+.device-page .gnss-detail textarea { width: 100%; resize: vertical; }
+@media (max-width: 900px) { .device-page .gnss-admin { grid-template-columns: 1fr; } }
 .device-page .temps { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 6px; }
 .device-page .temp-card { background: linear-gradient(180deg, #f9fbff, #eef3fb); border: 1px solid var(--border); border-radius: 12px; padding: 10px; box-shadow: 0 2px 6px rgba(52, 152, 219, 0.08); font-variant-numeric: tabular-nums; min-height: 78px; display: flex; flex-direction: column; gap: 4px; }
 .device-page .temp-card.subtle { background: #f7f7f7; box-shadow: none; }

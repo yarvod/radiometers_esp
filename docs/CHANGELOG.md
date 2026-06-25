@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Infrastructure (backend)
+- **GNSS PWV datasets**: added device-scoped GNSS dataset and measurement storage, bulk upsert import for processed text files, and authenticated API endpoints for dataset CRUD/import/chart series.
+
+### Infrastructure (frontend)
+- **GNSS data tab**: added GNSS source CRUD, text-file import from the selected source, and selectable PWV chart overlays in the device data tab.
+
 ### Firmware
 - **WN90LP driver** (`main/wn90lp.h/.cpp`): Modbus RTU over RS485 (UART1, 9600 8N1, GPIO 11/12/13). Bulk-reads all 9 registers in one request every 60 s. Absent/disconnected station is silent — `MeteoData::online = false`, no crash.
 - **SharedState**: added `MeteoData meteo` field.
