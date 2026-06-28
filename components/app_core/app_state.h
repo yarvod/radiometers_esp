@@ -53,8 +53,6 @@ struct AppConfig {
   std::string wifi_password;
   bool wifi_from_file;
   bool wifi_ap_mode;
-  bool usb_mass_storage;
-  bool usb_mass_storage_from_file;
   bool logging_active;
   StorageBackend storage_backend;
   std::string logging_postfix;
@@ -156,7 +154,6 @@ struct SharedState {
   uint64_t last_update_ms;
   bool calibrating;
   bool external_power_on;
-  bool usb_msc_mode;
   std::string usb_error;
   int wifi_rssi_dbm;
   int wifi_quality;
@@ -182,8 +179,6 @@ struct SharedState {
   uint64_t minio_last_attempt_ms;
   MeteoData meteo;
 };
-
-enum class UsbMode : uint8_t { kCdc = 0, kMsc = 1 };
 
 enum class UtcTimeSource : uint8_t {
   kNone = 0,
@@ -249,7 +244,6 @@ extern LoggingConfig log_config;
 extern SemaphoreHandle_t state_mutex;
 
 extern httpd_handle_t http_server;
-extern UsbMode usb_mode;
 extern TaskHandle_t calibration_task;
 extern TaskHandle_t find_zero_task;
 extern TaskHandle_t log_task;
@@ -263,8 +257,6 @@ extern std::string current_log_path;
 SharedState CopyState();
 void UpdateState(const std::function<void(SharedState&)>& updater);
 void ScheduleRestart();
-UsbMode LoadUsbModeFromNvs(bool* found);
-void SaveUsbModeToNvs(UsbMode mode);
 uint32_t LoadAndIncrementBootId();
 uint32_t GetBootId();
 

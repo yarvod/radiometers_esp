@@ -8,7 +8,7 @@
 // ---------- GPS receiver control ----------
 
 esp_err_t StartGpsModule();
-void StartGpsLogTask(UsbMode mode);
+void StartGpsLogTask();
 
 std::string GetGpsCurrentMode();
 bool GetGpsCurrentModeText(char* out, size_t out_len);

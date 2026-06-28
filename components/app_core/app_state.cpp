@@ -12,8 +12,6 @@ AppConfig app_config{
     DEFAULT_WIFI_PASS,  // wifi_password
     false,              // wifi_from_file
     false,              // wifi_ap_mode
-    false,              // usb_mass_storage
-    false,              // usb_mass_storage_from_file
     false,              // logging_active
     StorageBackend::kSd,// storage_backend
     "",                 // logging_postfix
@@ -66,7 +64,6 @@ LoggingConfig log_config{
 SemaphoreHandle_t state_mutex = nullptr;
 
 httpd_handle_t http_server = nullptr;
-UsbMode usb_mode = UsbMode::kCdc;
 TaskHandle_t calibration_task = nullptr;
 TaskHandle_t find_zero_task = nullptr;
 TaskHandle_t log_task = nullptr;
@@ -104,31 +101,6 @@ void ScheduleRestart() {
         esp_restart();
       },
       "restart_task", 2048, nullptr, 5, nullptr);
-}
-
-UsbMode LoadUsbModeFromNvs(bool* found) {
-  nvs_handle_t handle;
-  uint8_t mode = static_cast<uint8_t>(UsbMode::kCdc);
-  if (found) {
-    *found = false;
-  }
-  if (nvs_open("usb", NVS_READONLY, &handle) == ESP_OK) {
-    if (nvs_get_u8(handle, "mode", &mode) == ESP_OK && found) {
-      *found = true;
-    }
-    nvs_close(handle);
-  }
-  return mode == static_cast<uint8_t>(UsbMode::kMsc) ? UsbMode::kMsc : UsbMode::kCdc;
-}
-
-void SaveUsbModeToNvs(UsbMode mode) {
-  nvs_handle_t handle;
-  if (nvs_open("usb", NVS_READWRITE, &handle) == ESP_OK) {
-    uint8_t v = static_cast<uint8_t>(mode);
-    nvs_set_u8(handle, "mode", v);
-    nvs_commit(handle);
-    nvs_close(handle);
-  }
 }
 
 uint32_t LoadAndIncrementBootId() {

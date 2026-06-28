@@ -414,7 +414,7 @@ void BuildMqttState(char* out, size_t out_len) {
                "\"heapInternalFreeBytes\":%u,\"heapInternalLargestFreeBlockBytes\":%u,"
                "\"heapPsramFreeBytes\":%u,\"heapPsramLargestFreeBlockBytes\":%u,"
                "\"minioUploadAttempts\":%u,\"minioLastAttemptMs\":%llu,"
-               "\"timestamp\":%llu,\"usbMode\":",
+               "\"timestamp\":%llu",
                state.eth_link_up ? "true" : "false",
                state.eth_ip_up ? "true" : "false",
                static_cast<unsigned long long>(state.sd_total_bytes),
@@ -432,8 +432,6 @@ void BuildMqttState(char* out, size_t out_len) {
                static_cast<unsigned>(state.minio_upload_attempts),
                static_cast<unsigned long long>(state.minio_last_attempt_ms),
                static_cast<unsigned long long>(state.last_update_ms));
-    JsonAppendEscaped(&b, state.usb_msc_mode ? "msc" : "cdc");
-    JsonAppend(&b, ",\"usbMscBuilt\":%s", CONFIG_TINYUSB_MSC_ENABLED ? "true" : "false");
     if (!state.usb_error.empty()) {
       JsonAppend(&b, ",\"usbError\":");
       JsonAppendEscaped(&b, state.usb_error.c_str());
@@ -702,11 +700,6 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     UploadedClearRequest req;
     req.max_files = get_int("maxFiles", 1000);
     res = ActionUploadedClear(req);
-  } else if (type == "usb_mode_get") {
-    res = ActionUsbModeGet();
-  } else if (type == "usb_mode_set") {
-    const std::string mode = get_str("mode");
-    res = ActionUsbModeSet(mode == "msc" ? UsbMode::kMsc : UsbMode::kCdc);
   } else if (type == "calibrate") {
     res = ActionCalibrate();
   } else if (type == "restart") {

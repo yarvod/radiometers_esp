@@ -29,17 +29,12 @@
 #include "sdmmc_cmd.h"
 #include "sdkconfig.h"
 #include "sensor_hub.h"
-#include "tinyusb.h"
-#include "tusb.h"
-#include "class/msc/msc.h"
-#include "tusb_msc_storage.h"
 #include "upload_pipeline.h"
 #include "web_ui.h"
 #include "wn90lp.h"
 
 static constexpr char kTag[] = "APP";
 
-constexpr char MSC_BASE_PATH[] = "/usb_msc";
 static Wn90lpClient s_meteo_client;
 
 
@@ -54,56 +49,6 @@ static uint64_t GpioMask(gpio_num_t pin) {
 
 
 
-// TinyUSB MSC descriptors (single-interface device)
-constexpr uint8_t EPNUM_MSC_OUT = 0x01;
-constexpr uint8_t EPNUM_MSC_IN = 0x81;
-constexpr uint8_t ITF_MSC = 0;
-
-tusb_desc_device_t kMscDeviceDescriptor = {
-    .bLength = sizeof(tusb_desc_device_t),
-    .bDescriptorType = TUSB_DESC_DEVICE,
-    .bcdUSB = 0x0200,
-    .bDeviceClass = TUSB_CLASS_MISC,
-    .bDeviceSubClass = MISC_SUBCLASS_COMMON,
-    .bDeviceProtocol = MISC_PROTOCOL_IAD,
-    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
-    .idVendor = 0x303A,  // Espressif VID
-    .idProduct = 0x4002,
-    .bcdDevice = 0x0100,
-    .iManufacturer = 0x01,
-    .iProduct = 0x02,
-    .iSerialNumber = 0x03,
-    .bNumConfigurations = 0x01,
-};
-
-uint8_t const kMscConfigDescriptor[] = {
-    // Config number, interface count, string index, total length, attribute, power in mA
-    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
-    // Interface number, string index, EP Out & EP In address, EP size
-    TUD_MSC_DESCRIPTOR(ITF_MSC, 0, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
-};
-
-const char* kMscStringDescriptor[] = {
-    (const char[]) {0x09, 0x04},  // English (0x0409)
-    "Espressif",                  // Manufacturer
-    "SD Mass Storage",            // Product
-    "123456",                     // Serial
-    "MSC",                        // MSC interface
-};
-
-#if (TUD_OPT_HIGH_SPEED)
-const tusb_desc_device_qualifier_t kDeviceQualifier = {
-    .bLength = sizeof(tusb_desc_device_qualifier_t),
-    .bDescriptorType = TUSB_DESC_DEVICE_QUALIFIER,
-    .bcdUSB = 0x0200,
-    .bDeviceClass = TUSB_CLASS_MISC,
-    .bDeviceSubClass = MISC_SUBCLASS_COMMON,
-    .bDeviceProtocol = MISC_PROTOCOL_IAD,
-    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
-    .bNumConfigurations = 0x01,
-    .bReserved = 0,
-};
-#endif
 
 
 void InitGpios() {
@@ -158,87 +103,9 @@ void InitGpios() {
 }
 
 
-esp_err_t InitSdCardForMsc(sdmmc_card_t** out_card) {
-  bool host_init = false;
-  sdmmc_card_t* card = static_cast<sdmmc_card_t*>(malloc(sizeof(sdmmc_card_t)));
-  ESP_RETURN_ON_FALSE(card, ESP_ERR_NO_MEM, kTag, "No mem for sdmmc_card_t");
-
-  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.flags |= SDMMC_HOST_FLAG_1BIT;
-
-  sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-  slot_config.width = 1;
-  slot_config.clk = SD_CLK;
-  slot_config.cmd = SD_CMD;
-  slot_config.d0 = SD_D0;
-  slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
-  ESP_RETURN_ON_ERROR((*host.init)(), kTag, "Host init failed");
-  host_init = true;
-
-  esp_err_t err = sdmmc_host_init_slot(host.slot, &slot_config);
-  if (err != ESP_OK) {
-    if (host_init) {
-      if (host.flags & SDMMC_HOST_FLAG_DEINIT_ARG) {
-        host.deinit_p(host.slot);
-      } else {
-        (*host.deinit)();
-      }
-    }
-    free(card);
-    return err;
-  }
-
-  // Retry until card present
-  while (sdmmc_card_init(&host, card) != ESP_OK) {
-    ESP_LOGW(kTag, "Insert SD card");
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-
-  sdmmc_card_print_info(stdout, card);
-  *out_card = card;
-  return ESP_OK;
-}
-
-esp_err_t StartUsbMsc(sdmmc_card_t* card) {
-  tinyusb_msc_sdmmc_config_t config_sdmmc = {
-      .card = card,
-      .callback_mount_changed = nullptr,
-      .callback_premount_changed = nullptr,
-      .mount_config =
-          {
-              .format_if_mount_failed = false,
-              .max_files = 4,
-              .allocation_unit_size = 0,
-              .disk_status_check_enable = false,
-              .use_one_fat = false,
-          },
-  };
-  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_init_sdmmc(&config_sdmmc), kTag, "Init MSC storage failed");
-  ESP_RETURN_ON_ERROR(tinyusb_msc_storage_mount(MSC_BASE_PATH), kTag, "Mount MSC storage failed");
-
-  tinyusb_config_t tusb_cfg = {};
-  tusb_cfg.device_descriptor = &kMscDeviceDescriptor;
-  tusb_cfg.string_descriptor = kMscStringDescriptor;
-  tusb_cfg.string_descriptor_count = sizeof(kMscStringDescriptor) / sizeof(kMscStringDescriptor[0]);
-  tusb_cfg.external_phy = false;
-#if (TUD_OPT_HIGH_SPEED)
-  tusb_cfg.fs_configuration_descriptor = kMscConfigDescriptor;
-  tusb_cfg.hs_configuration_descriptor = kMscConfigDescriptor;
-  tusb_cfg.qualifier_descriptor = &kDeviceQualifier;
-#else
-  tusb_cfg.configuration_descriptor = kMscConfigDescriptor;
-#endif
-  tusb_cfg.self_powered = false;
-  tusb_cfg.vbus_monitor_io = -1;
-  ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), kTag, "TinyUSB install failed");
-  ESP_LOGI(kTag, "USB in MSC mode");
-  return ESP_OK;
-}
 
 extern "C" void app_main(void) {
   bool init_ok = true;
-  bool msc_ok = true;
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
@@ -267,14 +134,7 @@ extern "C" void app_main(void) {
 
   LoadConfigFromSdCard(&app_config);
 
-  bool usb_mode_found = false;
-  usb_mode = LoadUsbModeFromNvs(&usb_mode_found);
-  if (app_config.usb_mass_storage_from_file && !usb_mode_found) {
-    usb_mode = app_config.usb_mass_storage ? UsbMode::kMsc : UsbMode::kCdc;
-    ESP_LOGI(kTag, "USB mode set from config.txt (no NVS value): %s", usb_mode == UsbMode::kMsc ? "MSC" : "CDC");
-    SaveUsbModeToNvs(usb_mode);
-  }
-  UpdateState([&](SharedState& s) { s.usb_msc_mode = (usb_mode == UsbMode::kMsc); });
+  UpdateState([](SharedState& s) { s.usb_error.clear(); });
 
   InitGpios();
   ErrorManagerInit();
@@ -284,31 +144,6 @@ extern "C" void app_main(void) {
     if (!guard.locked() || !MountInternalFlashFs()) {
       ESP_LOGW(kTag, "Internal flash storage is selected but not mounted yet");
     }
-  }
-
-  if (usb_mode == UsbMode::kMsc) {
-    esp_err_t msc_err = InitSdCardForMsc(&sd_card);
-    if (msc_err == ESP_OK) {
-      msc_err = StartUsbMsc(sd_card);
-    }
-    if (msc_err != ESP_OK) {
-      msc_ok = false;
-      ESP_LOGE(kTag, "USB MSC init failed, fallback to CDC mode: %s", esp_err_to_name(msc_err));
-      usb_mode = UsbMode::kCdc;
-      ErrorManagerSet(ErrorCode::kUsbMscInit, ErrorSeverity::kError,
-                      std::string("MSC init failed: ") + esp_err_to_name(msc_err));
-      UpdateState([&](SharedState& s) {
-        s.usb_msc_mode = false;
-        s.usb_error = "MSC init failed: " + std::string(esp_err_to_name(msc_err));
-      });
-      SaveUsbModeToNvs(usb_mode);
-    } else {
-      UpdateState([](SharedState& s) { s.usb_error.clear(); });
-      ErrorManagerClear(ErrorCode::kUsbMscInit);
-    }
-  } else {
-    UpdateState([](SharedState& s) { s.usb_error.clear(); });
-    ErrorManagerClear(ErrorCode::kUsbMscInit);
   }
 
   MotionControllerInit();
@@ -386,18 +221,18 @@ extern "C" void app_main(void) {
     // Upload task uses esp_http_client and std::string, needs a bit more stack to avoid overflow.
     xTaskCreatePinnedToCore(&UploadTask, "upload_task", 12288, nullptr, 1, &upload_task, 0);
   }
-  StartGpsLogTask(usb_mode);
+  StartGpsLogTask();
   xTaskCreatePinnedToCore(&SdStatsTask, "sd_stats", 3072, nullptr, 1, nullptr, 0);
 
-  if (app_config.logging_active && usb_mode == UsbMode::kCdc) {
+  if (app_config.logging_active) {
     const std::string postfix = SanitizePostfix(app_config.logging_postfix);
     log_config.postfix = postfix;
     log_config.use_motor = app_config.logging_use_motor;
     log_config.duration_s = app_config.logging_duration_s;
-    if (!StartLoggingToFile(postfix, usb_mode)) {
+    if (!StartLoggingToFile(postfix)) {
       ESP_LOGW(kTag, "Auto-start logging failed");
       app_config.logging_active = false;
-      (void)SaveConfigToSdCard(app_config, pid_config, usb_mode);
+      (void)SaveConfigToSdCard(app_config, pid_config);
     } else {
       app_config.logging_active = true;
       app_config.logging_postfix = postfix;
@@ -411,7 +246,7 @@ extern "C" void app_main(void) {
     }
   }
 
-  init_ok = init_ok && msc_ok && (ina_err == ESP_OK);
+  init_ok = init_ok && (ina_err == ESP_OK);
   ESP_LOGI(kTag, "System ready");
 
   // Start MQTT after init (non-blocking)

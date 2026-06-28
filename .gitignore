@@ -38,3 +38,7 @@ tests/firmware/build/
 *.pem
 
 config.txt
+
+# Firmware bundle for manual flashing (not committed)
+firmware_release/
+firmware_release_*.zip

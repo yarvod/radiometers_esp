@@ -38,7 +38,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdmmc_cmd.h"
-#include "tusb_msc_storage.h"
 #include "sdkconfig.h"
 #include "config_loader.h"
 
@@ -360,8 +359,6 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
   cJSON_AddStringToObject(root, "stepperHomeStatus", snapshot.stepper_home_status.c_str());
-  cJSON_AddStringToObject(root, "usbMode", snapshot.usb_msc_mode ? "msc" : "cdc");
-  cJSON_AddBoolToObject(root, "usbMscBuilt", CONFIG_TINYUSB_MSC_ENABLED);
   if (!snapshot.usb_error.empty()) {
     cJSON_AddStringToObject(root, "usbError", snapshot.usb_error.c_str());
   }
@@ -794,10 +791,6 @@ esp_err_t LogStopHandler(httpd_req_t* req) {
 
 esp_err_t FsListHandler(httpd_req_t* req) {
   SharedState snapshot = CopyState();
-  if (snapshot.usb_msc_mode) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC mode active");
-    return ESP_FAIL;
-  }
 
   std::string rel_path;
   int page = 0;
@@ -919,10 +912,6 @@ esp_err_t FsListHandler(httpd_req_t* req) {
 
 esp_err_t FsDownloadHandler(httpd_req_t* req) {
   SharedState snapshot = CopyState();
-  if (snapshot.usb_msc_mode) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC mode active");
-    return ESP_FAIL;
-  }
 
   int qs_len = httpd_req_get_url_query_len(req) + 1;
   if (qs_len <= 1) {
@@ -1006,10 +995,6 @@ esp_err_t FsDownloadHandler(httpd_req_t* req) {
 
 esp_err_t FsDeleteHandler(httpd_req_t* req) {
   SharedState snapshot = CopyState();
-  if (snapshot.usb_msc_mode) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "MSC mode active");
-    return ESP_FAIL;
-  }
 
   std::vector<std::string> requested_files;
   bool has_body_files = false;
@@ -1835,11 +1820,6 @@ static esp_err_t TransferUploadQueueHandler(httpd_req_t* req, StorageBackend src
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stop logging before transfer");
     return ESP_FAIL;
   }
-  if (usb_mode == UsbMode::kMsc && (src_backend == StorageBackend::kSd || dst_backend == StorageBackend::kSd)) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "USB MSC mode owns SD card");
-    return ESP_FAIL;
-  }
-
   int max_files = 10;
   const size_t buf_len = std::min<size_t>(req->content_len, 64);
   if (buf_len > 0) {
@@ -2027,54 +2007,6 @@ esp_err_t PidDisableHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"pid_disabled\"}");
 }
 
-esp_err_t UsbModeGetHandler(httpd_req_t* req) {
-  httpd_resp_set_type(req, "application/json");
-  if (usb_mode == UsbMode::kMsc) {
-    return httpd_resp_sendstr(req, "{\"mode\":\"msc\"}");
-  }
-  return httpd_resp_sendstr(req, "{\"mode\":\"cdc\"}");
-}
-
-esp_err_t UsbModeSetHandler(httpd_req_t* req) {
-  const size_t buf_len = std::min<size_t>(req->content_len, 64);
-  if (buf_len == 0) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
-    return ESP_FAIL;
-  }
-  std::string body(buf_len, '\0');
-  int received = httpd_req_recv(req, body.data(), buf_len);
-  if (received <= 0) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
-    return ESP_FAIL;
-  }
-  body.resize(received);
-
-  cJSON* root = cJSON_Parse(body.c_str());
-  if (!root) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-    return ESP_FAIL;
-  }
-  const char* mode_str = cJSON_GetObjectItem(root, "mode") && cJSON_GetObjectItem(root, "mode")->valuestring
-                             ? cJSON_GetObjectItem(root, "mode")->valuestring
-                             : "";
-  UsbMode requested = (std::strcmp(mode_str, "msc") == 0) ? UsbMode::kMsc : UsbMode::kCdc;
-  cJSON_Delete(root);
-
-  if (requested == usb_mode) {
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, "{\"status\":\"unchanged\"}");
-  }
-
-  ActionResult res = ActionUsbModeSet(requested);
-  if (!res.ok) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
-    return ESP_FAIL;
-  }
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, "{\"status\":\"restarting\",\"mode\":\"pending\"}");
-  return ESP_OK;
-}
-
 esp_err_t WifiApplyHandler(httpd_req_t* req) {
   const size_t buf_len = std::min<size_t>(req->content_len, 160);
   if (buf_len == 0) {
@@ -2260,7 +2192,7 @@ esp_err_t GpsApplyHandler(httpd_req_t* req) {
   }
   app_config.gps_rtcm_types = rtcm_types;
   app_config.gps_mode = mode;
-  if (!SaveConfigToSdCard(app_config, pid_config, usb_mode)) {
+  if (!SaveConfigToSdCard(app_config, pid_config)) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save config.txt");
     return ESP_FAIL;
   }
@@ -2330,7 +2262,7 @@ esp_err_t StorageApplyHandler(httpd_req_t* req) {
   }
 
   app_config.storage_backend = backend;
-  if (!SaveConfigToSdCard(app_config, pid_config, usb_mode)) {
+  if (!SaveConfigToSdCard(app_config, pid_config)) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save config");
     return ESP_FAIL;
   }
@@ -2347,11 +2279,6 @@ esp_err_t StorageRemountHandler(httpd_req_t* req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Stop logging before remount");
     return ESP_FAIL;
   }
-  if (usb_mode == UsbMode::kMsc && app_config.storage_backend == StorageBackend::kSd) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "USB MSC mode owns SD card");
-    return ESP_FAIL;
-  }
-
   bool ok = false;
   {
     SdLockGuard guard(pdMS_TO_TICKS(3000));
@@ -2405,8 +2332,6 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t stepper_zero_uri = {.uri = "/stepper/zero", .method = HTTP_POST, .handler = StepperZeroHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_find_zero_uri = {.uri = "/stepper/find_zero", .method = HTTP_POST, .handler = StepperFindZeroHandler, .user_ctx = nullptr};
   httpd_uri_t stepper_home_offset_uri = {.uri = "/stepper/home_offset", .method = HTTP_POST, .handler = StepperHomeOffsetHandler, .user_ctx = nullptr};
-  httpd_uri_t usb_mode_get_uri = {.uri = "/usb/mode", .method = HTTP_GET, .handler = UsbModeGetHandler, .user_ctx = nullptr};
-  httpd_uri_t usb_mode_set_uri = {.uri = "/usb/mode", .method = HTTP_POST, .handler = UsbModeSetHandler, .user_ctx = nullptr};
   httpd_uri_t wifi_apply_uri = {.uri = "/wifi/apply", .method = HTTP_POST, .handler = WifiApplyHandler, .user_ctx = nullptr};
   httpd_uri_t net_apply_uri = {.uri = "/net/apply", .method = HTTP_POST, .handler = NetApplyHandler, .user_ctx = nullptr};
   httpd_uri_t cloud_apply_uri = {.uri = "/cloud/apply", .method = HTTP_POST, .handler = CloudApplyHandler, .user_ctx = nullptr};
@@ -2446,8 +2371,6 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &stepper_zero_uri);
   httpd_register_uri_handler(http_server, &stepper_find_zero_uri);
   httpd_register_uri_handler(http_server, &stepper_home_offset_uri);
-  httpd_register_uri_handler(http_server, &usb_mode_get_uri);
-  httpd_register_uri_handler(http_server, &usb_mode_set_uri);
   httpd_register_uri_handler(http_server, &wifi_apply_uri);
   httpd_register_uri_handler(http_server, &net_apply_uri);
   httpd_register_uri_handler(http_server, &cloud_apply_uri);

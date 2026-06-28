@@ -7,7 +7,6 @@
 #include "app_utils.h"
 #include "cJSON.h"
 #include "freertos/task.h"
-#include "tusb_msc_storage.h"
 
 namespace {
 
@@ -163,7 +162,7 @@ ActionResult ActionStartLog(const LogRequest& req) {
   if (r.duration_s <= 0.0f) r.duration_s = 1.0f;
   log_config.use_motor = r.use_motor;
   log_config.duration_s = r.duration_s;
-  if (!StartLoggingToFile(r.filename, usb_mode)) {
+  if (!StartLoggingToFile(r.filename)) {
     return {false, "Failed to start logging", {}};
   }
   const std::string postfix = SanitizePostfix(r.filename);
@@ -176,7 +175,7 @@ ActionResult ActionStartLog(const LogRequest& req) {
     s.log_use_motor = r.use_motor;
     s.log_duration_s = r.duration_s;
   });
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   return {true, "logging_started", {}};
 }
 
@@ -184,7 +183,7 @@ ActionResult ActionStopLog() {
   StopLogging();
   app_config.logging_active = false;
   app_config.logging_use_motor = false;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   UpdateState([](SharedState& s) {
     s.logging = false;
     s.log_use_motor = false;
@@ -211,7 +210,7 @@ ActionResult ActionStepperMove(const StepperMoveRequest& req) {
   int speed = req.speed_us > 0 ? req.speed_us : snapshot.stepper_speed_us;
   StartStepperMove(steps, req.forward, speed);
   app_config.stepper_speed_us = speed;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   return {true, "movement_started", {}};
 }
 
@@ -260,7 +259,7 @@ ActionResult ActionStepperHomeOffset(const StepperHomeOffsetRequest& req) {
     s.stepper_speed_us = app_config.stepper_speed_us;
     s.motor_hall_active_level = app_config.motor_hall_active_level;
   });
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   cJSON* root = cJSON_CreateObject();
   cJSON_AddNumberToObject(root, "speedUs", app_config.stepper_speed_us);
   cJSON_AddNumberToObject(root, "offsetSteps", app_config.stepper_home_offset_steps);
@@ -332,7 +331,7 @@ ActionResult ActionPidApply(const PidApplyRequest& req) {
     s.pid_sensor_mask = pid_config.sensor_mask;
   });
 
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   return {true, "pid_applied", {}};
 }
 
@@ -366,7 +365,7 @@ ActionResult ActionWifiApply(const WifiApplyRequest& req) {
   app_config.wifi_password = req.password;
   app_config.wifi_ap_mode = (mode == "ap");
   app_config.wifi_from_file = true;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   ScheduleNetworkApply();
   return {true, "wifi_saved_reconnect_scheduled", {}};
 }
@@ -382,7 +381,7 @@ ActionResult ActionNetApply(const NetApplyRequest& req) {
   }
   app_config.net_mode = new_mode;
   app_config.net_priority = new_priority;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   ScheduleNetworkApply();
   return {true, "net_saved_reconnect_scheduled", {}};
 }
@@ -398,7 +397,7 @@ ActionResult ActionCloudApply(const CloudApplyRequest& req) {
   app_config.mqtt_user = req.mqtt_user;
   app_config.mqtt_password = req.mqtt_password;
   app_config.mqtt_enabled = req.mqtt_enabled;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   return {true, "cloud_applied", {}};
 }
 
@@ -422,7 +421,7 @@ ActionResult ActionGpsApply(const GpsApplyRequest& req) {
   }
   app_config.gps_rtcm_types = types;
   app_config.gps_mode = mode;
-  SaveConfigToSdCard(app_config, pid_config, usb_mode);
+  SaveConfigToSdCard(app_config, pid_config);
   RequestGpsReconfigure();
   return {true, "gps_applied", {}};
 }
@@ -453,27 +452,6 @@ ActionResult ActionUploadedClear(const UploadedClearRequest& req) {
   cJSON_free((void*)json);
   cJSON_Delete(root);
   return {true, status == "already_running" ? "uploaded_clear_already_running" : "uploaded_clear_started", payload};
-}
-
-ActionResult ActionUsbModeSet(UsbMode requested) {
-#if !CONFIG_TINYUSB_MSC_ENABLED
-  if (requested == UsbMode::kMsc) {
-    return {false, "MSC not enabled in firmware", {}};
-  }
-#endif
-  if (requested == usb_mode) {
-    return {true, "unchanged", {}};
-  }
-  if (usb_mode == UsbMode::kMsc && requested == UsbMode::kCdc) {
-    tinyusb_msc_storage_unmount();
-  }
-  SaveUsbModeToNvs(requested);
-  ScheduleRestart();
-  return {true, "restarting", {}};
-}
-
-ActionResult ActionUsbModeGet() {
-  return {true, usb_mode == UsbMode::kMsc ? "msc" : "cdc", {}};
 }
 
 ActionResult ActionCalibrate() {

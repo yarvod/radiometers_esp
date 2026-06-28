@@ -1038,8 +1038,6 @@ const char INDEX_HTML[] = R"rawliteral(
           lastUpdateEl.textContent = new Date().toLocaleTimeString();
         }
       }
-      const modeLabel = data.usbMode === 'msc' ? 'Mass Storage (SD over USB)' : 'Serial (logs/flash)';
-      document.getElementById('usbModeLabel').textContent = modeLabel;
       const gpsActualModeEl = document.getElementById('gpsActualMode');
       if (gpsActualModeEl) gpsActualModeEl.textContent = data.gpsActualMode || '--';
       const gpsAntShortEl = document.getElementById('gpsAntennaShort');

@@ -101,8 +101,6 @@ ActionResult ActionGpsApply(const GpsApplyRequest& req);
 ActionResult ActionGpsProbe();
 ActionResult ActionConfigSyncInternalFlash();
 ActionResult ActionUploadedClear(const UploadedClearRequest& req);
-ActionResult ActionUsbModeSet(UsbMode requested);
-ActionResult ActionUsbModeGet();
 ActionResult ActionCalibrate();
 ActionResult ActionRestart();
 ActionResult ActionGetState();

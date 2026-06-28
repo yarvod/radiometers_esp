@@ -184,11 +184,6 @@ static void UploadedClearTask(void*) {
   int busy_retries = 0;
 
   while (result.scanned < limit) {
-    if (usb_mode == UsbMode::kMsc) {
-      result.sd_busy = true;
-      break;
-    }
-
     int batch_scanned = 0;
     {
       SdLockGuard guard(pdMS_TO_TICKS(100));
@@ -222,10 +217,6 @@ static void UploadedClearTask(void*) {
 
 bool StartUploadedClearTask(int max_files, std::string* out_status) {
   const int limit = std::clamp(max_files > 0 ? max_files : 1000, 1, 1000);
-  if (usb_mode == UsbMode::kMsc) {
-    if (out_status) *out_status = "sd_busy";
-    return false;
-  }
   if (s_uploaded_clear_task != nullptr) {
     if (out_status) *out_status = "already_running";
     return true;
@@ -836,16 +827,6 @@ static void CleanupUploadedDirIfNeeded(int max_percent) {
 
 void UpdateSdStats() {
   if (app_config.storage_backend == StorageBackend::kInternalFlash) {
-    UpdateState([](SharedState& s) {
-      s.sd_total_bytes = 0;
-      s.sd_used_bytes = 0;
-      s.sd_data_root_files = 0;
-      s.sd_to_upload_files = 0;
-      s.sd_uploaded_files = 0;
-    });
-    return;
-  }
-  if (usb_mode == UsbMode::kMsc) {
     UpdateState([](SharedState& s) {
       s.sd_total_bytes = 0;
       s.sd_used_bytes = 0;

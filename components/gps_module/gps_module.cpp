@@ -445,10 +445,6 @@ static void GpsLogTask(void*) {
 
   while (true) {
     const int64_t cycle_start = esp_timer_get_time();
-    if (usb_mode == UsbMode::kMsc) {
-      vTaskDelay(kInterval);
-      continue;
-    }
     if (s_reconfigure_requested) {
       s_reconfigure_requested = false;
       s_gps_client.configurePeriodicOutput(app_config.gps_rtcm_types, app_config.gps_mode);
@@ -516,8 +512,8 @@ static void GpsLogTask(void*) {
   }
 }
 
-void StartGpsLogTask(UsbMode mode) {
-  if (s_gps_log_task == nullptr && mode == UsbMode::kCdc) {
+void StartGpsLogTask() {
+  if (s_gps_log_task == nullptr) {
     xTaskCreatePinnedToCore(&GpsLogTask, "gps_log", 6144, nullptr, 1, &s_gps_log_task, 0);
   }
 }

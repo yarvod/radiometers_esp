@@ -13,12 +13,12 @@ bool ParseConfigFile(FILE* file, AppConfig* config);
 // NVS-backed (internal flash) — no SD needed.
 bool LoadConfigTextFromInternalFlash(std::string* out);
 bool LoadConfigFromInternalFlash(AppConfig* config);
-bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
+bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid);
 bool SyncConfigToInternalFlash();
 
 // SD-backed — opens its own early-boot SD mount independent of StorageManager.
 void LoadConfigFromSdCard(AppConfig* config);
-bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
+bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid);
 
 // Serialise current config to text (used by save functions and HTTP export).
-std::string BuildConfigText(const AppConfig& cfg, const PidConfig& pid, UsbMode current_usb_mode);
+std::string BuildConfigText(const AppConfig& cfg, const PidConfig& pid);

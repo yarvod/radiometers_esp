@@ -926,11 +926,7 @@ static void LoggingTask(void*) {
 
 // ---------- StartLoggingToFile ----------
 
-bool StartLoggingToFile(const std::string& postfix_raw, UsbMode current_usb_mode) {
-  if (current_usb_mode == UsbMode::kMsc) {
-    ESP_LOGW(kTag, "Cannot start logging in MSC mode");
-    return false;
-  }
+bool StartLoggingToFile(const std::string& postfix_raw) {
   const std::string postfix = SanitizePostfix(postfix_raw);
   log_config.postfix      = postfix;
   log_config.active       = true;
