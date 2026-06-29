@@ -247,8 +247,9 @@ const char INDEX_HTML[] = R"rawliteral(
               Position: <span id="stepperPosition">0</span> steps<br>
               Target: <span id="stepperTarget">0</span> steps<br>
               Home offset: <span id="stepperHomeOffsetDisplay">0</span> steps<br>
-              Hall: raw <span id="motorHallRaw">?</span>, active <span id="motorHallActive">0</span>, triggered <span id="motorHallTriggered">No</span><br>
-              Moving: <span id="stepperMoving">No</span>
+Hall: raw <span id="motorHallRaw">?</span>, active <span id="motorHallActive">0</span>, triggered <span id="motorHallTriggered">No</span><br>
+Hall edges: total <span id="motorHallEdges">0</span>, active <span id="motorHallActiveEdges">0</span>, level0 <span id="motorHallLevel0Edges">0</span>, level1 <span id="motorHallLevel1Edges">0</span><br>
+Moving: <span id="stepperMoving">No</span>
             </div>
             
             <div class="form-group">
@@ -1014,10 +1015,14 @@ const char INDEX_HTML[] = R"rawliteral(
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
       document.getElementById('stepperTarget').textContent = data.stepperTarget;
       document.getElementById('stepperHomeOffsetDisplay').textContent = data.stepperHomeOffsetSteps ?? 0;
-      document.getElementById('motorHallRaw').textContent = data.motorHallRawLevel ?? '?';
-      document.getElementById('motorHallActive').textContent = data.motorHallActiveLevel ?? 0;
-      document.getElementById('motorHallTriggered').textContent = data.motorHallTriggered ? 'Yes' : 'No';
-      document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes' : 'No';
+document.getElementById('motorHallRaw').textContent = data.motorHallRawLevel ?? '?';
+document.getElementById('motorHallActive').textContent = data.motorHallActiveLevel ?? 0;
+document.getElementById('motorHallTriggered').textContent = data.motorHallTriggered ? 'Yes' : 'No';
+document.getElementById('motorHallEdges').textContent = data.motorHallEdgeCount ?? 0;
+document.getElementById('motorHallActiveEdges').textContent = data.motorHallActiveEdgeCount ?? 0;
+document.getElementById('motorHallLevel0Edges').textContent = data.motorHallLevel0EdgeCount ?? 0;
+document.getElementById('motorHallLevel1Edges').textContent = data.motorHallLevel1EdgeCount ?? 0;
+document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes' : 'No';
       setValueIfIdle('speed', data.stepperSpeedUs ?? '');
       setValueIfIdle('homeOffsetSteps', data.stepperHomeOffsetSteps ?? 0);
       setValueIfIdle('loggingMotorSteps', data.loggingMotorSteps ?? 100);

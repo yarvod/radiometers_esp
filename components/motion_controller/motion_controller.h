@@ -13,6 +13,12 @@ void MotionControllerStartTasks();
 
 // Hall sensor
 bool IsHallTriggered();
+uint32_t HallEdgeCount();
+uint32_t HallActiveEdgeCount();
+uint32_t HallLevel0EdgeCount();
+uint32_t HallLevel1EdgeCount();
+int HallLastRawLevel();
+void RefreshHallDebugState();
 
 // External module power switch
 void SetExternalPower(bool enabled);

@@ -218,6 +218,7 @@ esp_err_t RootHandler(httpd_req_t* req) {
 }
 
 esp_err_t DataHandler(httpd_req_t* req) {
+  RefreshHallDebugState();
   SharedState snapshot = CopyState();
   cJSON* root = cJSON_CreateObject();
   cJSON_AddNumberToObject(root, "voltage1", snapshot.voltage1);
@@ -354,8 +355,14 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "stepperSpeedUs", snapshot.stepper_speed_us);
   cJSON_AddNumberToObject(root, "stepperHomeOffsetSteps", snapshot.stepper_home_offset_steps);
   cJSON_AddNumberToObject(root, "motorHallActiveLevel", snapshot.motor_hall_active_level);
-  cJSON_AddNumberToObject(root, "motorHallRawLevel", gpio_get_level(MT_HALL_SEN));
-  cJSON_AddBoolToObject(root, "motorHallTriggered", IsHallTriggered());
+  cJSON_AddNumberToObject(root, "motorHallRawLevel", snapshot.motor_hall_raw_level);
+  cJSON_AddBoolToObject(root, "motorHallTriggered", snapshot.motor_hall_triggered);
+  cJSON_AddNumberToObject(root, "motorHallEdgeCount", snapshot.motor_hall_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallActiveEdgeCount", snapshot.motor_hall_active_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallLevel0EdgeCount", snapshot.motor_hall_level0_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallLevel1EdgeCount", snapshot.motor_hall_level1_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallLastEdgeLevel", snapshot.motor_hall_last_edge_level);
+  cJSON_AddNumberToObject(root, "motorHallLastEdgeSeenUs", static_cast<double>(snapshot.motor_hall_last_edge_seen_us));
   cJSON_AddBoolToObject(root, "stepperMoving", snapshot.stepper_moving);
   cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
   cJSON_AddStringToObject(root, "stepperHomeStatus", snapshot.stepper_home_status.c_str());

@@ -7,6 +7,7 @@
 #include "app_utils.h"
 #include "cJSON.h"
 #include "freertos/task.h"
+#include "motion_controller.h"
 
 namespace {
 
@@ -27,6 +28,7 @@ void ScheduleNetworkApply() {
 }
 
 std::string BuildStateJsonInternal() {
+  RefreshHallDebugState();
   SharedState snapshot = CopyState();
   cJSON* root = cJSON_CreateObject();
   cJSON_AddBoolToObject(root, "logging", snapshot.logging);
@@ -71,6 +73,14 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "stepperSpeedUs", snapshot.stepper_speed_us);
   cJSON_AddNumberToObject(root, "stepperHomeOffsetSteps", snapshot.stepper_home_offset_steps);
   cJSON_AddNumberToObject(root, "motorHallActiveLevel", snapshot.motor_hall_active_level);
+  cJSON_AddNumberToObject(root, "motorHallRawLevel", snapshot.motor_hall_raw_level);
+  cJSON_AddBoolToObject(root, "motorHallTriggered", snapshot.motor_hall_triggered);
+  cJSON_AddNumberToObject(root, "motorHallEdgeCount", snapshot.motor_hall_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallActiveEdgeCount", snapshot.motor_hall_active_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallLevel0EdgeCount", snapshot.motor_hall_level0_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallLevel1EdgeCount", snapshot.motor_hall_level1_edge_count);
+  cJSON_AddNumberToObject(root, "motorHallLastEdgeLevel", snapshot.motor_hall_last_edge_level);
+  cJSON_AddNumberToObject(root, "motorHallLastEdgeSeenUs", static_cast<double>(snapshot.motor_hall_last_edge_seen_us));
   cJSON_AddBoolToObject(root, "stepperHomed", snapshot.stepper_homed);
   cJSON_AddStringToObject(root, "stepperHomeStatus", snapshot.stepper_home_status.c_str());
   cJSON_AddNumberToObject(root, "fan1Rpm", snapshot.fan1_rpm);

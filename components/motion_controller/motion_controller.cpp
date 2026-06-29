@@ -10,6 +10,7 @@
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
@@ -33,8 +34,63 @@ static constexpr char kTag[] = "MOTION";
 static constexpr uint32_t kExtPwrCycleStackBytes = 6144;
 static TaskHandle_t s_ext_pwr_cycle_task = nullptr;
 static MeasurementPublishFn s_publish_fn = nullptr;
+static volatile uint32_t s_hall_edge_count = 0;
+static volatile uint32_t s_hall_level0_edge_count = 0;
+static volatile uint32_t s_hall_level1_edge_count = 0;
+static volatile int s_hall_last_raw_level = -1;
+static bool s_hall_isr_registered = false;
+static uint32_t s_hall_last_reported_edge_count = 0;
+static int64_t s_hall_last_edge_seen_us = 0;
 
 // ---------- GPIO helpers ----------
+
+static void IRAM_ATTR HallSensorIsr(void*) {
+  const int raw = gpio_get_level(MT_HALL_SEN);
+  s_hall_last_raw_level = raw;
+  s_hall_edge_count = s_hall_edge_count + 1;
+  if (raw == 0) {
+    s_hall_level0_edge_count = s_hall_level0_edge_count + 1;
+  } else {
+    s_hall_level1_edge_count = s_hall_level1_edge_count + 1;
+  }
+}
+
+uint32_t HallEdgeCount() { return s_hall_edge_count; }
+
+uint32_t HallLevel0EdgeCount() { return s_hall_level0_edge_count; }
+
+uint32_t HallLevel1EdgeCount() { return s_hall_level1_edge_count; }
+
+uint32_t HallActiveEdgeCount() {
+  return app_config.motor_hall_active_level ? HallLevel1EdgeCount() : HallLevel0EdgeCount();
+}
+
+int HallLastRawLevel() { return s_hall_last_raw_level; }
+
+void RefreshHallDebugState() {
+  const int raw = gpio_get_level(MT_HALL_SEN);
+  const bool triggered = raw == app_config.motor_hall_active_level;
+  const uint32_t edge_count = HallEdgeCount();
+  const uint32_t active_edge_count = HallActiveEdgeCount();
+  const uint32_t level0_edges = HallLevel0EdgeCount();
+  const uint32_t level1_edges = HallLevel1EdgeCount();
+  const int last_edge_level = HallLastRawLevel();
+  const int64_t now_us = esp_timer_get_time();
+  if (edge_count != s_hall_last_reported_edge_count) {
+    s_hall_last_reported_edge_count = edge_count;
+    s_hall_last_edge_seen_us = now_us;
+  }
+  UpdateState([&](SharedState& s) {
+    s.motor_hall_raw_level = raw;
+    s.motor_hall_triggered = triggered;
+    s.motor_hall_edge_count = edge_count;
+    s.motor_hall_active_edge_count = active_edge_count;
+    s.motor_hall_level0_edge_count = level0_edges;
+    s.motor_hall_level1_edge_count = level1_edges;
+    s.motor_hall_last_edge_level = last_edge_level;
+    s.motor_hall_last_edge_seen_us = s_hall_last_edge_seen_us;
+  });
+}
 
 bool IsHallTriggered() {
   return gpio_get_level(MT_HALL_SEN) == app_config.motor_hall_active_level;
@@ -78,6 +134,17 @@ bool IsGpsAntennaShort() {
 void MotionControllerSetPublisher(MeasurementPublishFn fn) { s_publish_fn = fn; }
 
 void MotionControllerInit() {
+  if (MT_HALL_SEN != GPIO_NUM_NC && !s_hall_isr_registered) {
+    s_hall_last_raw_level = gpio_get_level(MT_HALL_SEN);
+    EnsureGpioIsrServiceInstalled();
+    ESP_ERROR_CHECK(gpio_set_intr_type(MT_HALL_SEN, GPIO_INTR_ANYEDGE));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(MT_HALL_SEN, HallSensorIsr, nullptr));
+    s_hall_isr_registered = true;
+    RefreshHallDebugState();
+    ESP_LOGI(kTag, "Hall capture enabled: raw=%d active=%d",
+             gpio_get_level(MT_HALL_SEN), app_config.motor_hall_active_level);
+  }
+
   // Heater: LEDC timer 0 + channel 0 at 1 kHz, 10-bit
   if (HEATER_PWM != GPIO_NUM_NC) {
     ledc_timer_config_t t = {};
@@ -478,12 +545,21 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
   });
 
   const int step_delay_us     = std::max(CopyState().stepper_speed_us, 1);
+  const uint32_t start_active_edges = HallActiveEdgeCount();
+  const uint32_t start_total_edges = HallEdgeCount();
+  uint32_t last_logged_edges = start_total_edges;
+  RefreshHallDebugState();
+  ESP_LOGI(kTag,
+           "%s start: raw=%d active=%d triggered=%s speed_us=%d active_edges=%u total_edges=%u",
+           log_context, gpio_get_level(MT_HALL_SEN), app_config.motor_hall_active_level,
+           IsHallTriggered() ? "yes" : "no", step_delay_us,
+           static_cast<unsigned>(start_active_edges), static_cast<unsigned>(start_total_edges));
   constexpr int kMaxSteps     = 20000;
   constexpr bool kHomeFwd     = true;
   gpio_set_level(STEPPER_DIR, kHomeFwd ? 1 : 0);
   UpdateState([](SharedState& s) { s.stepper_direction_forward = kHomeFwd; });
 
-  while (!IsHallTriggered() && result.hall_steps < kMaxSteps) {
+  while (!IsHallTriggered() && HallActiveEdgeCount() == start_active_edges && result.hall_steps < kMaxSteps) {
     if (CopyState().stepper_abort) {
       ESP_LOGW(kTag, "%s aborted before Hall after %d steps", log_context, result.hall_steps);
       result.aborted = true;
@@ -493,13 +569,32 @@ static StepperHomeResult HomeStepperToUserZeroBlocking(bool enable_motor, const 
     UpdateState([](SharedState& s) { s.stepper_position += kHomeFwd ? 1 : -1; });
     esp_rom_delay_us(step_delay_us);
     result.hall_steps++;
+    const uint32_t current_edges = HallEdgeCount();
+    if (current_edges != last_logged_edges) {
+      last_logged_edges = current_edges;
+      RefreshHallDebugState();
+      ESP_LOGI(kTag, "%s Hall edge: steps=%d raw=%d active_edges=%u total_edges=%u",
+               log_context, result.hall_steps, gpio_get_level(MT_HALL_SEN),
+               static_cast<unsigned>(HallActiveEdgeCount()), static_cast<unsigned>(current_edges));
+    }
   }
 
   if (!result.aborted) {
-    if (result.hall_steps >= kMaxSteps) {
-      ESP_LOGW(kTag, "%s Hall not found after %d steps", log_context, kMaxSteps);
+    const bool found_by_level = IsHallTriggered();
+    const bool found_by_latch = HallActiveEdgeCount() != start_active_edges;
+    RefreshHallDebugState();
+    if (result.hall_steps >= kMaxSteps && !found_by_level && !found_by_latch) {
+      ESP_LOGW(kTag,
+               "%s Hall not found after %d steps: raw=%d active=%d active_edges=%u->%u total_edges=%u->%u",
+               log_context, kMaxSteps, gpio_get_level(MT_HALL_SEN), app_config.motor_hall_active_level,
+               static_cast<unsigned>(start_active_edges), static_cast<unsigned>(HallActiveEdgeCount()),
+               static_cast<unsigned>(start_total_edges), static_cast<unsigned>(HallEdgeCount()));
     } else {
       result.hall_found = true;
+      ESP_LOGI(kTag, "%s Hall found by %s after %d steps: raw=%d active_edges=%u->%u",
+               log_context, found_by_level ? "level" : "edge", result.hall_steps,
+               gpio_get_level(MT_HALL_SEN), static_cast<unsigned>(start_active_edges),
+               static_cast<unsigned>(HallActiveEdgeCount()));
       UpdateState([](SharedState& s) {
         s.stepper_home_status = "hall_found";
         s.stepper_homed       = true;
@@ -559,7 +654,7 @@ void FindZeroTask(void*) {
   const bool hall_initial = IsHallTriggered();
   ESP_LOGI(kTag, "FindZero: start, hall=%s, offset=%d",
            hall_initial ? "yes" : "no", app_config.stepper_home_offset_steps);
-  (void)HomeStepperToUserZeroBlocking(false, "FindZero");
+  (void)HomeStepperToUserZeroBlocking(true, "FindZero");
   find_zero_task = nullptr;
   vTaskDelete(nullptr);
 }

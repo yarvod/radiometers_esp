@@ -146,6 +146,14 @@ struct SharedState {
   int stepper_speed_us;
   int stepper_home_offset_steps;
   int motor_hall_active_level;
+  int motor_hall_raw_level;
+  bool motor_hall_triggered;
+  uint32_t motor_hall_edge_count;
+  uint32_t motor_hall_active_edge_count;
+  uint32_t motor_hall_level0_edge_count;
+  uint32_t motor_hall_level1_edge_count;
+  int motor_hall_last_edge_level;
+  int64_t motor_hall_last_edge_seen_us;
   int stepper_target;
   int stepper_position;
   int64_t last_step_timestamp_us;
@@ -259,4 +267,3 @@ void UpdateState(const std::function<void(SharedState&)>& updater);
 void ScheduleRestart();
 uint32_t LoadAndIncrementBootId();
 uint32_t GetBootId();
-

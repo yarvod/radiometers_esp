@@ -308,8 +308,7 @@ void BuildMqttState(char* out, size_t out_len) {
   if (!out || out_len == 0) return;
   JsonBuf b{out, out_len, 0, false};
   out[0] = '\0';
-  const int hall_raw = gpio_get_level(MT_HALL_SEN);
-  const bool hall_triggered = hall_raw == app_config.motor_hall_active_level;
+  RefreshHallDebugState();
   JsonAppend(&b, "{");
   if (state_mutex && xSemaphoreTake(state_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
     JsonAppend(&b,
@@ -353,10 +352,14 @@ void BuildMqttState(char* out, size_t out_len) {
                "\"pidIntegral\":%.3f,\"pidIntegralCandidate\":%.3f,\"pidDerivative\":%.6f,"
                "\"pidPTerm\":%.3f,\"pidITerm\":%.3f,\"pidDTerm\":%.3f,\"pidRawOutput\":%.3f,"
                "\"pidDt\":%.3f,\"pidSaturatedHigh\":%s,\"pidSaturatedLow\":%s,\"pidIntegralHeld\":%s,"
-               "\"stepperEnabled\":%s,\"stepperHoming\":%s,\"stepperDirForward\":%s,\"stepperMoving\":%s,"
-               "\"stepperHomed\":%s,\"stepperPosition\":%d,\"stepperTarget\":%d,"
-               "\"stepperSpeedUs\":%d,\"stepperHomeOffsetSteps\":%d,\"motorHallActiveLevel\":%d,"
-               "\"motorHallRawLevel\":%d,\"motorHallTriggered\":%s,\"stepperHomeStatus\":",
+             "\"stepperEnabled\":%s,\"stepperHoming\":%s,\"stepperDirForward\":%s,\"stepperMoving\":%s,"
+             "\"stepperHomed\":%s,\"stepperPosition\":%d,\"stepperTarget\":%d,"
+             "\"stepperSpeedUs\":%d,\"stepperHomeOffsetSteps\":%d,\"motorHallActiveLevel\":%d,"
+             "\"motorHallRawLevel\":%d,\"motorHallTriggered\":%s,"
+             "\"motorHallEdgeCount\":%u,\"motorHallActiveEdgeCount\":%u,"
+             "\"motorHallLevel0EdgeCount\":%u,\"motorHallLevel1EdgeCount\":%u,"
+             "\"motorHallLastEdgeLevel\":%d,\"motorHallLastEdgeSeenUs\":%lld,"
+             "\"stepperHomeStatus\":",
                state.log_use_motor ? "true" : "false",
                state.log_duration_s,
                app_config.logging_motor_steps,
@@ -389,11 +392,17 @@ void BuildMqttState(char* out, size_t out_len) {
                state.stepper_homed ? "true" : "false",
                state.stepper_position,
                state.stepper_target,
-               state.stepper_speed_us,
-               state.stepper_home_offset_steps,
-               state.motor_hall_active_level,
-               hall_raw,
-               hall_triggered ? "true" : "false");
+             state.stepper_speed_us,
+             state.stepper_home_offset_steps,
+             state.motor_hall_active_level,
+             state.motor_hall_raw_level,
+             state.motor_hall_triggered ? "true" : "false",
+             static_cast<unsigned>(state.motor_hall_edge_count),
+             static_cast<unsigned>(state.motor_hall_active_edge_count),
+             static_cast<unsigned>(state.motor_hall_level0_edge_count),
+             static_cast<unsigned>(state.motor_hall_level1_edge_count),
+             state.motor_hall_last_edge_level,
+             static_cast<long long>(state.motor_hall_last_edge_seen_us));
     JsonAppendEscaped(&b, state.stepper_home_status.c_str());
     JsonAppend(&b,
                ",\"wifiRssi\":%d,\"wifiQuality\":%d,\"wifiIp\":",
