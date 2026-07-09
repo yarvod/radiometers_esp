@@ -2318,6 +2318,9 @@ httpd_handle_t StartHttpServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.lru_purge_enable = true;
+  // Cap the web server's socket pool so it can't monopolize LWIP_MAX_SOCKETS and
+  // starve MQTT / SNTP / MinIO upload (default 7 + 3 reserved == the whole pool).
+  config.max_open_sockets = 4;
   config.max_uri_handlers = 47;
   config.stack_size = 8192;
 
