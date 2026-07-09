@@ -6,7 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-// Write one CSV row to {ActiveStorageMountPoint()}/meteo_YYYYMMDD_HH.txt.
+// Write one CSV row to {ActiveStorageMountPoint()}/meteo_YYYYMMDD_HHMMSS_<bootId>.txt.
 // Rotates hourly: completed file is moved to ActiveToUploadDir() for S3 upload.
 // Works with both SD and internal flash backends.
 void AppendMeteoLog(const MeteoData& d);

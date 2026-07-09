@@ -11,6 +11,7 @@
 #include "app_utils.h"
 #include "storage_manager.h"
 #include "app_state.h"
+#include "gps_module.h"  // GetBestUtcTimeForData()
 #include "driver/uart.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
@@ -37,11 +38,13 @@ constexpr TickType_t kRespTimeoutTicks = pdMS_TO_TICKS(600);
 constexpr uint16_t kInvalidU16  = 0xFFFF;
 constexpr uint16_t kInvalidTemp = 0x07FF;
 
-// Build basename for the current-hour meteo log file.
-// Format: meteo_YYYYMMDD_HH.txt
+// Build basename for a meteo log file, named after its start date-time (mirrors the
+// data_ logs). Format: meteo_YYYYMMDD_HHMMSS_<bootId>.txt ; file is rotated hourly.
 static void MeteoFilename(const struct tm& t, char* out, size_t len) {
-  snprintf(out, len, "meteo_%04d%02d%02d_%02d.txt",
-           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour);
+  snprintf(out, len, "meteo_%04d%02d%02d_%02d%02d%02d_%u.txt",
+           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+           t.tm_hour, t.tm_min, t.tm_sec,
+           static_cast<unsigned>(GetBootId()));
 }
 
 }  // namespace
@@ -111,6 +114,20 @@ void Wn90lpClient::TaskThunk(void* arg) {
 }
 
 void Wn90lpClient::taskLoop() {
+  // Wait up to 30 s for a real wall-clock time (NTP or GPS) before the first log,
+  // so we don't create 1970-dated meteo files at boot. If it never arrives, fall
+  // through and log with whatever time we have (monotonic fallback).
+  constexpr time_t kSaneEpoch = 1700000000;  // ~2023-11; below this = clock not set
+  for (int waited_ms = 0; waited_ms < 30000; waited_ms += 500) {
+    const UtcTimeSnapshot ts = GetBestUtcTimeForData();
+    if (ts.valid && ts.unix_time > kSaneEpoch) {
+      ESP_LOGI("METEO", "wall-clock time ready (source=%d), starting meteo log",
+               static_cast<int>(ts.source));
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+
   while (true) {
     if (poll()) {
       MeteoData d = getData();
@@ -193,7 +210,10 @@ bool Wn90lpClient::parseResponse(const uint8_t* buf, MeteoData& out) {
   out.rainfall_mm   = (r_rain  != kInvalidU16)  ? r_rain  * 0.1f               : NAN;
   out.pressure_hpa  = (r_pres  != kInvalidU16)  ? r_pres  * 0.1f               : NAN;
   out.online        = true;
-  out.timestamp_ms  = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+  // Real wall-clock UTC (NTP/GPS/cached with monotonic fallback) — same source as
+  // the rest of the data logs. Using esp_timer here previously produced 1970 files.
+  const UtcTimeSnapshot ts = GetBestUtcTimeForData();
+  out.timestamp_ms  = static_cast<uint64_t>(ts.unix_time) * 1000ull + ts.millisecond;
   return true;
 }
 
@@ -230,6 +250,8 @@ MeteoData Wn90lpClient::getData() const {
 
 // Track the currently open meteo log across calls (single writer task).
 static std::string s_current_meteo_path;
+// Hour bucket (year/day/hour) of the currently open file; -1 = none open yet.
+static int s_current_meteo_bucket = -1;
 
 static bool RenameIntoDir(const std::string& src, const std::string& dest_dir) {
   // dest_dir must already exist
@@ -252,26 +274,33 @@ void AppendMeteoLog(const MeteoData& d) {
   struct tm tm_buf {};
   gmtime_r(&now_sec, &tm_buf);
 
-  char fname[64];
-  MeteoFilename(tm_buf, fname, sizeof(fname));
-  const std::string path = std::string(ActiveStorageMountPoint()) + "/" + fname;
+  const std::string mount = ActiveStorageMountPoint();
+  const int bucket = ((tm_buf.tm_year * 366 + tm_buf.tm_yday) * 24) + tm_buf.tm_hour;
 
-  // Hourly rotation: if we've moved to a new file, queue the previous one for upload.
-  // Also handles storage-backend switch: if the old path is on a different mount point,
-  // skip rename (file lives on the old storage) and just start fresh on the new one.
-  if (!s_current_meteo_path.empty() && s_current_meteo_path != path) {
-    const std::string mount = ActiveStorageMountPoint();
-    const bool same_storage = (s_current_meteo_path.rfind(mount, 0) == 0);
-    if (same_storage) {
+  // Hourly rotation: the filename carries the full start date-time, so we can't detect
+  // an hour change from the name — track the hour bucket separately. Rotate when the
+  // hour changes or when the storage backend switched (old file on a different mount).
+  const bool mount_changed =
+      !s_current_meteo_path.empty() && s_current_meteo_path.rfind(mount, 0) != 0;
+  if (!s_current_meteo_path.empty() && (bucket != s_current_meteo_bucket || mount_changed)) {
+    if (!mount_changed) {
       struct stat st {};
       if (stat(s_current_meteo_path.c_str(), &st) == 0 && st.st_size > 0) {
-        const std::string upload_dir = ActiveToUploadDir();
-        RenameIntoDir(s_current_meteo_path, upload_dir);
+        RenameIntoDir(s_current_meteo_path, ActiveToUploadDir());
         ESP_LOGI("METEO", "rotated and queued: %s", s_current_meteo_path.c_str());
       }
     }
     s_current_meteo_path.clear();
   }
+
+  // Open a new file (named after the current date-time) when none is active yet.
+  if (s_current_meteo_path.empty()) {
+    char fname[80];
+    MeteoFilename(tm_buf, fname, sizeof(fname));
+    s_current_meteo_path = mount + "/" + fname;
+    s_current_meteo_bucket = bucket;
+  }
+  const std::string& path = s_current_meteo_path;
 
   FILE* f = fopen(path.c_str(), "a");
   if (!f) {
@@ -304,5 +333,4 @@ void AppendMeteoLog(const MeteoData& d) {
           fv(d.rainfall_mm), fv(d.pressure_hpa));
 
   fclose(f);
-  s_current_meteo_path = path;
 }
