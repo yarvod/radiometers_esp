@@ -670,7 +670,9 @@ bool StartFindZeroTask(std::string* out_message) {
     s.stepper_homed       = false;
     s.homing              = true;
   });
-  xTaskCreatePinnedToCore(&FindZeroTask, "find_zero", 4096, nullptr, 4, &find_zero_task, 1);
+  // 8192: homing does printf-heavy logging + nested std::function state updates + offset
+  // moves; 4096 overflowed right after Hall detection once edge-latch debug logs were added.
+  xTaskCreatePinnedToCore(&FindZeroTask, "find_zero", 8192, nullptr, 4, &find_zero_task, 1);
   if (out_message) *out_message = "homing_started";
   return true;
 }
