@@ -14,6 +14,7 @@ from app.repositories.interfaces import (
     ErrorRepository,
     GnssDataRepository,
     MeasurementRepository,
+    MeteoReadingRepository,
     RadiometerCalibrationRepository,
     SoundingExportJobRepository,
     SoundingJobRepository,
@@ -29,6 +30,7 @@ from app.repositories.sqlalchemy import (
     SqlErrorRepository,
     SqlGnssDataRepository,
     SqlMeasurementRepository,
+    SqlMeteoReadingRepository,
     SqlRadiometerCalibrationRepository,
     SqlSoundingExportJobRepository,
     SqlSoundingJobRepository,
@@ -93,6 +95,10 @@ class AppProvider(Provider):
         return SqlMeasurementRepository(session)
 
     @provide(scope=Scope.REQUEST)
+    def provide_meteo_reading_repo(self, session: AsyncSession) -> MeteoReadingRepository:
+        return SqlMeteoReadingRepository(session)
+
+    @provide(scope=Scope.REQUEST)
     def provide_gnss_data_repo(self, session: AsyncSession) -> GnssDataRepository:
         return SqlGnssDataRepository(session)
 
@@ -145,8 +151,10 @@ class AppProvider(Provider):
         return DeviceService(devices)
 
     @provide(scope=Scope.REQUEST)
-    def provide_measurement_service(self, measurements: MeasurementRepository) -> MeasurementService:
-        return MeasurementService(measurements)
+    def provide_measurement_service(
+        self, measurements: MeasurementRepository, meteo_readings: MeteoReadingRepository
+    ) -> MeasurementService:
+        return MeasurementService(measurements, meteo_readings)
 
     @provide(scope=Scope.REQUEST)
     def provide_gnss_data_service(self, gnss_data: GnssDataRepository) -> GnssDataService:

@@ -9,7 +9,7 @@
 // Write one CSV row to {ActiveStorageMountPoint()}/meteo_YYYYMMDD_HHMMSS_<bootId>.txt.
 // Rotates hourly: completed file is moved to ActiveToUploadDir() for S3 upload.
 // Works with both SD and internal flash backends.
-void AppendMeteoLog(const MeteoData& d);
+bool AppendMeteoLog(const MeteoData& d);
 
 // Driver for WN90LP weather station via Modbus RTU over RS485.
 // UART_NUM_1, 9600 8N1, RTS-controlled half-duplex (hw_pins.h: METEO_RS485_*).
@@ -21,7 +21,7 @@ class Wn90lpClient {
   // Initialise UART peripheral. Always succeeds even if station is absent.
   esp_err_t initUart();
 
-  // Spawn the 60-second polling FreeRTOS task.
+  // Spawn the polling/logging FreeRTOS task.
   esp_err_t startTask();
 
   // Send one Modbus request and parse the response.

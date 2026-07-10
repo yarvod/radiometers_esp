@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -11,10 +13,13 @@ from dishka import make_async_container
 
 from app.container import AppProvider
 from app.core.config import Settings
-from app.domain.entities import ErrorEvent, Measurement
+from app.domain.entities import ErrorEvent, Measurement, MeteoReading
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
 from app.services.measurements import MeasurementService
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_iso(value: str | None) -> datetime:
@@ -100,11 +105,47 @@ def extract_gps_config(data: dict) -> tuple[bool, list[int] | None, str | None, 
 
 
 def optional_float(value) -> float | None:
-    return float(value) if isinstance(value, (int, float)) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
 
 
 def optional_int(value) -> int | None:
-    return int(value) if isinstance(value, (int, float)) else None
+    parsed = optional_float(value)
+    return int(parsed) if parsed is not None else None
+
+
+def parse_meteo(device_id: str, data: dict) -> MeteoReading | None:
+    """Build a MeteoReading from the nested `meteo` object of a /measure payload.
+
+    Returns None if the station wasn't online (or no meteo block / no timestamp),
+    so the measurement is stored without a meteo FK. NaN/missing fields → None.
+    """
+    meteo = data.get("meteo")
+    if not isinstance(meteo, dict) or meteo.get("online") is not True:
+        return None
+    ts_ms = optional_int(meteo.get("timestampMs"))
+    if ts_ms is None or ts_ms <= 0:
+        return None
+    try:
+        timestamp = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return MeteoReading(
+        device_id=device_id,
+        timestamp=timestamp,
+        timestamp_ms=ts_ms,
+        temp_c=optional_float(meteo.get("tempC")),
+        humidity_pct=optional_float(meteo.get("humidityPct")),
+        wind_speed_ms=optional_float(meteo.get("windSpeedMs")),
+        gust_speed_ms=optional_float(meteo.get("gustSpeedMs")),
+        wind_dir_deg=optional_int(meteo.get("windDirDeg")),
+        pressure_hpa=optional_float(meteo.get("pressureHpa")),
+        rainfall_mm=optional_float(meteo.get("rainfallMm")),
+        light_lux=optional_float(meteo.get("lightLux")),
+        uvi=optional_float(meteo.get("uvi")),
+    )
 
 
 async def handle_measurement(topic: str, payload: bytes, container) -> None:
@@ -113,7 +154,9 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
         return
     try:
         data = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
         return
 
     timestamp = parse_iso(data.get("timestampIso"))
@@ -131,7 +174,7 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
         id=str(uuid.uuid4()),
         device_id=device_id,
         timestamp=timestamp,
-        timestamp_ms=int(timestamp_ms) if isinstance(timestamp_ms, (int, float)) else None,
+        timestamp_ms=optional_int(timestamp_ms),
         adc1=float(data.get("adc1", 0.0)),
         adc2=float(data.get("adc2", 0.0)),
         adc3=float(data.get("adc3", 0.0)),
@@ -174,7 +217,7 @@ async def handle_measurement(topic: str, payload: bytes, container) -> None:
                 actual_mode=gps_actual_mode,
             )
         await devices.touch_device(device_id, timestamp)
-        await measurements.add(measurement)
+        await measurements.add(measurement, meteo=parse_meteo(device_id, data))
 
 
 async def handle_state(topic: str, payload: bytes | object, container=None) -> None:
@@ -187,8 +230,10 @@ async def handle_state(topic: str, payload: bytes | object, container=None) -> N
     temp_addresses: list[str] = []
     try:
         data = json.loads(payload.decode("utf-8"))
+        if not isinstance(data, dict):
+            data = {}
         _, temp_addresses = parse_temp_sensors(data)
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         data = {}
         temp_addresses = []
     async with container() as request_container:
@@ -221,7 +266,9 @@ async def handle_error(topic: str, payload: bytes, container) -> None:
         return
     try:
         data = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
         return
 
     timestamp = parse_iso(data.get("timestampIso"))
@@ -235,7 +282,7 @@ async def handle_error(topic: str, payload: bytes, container) -> None:
         id=str(uuid.uuid4()),
         device_id=device_id,
         timestamp=timestamp,
-        timestamp_ms=int(timestamp_ms) if isinstance(timestamp_ms, (int, float)) else None,
+        timestamp_ms=optional_int(timestamp_ms),
         code=code,
         severity=severity,
         message=message,
@@ -264,12 +311,19 @@ async def run_worker() -> None:
                 messages = client.messages
                 async for message in messages:
                     topic = str(message.topic)
-                    if topic.endswith("/measure"):
-                        await handle_measurement(topic, message.payload, container)
-                    elif topic.endswith("/state"):
-                        await handle_state(topic, message.payload, container)
-                    elif topic.endswith("/error"):
-                        await handle_error(topic, message.payload, container)
+                    try:
+                        if topic.endswith("/measure"):
+                            await handle_measurement(topic, message.payload, container)
+                        elif topic.endswith("/state"):
+                            await handle_state(topic, message.payload, container)
+                        elif topic.endswith("/error"):
+                            await handle_error(topic, message.payload, container)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # A malformed or poisoned retained message must not terminate the
+                        # worker and turn container restart policy into a crash loop.
+                        logger.exception("Failed to process MQTT message on topic %s", topic)
         except MqttError:
             await asyncio.sleep(2)
 

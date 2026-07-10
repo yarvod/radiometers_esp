@@ -128,16 +128,75 @@ void Wn90lpClient::taskLoop() {
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 
+  // Two monotonic schedules in one task: station polling and CSV writes are independent,
+  // while RS485 and state.meteo still have a single owner. Wall-clock corrections from
+  // NTP/GPS therefore cannot create an unsigned underflow or distort the cadence.
+  int poll_interval_s_current = 0;
+  int log_interval_s_current = 0;
+  int64_t next_poll_us = esp_timer_get_time();
+  int64_t next_log_us = 0;
+  MeteoData latest{};
+  bool latest_online = false;
+
   while (true) {
-    if (poll()) {
-      MeteoData d = getData();
-      AppendMeteoLog(d);
-      UpdateState([&d](SharedState& s) { s.meteo = d; });
-    } else {
-      UpdateState([](SharedState& s) { s.meteo.online = false; });
+    const int64_t now_us = esp_timer_get_time();
+    const int poll_interval_s = std::max(1, app_config.meteo_poll_interval_s);
+    const int log_interval_s = std::max(10, app_config.meteo_log_interval_s);
+    const int64_t poll_interval_us = static_cast<int64_t>(poll_interval_s) * 1'000'000;
+    const int64_t log_interval_us = static_cast<int64_t>(log_interval_s) * 1'000'000;
+
+    if (poll_interval_s != poll_interval_s_current) {
+      poll_interval_s_current = poll_interval_s;
+      next_poll_us = now_us;  // apply a runtime interval change immediately
     }
-    const int interval_s = std::max(10, app_config.meteo_poll_interval_s);
-    vTaskDelay(pdMS_TO_TICKS(static_cast<uint32_t>(interval_s) * 1000u));
+    if (log_interval_s != log_interval_s_current) {
+      log_interval_s_current = log_interval_s;
+      if (next_log_us != 0) next_log_us = now_us + log_interval_us;
+    }
+
+    if (now_us >= next_poll_us) {
+      if (poll()) {
+        latest = getData();
+        latest_online = true;
+        UpdateState([&latest](SharedState& s) { s.meteo = latest; });
+        if (next_log_us == 0) next_log_us = esp_timer_get_time();  // log first valid reading immediately
+      } else {
+        latest_online = false;
+        UpdateState([](SharedState& s) { s.meteo.online = false; });
+      }
+      do {
+        next_poll_us += poll_interval_us;
+      } while (next_poll_us <= now_us);
+    }
+
+    int64_t after_poll_us = esp_timer_get_time();
+    if (next_log_us != 0 && after_poll_us >= next_log_us) {
+      if (latest_online) {
+        if (AppendMeteoLog(latest)) {
+          ESP_LOGI(kTag, "logged t=%.1f°C h=%.0f%% ws=%.1fm/s p=%.1fhPa",
+                   latest.temp_c, latest.humidity_pct,
+                   latest.wind_speed_ms, latest.pressure_hpa);
+          do {
+            next_log_us += log_interval_us;
+          } while (next_log_us <= after_poll_us);
+        } else {
+          // Storage contention is transient in normal operation; retry after the next
+          // station poll instead of hammering storage or suppressing attempts for a minute.
+          next_log_us = next_poll_us;
+        }
+      } else {
+        // Do not persist a stale reading while the station is offline. Reconsider it
+        // immediately after the next scheduled station poll.
+        next_log_us = next_poll_us;
+      }
+    }
+
+    after_poll_us = esp_timer_get_time();
+    int64_t wake_us = next_poll_us;
+    if (next_log_us != 0) wake_us = std::min(wake_us, next_log_us);
+    const int64_t delay_us = std::max<int64_t>(1'000, wake_us - after_poll_us);
+    const TickType_t delay_ticks = std::max<TickType_t>(1, pdMS_TO_TICKS((delay_us + 999) / 1000));
+    vTaskDelay(delay_ticks);
   }
 }
 
@@ -231,7 +290,8 @@ bool Wn90lpClient::poll() {
   last_ = d;
   if (mutex_) xSemaphoreGive(mutex_);
 
-  ESP_LOGI(kTag, "ok t=%.1f°C h=%.0f%% ws=%.1fm/s wd=%d° p=%.1fhPa lux=%.0f",
+  // Polled frequently (every ~9 s) — keep at DEBUG so the console isn't flooded.
+  ESP_LOGD(kTag, "ok t=%.1f°C h=%.0f%% ws=%.1fm/s wd=%d° p=%.1fhPa lux=%.0f",
            d.temp_c, d.humidity_pct, d.wind_speed_ms,
            d.wind_dir_deg, d.pressure_hpa, d.light_lux);
   return true;
@@ -263,12 +323,12 @@ static bool RenameIntoDir(const std::string& src, const std::string& dest_dir) {
   return false;
 }
 
-void AppendMeteoLog(const MeteoData& d) {
+bool AppendMeteoLog(const MeteoData& d) {
   SdLockGuard guard;
-  if (!guard.locked()) return;
+  if (!guard.locked()) return false;
 
-  if (!MountActiveStorage()) return;
-  if (!EnsureUploadDirs()) return;
+  if (!MountActiveStorage()) return false;
+  if (!EnsureUploadDirs()) return false;
 
   const time_t now_sec = static_cast<time_t>(d.timestamp_ms / 1000);
   struct tm tm_buf {};
@@ -305,16 +365,19 @@ void AppendMeteoLog(const MeteoData& d) {
   FILE* f = fopen(path.c_str(), "a");
   if (!f) {
     ESP_LOGW("METEO", "fopen %s failed (errno %d)", path.c_str(), errno);
-    return;
+    return false;
   }
 
+  bool write_ok = true;
   // Write CSV header once per new file.
-  fseek(f, 0, SEEK_END);
+  if (fseek(f, 0, SEEK_END) != 0) write_ok = false;
   if (ftell(f) == 0) {
-    fprintf(f, "timestamp_iso,timestamp_ms,"
-               "light_lux,uvi,temp_c,humidity_pct,"
-               "wind_speed_ms,gust_speed_ms,wind_dir_deg,"
-               "rainfall_mm,pressure_hpa\n");
+    if (fprintf(f, "timestamp_iso,timestamp_ms,"
+                   "light_lux,uvi,temp_c,humidity_pct,"
+                   "wind_speed_ms,gust_speed_ms,wind_dir_deg,"
+                   "rainfall_mm,pressure_hpa\n") < 0) {
+      write_ok = false;
+    }
   }
 
   char iso[64];
@@ -324,13 +387,17 @@ void AppendMeteoLog(const MeteoData& d) {
 
   auto fv = [](float v) -> double { return std::isnan(v) ? 0.0 : static_cast<double>(v); };
 
-  fprintf(f, "%s,%llu,%.1f,%.1f,%.1f,%.0f,%.1f,%.1f,%d,%.1f,%.1f\n",
-          iso,
-          static_cast<unsigned long long>(d.timestamp_ms),
-          fv(d.light_lux), fv(d.uvi), fv(d.temp_c), fv(d.humidity_pct),
-          fv(d.wind_speed_ms), fv(d.gust_speed_ms),
-          d.wind_dir_deg,
-          fv(d.rainfall_mm), fv(d.pressure_hpa));
-
-  fclose(f);
+  if (fprintf(f, "%s,%llu,%.1f,%.1f,%.1f,%.0f,%.1f,%.1f,%d,%.1f,%.1f\n",
+              iso,
+              static_cast<unsigned long long>(d.timestamp_ms),
+              fv(d.light_lux), fv(d.uvi), fv(d.temp_c), fv(d.humidity_pct),
+              fv(d.wind_speed_ms), fv(d.gust_speed_ms),
+              d.wind_dir_deg,
+              fv(d.rainfall_mm), fv(d.pressure_hpa)) < 0) {
+    write_ok = false;
+  }
+  if (fflush(f) != 0) write_ok = false;
+  if (fclose(f) != 0) write_ok = false;
+  if (!write_ok) ESP_LOGW("METEO", "write %s failed (errno %d)", path.c_str(), errno);
+  return write_ok;
 }

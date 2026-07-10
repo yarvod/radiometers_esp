@@ -2,12 +2,14 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
-from app.domain.entities import Measurement
+from app.domain.entities import Measurement, MeteoReading
 from app.db.models import AccessTokenModel, DeviceModel, MeasurementModel
 from app.repositories.sqlalchemy import (
     SqlDeviceRepository,
     SqlMeasurementRepository,
+    SqlMeteoReadingRepository,
     SqlTokenRepository,
 )
 
@@ -146,3 +148,25 @@ async def test_measurement_repo_add_flushes():
     session.add.assert_called_once()
     assert isinstance(session.add.call_args.args[0], MeasurementModel)
     session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_meteo_upsert_preserves_existing_non_null_fields():
+    session = AsyncMock()
+    result = Mock()
+    result.scalar_one.return_value = "meteo-1"
+    session.execute = AsyncMock(return_value=result)
+
+    reading = MeteoReading(
+        device_id="dev1",
+        timestamp=datetime.now(timezone.utc),
+        timestamp_ms=1710071999000,
+        temp_c=21.4,
+    )
+    returned_id = await SqlMeteoReadingRepository(session).upsert(reading)
+
+    stmt = session.execute.await_args.args[0]
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    assert returned_id == "meteo-1"
+    assert "coalesce(excluded.temp_c, meteo_readings.temp_c)" in sql
+    assert "coalesce(excluded.pressure_hpa, meteo_readings.pressure_hpa)" in sql

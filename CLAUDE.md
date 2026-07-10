@@ -62,7 +62,7 @@ Or inside the Dev Container (`.devcontainer/Dockerfile` uses the official `espre
 ### WN90LP weather station (RS485 / Modbus RTU)
 
 - **Protocol**: Modbus RTU, default device address `0x90`, 9600 8N1, CRC16 (poly 0xA001 reflected).
-- **Single bulk request** reads all 9 registers `0x0165–0x016D` in one frame: light, UVI, temperature, humidity, wind speed, gust speed, wind direction, rainfall, ABS pressure. Sensor reporting interval is 8.8 s; we poll every 60 s.
+- **Single bulk request** reads all 9 registers `0x0165–0x016D` in one frame: light, UVI, temperature, humidity, wind speed, gust speed, wind direction, rainfall, ABS pressure. Sensor reporting interval is 8.8 s; we **poll every `meteo_poll_interval_s` (default 9 s)** to keep `state.meteo` fresh, and **write a CSV row every `meteo_log_interval_s` (default 60 s)** — the two cadences are decoupled in the single `wn90lp` task.
 - **Graceful absence**: if the station doesn't respond, `MeteoData::online = false`; the task keeps running silently. No `ESP_LOGE` on simple timeout.
 - **CSV log**: each successful poll appends a row to `/sdcard/meteo_YYYYMMDD.txt` (header written once on first write).
 - **Wiring** (`hw_pins.h`): `METEO_RS485_TX=GPIO13`, `METEO_RS485_RX=GPIO11`, `METEO_RS485_RTS=GPIO12`.

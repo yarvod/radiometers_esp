@@ -36,8 +36,9 @@ AppConfig app_config{
     NetPriority::kWifi, // net_priority
     {1004, 1006, 1033}, // gps_rtcm_types
     "base_time_60",     // gps_mode
-    60,                 // meteo_poll_interval_s
+    9,                  // meteo_poll_interval_s (station updates ~8.8s; keep state.meteo fresh)
     true,               // meteo_enabled
+    60,                 // meteo_log_interval_s (CSV write cadence, decoupled from poll)
 };
 
 PidConfig pid_config{

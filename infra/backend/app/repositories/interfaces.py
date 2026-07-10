@@ -13,6 +13,7 @@ from app.domain.entities import (
     GnssDataMeasurementPoint,
     Measurement,
     MeasurementPoint,
+    MeteoReading,
     RadiometerCalibration,
     Sounding,
     SoundingExportJob,
@@ -305,6 +306,14 @@ class MeasurementRepository(ABC):
         bucket_seconds: int,
         limit: int,
     ) -> Sequence[MeasurementPoint]:
+        raise NotImplementedError
+
+
+class MeteoReadingRepository(ABC):
+    @abstractmethod
+    async def upsert(self, reading: MeteoReading) -> str:
+        """Insert a station reading (or return the existing one) deduped by
+        (device_id, timestamp_ms). Returns the meteo_readings.id."""
         raise NotImplementedError
 
 

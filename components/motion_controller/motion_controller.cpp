@@ -737,6 +737,37 @@ static void PublishLogMeasurement(const std::string& iso, uint64_t ts_ms, const 
     cJSON_AddNumberToObject(root, "gpsSatellites", gps.satellites);
     cJSON_AddNumberToObject(root, "gpsFixAgeMs", static_cast<double>(gps.age_ms));
   }
+  // Meteo snapshot (cached in state.meteo, refreshed by the wn90lp task). Attach only
+  // when the station is online; skip NaN fields so the backend stores them as NULL.
+  // meteoTimestampMs is the station reading's own time, used for dedup / FK linking.
+  if (cur.meteo.online) {
+    cJSON* meteo = cJSON_CreateObject();
+    bool meteo_ok = meteo != nullptr;
+    if (meteo_ok) meteo_ok = cJSON_AddBoolToObject(meteo, "online", true) != nullptr;
+    if (meteo_ok) {
+      meteo_ok = cJSON_AddNumberToObject(
+          meteo, "timestampMs", static_cast<double>(cur.meteo.timestamp_ms)) != nullptr;
+    }
+    auto add_if = [&](const char* key, float v) {
+      if (meteo_ok && !std::isnan(v)) {
+        meteo_ok = cJSON_AddNumberToObject(meteo, key, v) != nullptr;
+      }
+    };
+    add_if("tempC",       cur.meteo.temp_c);
+    add_if("humidityPct", cur.meteo.humidity_pct);
+    add_if("windSpeedMs", cur.meteo.wind_speed_ms);
+    add_if("gustSpeedMs", cur.meteo.gust_speed_ms);
+    if (meteo_ok && cur.meteo.wind_dir_deg >= 0) {
+      meteo_ok = cJSON_AddNumberToObject(meteo, "windDirDeg", cur.meteo.wind_dir_deg) != nullptr;
+    }
+    add_if("pressureHpa", cur.meteo.pressure_hpa);
+    add_if("rainfallMm",  cur.meteo.rainfall_mm);
+    add_if("lightLux",    cur.meteo.light_lux);
+    add_if("uvi",         cur.meteo.uvi);
+    if (!meteo_ok || !cJSON_AddItemToObject(root, "meteo", meteo)) {
+      cJSON_Delete(meteo);  // root owns the subtree only after a successful add
+    }
+  }
   const char* json = cJSON_PrintUnformatted(root);
   if (json) {
     if (s_publish_fn) s_publish_fn(json);

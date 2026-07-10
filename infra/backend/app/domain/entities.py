@@ -79,6 +79,23 @@ class Measurement:
     log_use_motor: bool
     log_duration: float
     log_filename: Optional[str]
+    meteo_reading_id: Optional[str] = None
+
+
+@dataclass
+class MeteoReading:
+    device_id: str
+    timestamp: datetime
+    timestamp_ms: int
+    temp_c: Optional[float] = None
+    humidity_pct: Optional[float] = None
+    wind_speed_ms: Optional[float] = None
+    gust_speed_ms: Optional[float] = None
+    wind_dir_deg: Optional[int] = None
+    pressure_hpa: Optional[float] = None
+    rainfall_mm: Optional[float] = None
+    light_lux: Optional[float] = None
+    uvi: Optional[float] = None
 
 
 @dataclass

@@ -4,8 +4,8 @@ from datetime import datetime
 from math import ceil
 from typing import Sequence
 
-from app.domain.entities import Measurement, MeasurementPoint
-from app.repositories.interfaces import MeasurementRepository
+from app.domain.entities import Measurement, MeasurementPoint, MeteoReading
+from app.repositories.interfaces import MeasurementRepository, MeteoReadingRepository
 from app.services.temp_outliers import (
     TemperatureOutlierFilterConfig,
     TemperatureOutlierFilterStats,
@@ -15,10 +15,17 @@ from app.services.temp_outliers import (
 
 
 class MeasurementService:
-    def __init__(self, measurements: MeasurementRepository) -> None:
+    def __init__(
+        self,
+        measurements: MeasurementRepository,
+        meteo_readings: MeteoReadingRepository,
+    ) -> None:
         self._measurements = measurements
+        self._meteo_readings = meteo_readings
 
-    async def add(self, measurement: Measurement) -> None:
+    async def add(self, measurement: Measurement, meteo: MeteoReading | None = None) -> None:
+        if meteo is not None:
+            measurement.meteo_reading_id = await self._meteo_readings.upsert(meteo)
         await self._measurements.add(measurement)
 
     async def list(self, device_id: str, start: datetime | None, end: datetime | None, limit: int) -> Sequence[Measurement]:

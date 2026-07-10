@@ -17,6 +17,7 @@ from app.domain.entities import (
     GnssDataMeasurementPoint,
     Measurement,
     MeasurementPoint,
+    MeteoReading,
     RadiometerCalibration,
     Sounding,
     SoundingExportJob,
@@ -34,6 +35,7 @@ from app.db.models import (
     GnssDataMeasurementModel,
     GnssDataModel,
     MeasurementModel,
+    MeteoReadingModel,
     RadiometerCalibrationModel,
     SoundingExportJobModel,
     SoundingJobModel,
@@ -48,6 +50,7 @@ from app.repositories.interfaces import (
     ErrorRepository,
     GnssDataRepository,
     MeasurementRepository,
+    MeteoReadingRepository,
     RadiometerCalibrationRepository,
     SoundingJobRepository,
     SoundingExportJobRepository,
@@ -160,6 +163,7 @@ def to_measurement(model: MeasurementModel) -> Measurement:
         log_use_motor=model.log_use_motor,
         log_duration=model.log_duration,
         log_filename=model.log_filename,
+        meteo_reading_id=model.meteo_reading_id,
     )
 
 
@@ -664,6 +668,7 @@ class SqlMeasurementRepository(MeasurementRepository):
             log_use_motor=measurement.log_use_motor,
             log_duration=measurement.log_duration,
             log_filename=measurement.log_filename,
+            meteo_reading_id=measurement.meteo_reading_id,
         )
         self._session.add(model)
         await self._session.flush()
@@ -768,6 +773,64 @@ class SqlMeasurementRepository(MeasurementRepository):
                 )
             )
         return points
+
+
+class SqlMeteoReadingRepository(MeteoReadingRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def upsert(self, reading: MeteoReading) -> str:
+        new_id = str(uuid.uuid4())
+        insert_stmt = pg_insert(MeteoReadingModel).values(
+            id=new_id,
+            device_id=reading.device_id,
+            timestamp=reading.timestamp,
+            timestamp_ms=reading.timestamp_ms,
+            temp_c=reading.temp_c,
+            humidity_pct=reading.humidity_pct,
+            wind_speed_ms=reading.wind_speed_ms,
+            gust_speed_ms=reading.gust_speed_ms,
+            wind_dir_deg=reading.wind_dir_deg,
+            pressure_hpa=reading.pressure_hpa,
+            rainfall_mm=reading.rainfall_mm,
+            light_lux=reading.light_lux,
+            uvi=reading.uvi,
+        )
+        stmt = (
+            insert_stmt
+            .on_conflict_do_update(
+                constraint="uq_meteo_reading_device_time",
+                set_={
+                    "timestamp": reading.timestamp,
+                    "temp_c": func.coalesce(insert_stmt.excluded.temp_c, MeteoReadingModel.temp_c),
+                    "humidity_pct": func.coalesce(
+                        insert_stmt.excluded.humidity_pct, MeteoReadingModel.humidity_pct
+                    ),
+                    "wind_speed_ms": func.coalesce(
+                        insert_stmt.excluded.wind_speed_ms, MeteoReadingModel.wind_speed_ms
+                    ),
+                    "gust_speed_ms": func.coalesce(
+                        insert_stmt.excluded.gust_speed_ms, MeteoReadingModel.gust_speed_ms
+                    ),
+                    "wind_dir_deg": func.coalesce(
+                        insert_stmt.excluded.wind_dir_deg, MeteoReadingModel.wind_dir_deg
+                    ),
+                    "pressure_hpa": func.coalesce(
+                        insert_stmt.excluded.pressure_hpa, MeteoReadingModel.pressure_hpa
+                    ),
+                    "rainfall_mm": func.coalesce(
+                        insert_stmt.excluded.rainfall_mm, MeteoReadingModel.rainfall_mm
+                    ),
+                    "light_lux": func.coalesce(
+                        insert_stmt.excluded.light_lux, MeteoReadingModel.light_lux
+                    ),
+                    "uvi": func.coalesce(insert_stmt.excluded.uvi, MeteoReadingModel.uvi),
+                },
+            )
+            .returning(MeteoReadingModel.id)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one()
 
 
 class SqlRadiometerCalibrationRepository(RadiometerCalibrationRepository):

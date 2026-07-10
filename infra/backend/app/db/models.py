@@ -36,6 +36,9 @@ class DeviceModel(Base):
     radiometer_calibrations: Mapped[list[RadiometerCalibrationModel]] = relationship(
         "RadiometerCalibrationModel", back_populates="device"
     )
+    meteo_readings: Mapped[list[MeteoReadingModel]] = relationship(
+        "MeteoReadingModel", back_populates="device", cascade="all, delete-orphan"
+    )
     gps_config: Mapped[DeviceGpsConfigModel | None] = relationship(
         "DeviceGpsConfigModel", back_populates="device", uselist=False
     )
@@ -136,8 +139,38 @@ class MeasurementModel(Base):
     log_use_motor: Mapped[bool] = mapped_column(Boolean, default=False)
     log_duration: Mapped[float] = mapped_column(Float, default=1.0)
     log_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meteo_reading_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("meteo_readings.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="measurements")
+    meteo_reading: Mapped[MeteoReadingModel | None] = relationship("MeteoReadingModel")
+
+
+class MeteoReadingModel(Base):
+    __tablename__ = "meteo_readings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    timestamp_ms: Mapped[int] = mapped_column(BigInteger)
+    temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    humidity_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wind_speed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gust_speed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wind_dir_deg: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pressure_hpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rainfall_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    light_lux: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uvi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="meteo_readings")
+
+    __table_args__ = (
+        UniqueConstraint("device_id", "timestamp_ms", name="uq_meteo_reading_device_time"),
+        Index("ix_meteo_readings_device_time", "device_id", "timestamp"),
+    )
 
 
 class RadiometerCalibrationModel(Base):
