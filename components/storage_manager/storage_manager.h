@@ -35,6 +35,11 @@ const char* ActiveStorageMountPoint();
 std::string ActiveToUploadDir();
 std::string ActiveUploadedDir();
 
+// Active meteo root file registry. Callers must hold SdLockGuard while reading or
+// replacing the path so upload sweeps cannot race with the meteo writer.
+std::string ActiveMeteoLogPathLocked();
+void SetActiveMeteoLogPathLocked(const std::string& path);
+
 // Resolve a filename or relative path against the active mount point.
 bool BuildActiveStorageFilenamePath(const std::string& name, std::string* out_full);
 bool BuildActiveStorageRelativePath(const std::string& rel_path, std::string* out_full);

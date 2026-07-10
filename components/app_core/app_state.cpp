@@ -38,7 +38,7 @@ AppConfig app_config{
     "base_time_60",     // gps_mode
     9,                  // meteo_poll_interval_s (station updates ~8.8s; keep state.meteo fresh)
     true,               // meteo_enabled
-    60,                 // meteo_log_interval_s (CSV write cadence, decoupled from poll)
+    60,                 // meteo_file_interval_s (CSV write cadence, independent from poll)
 };
 
 PidConfig pid_config{

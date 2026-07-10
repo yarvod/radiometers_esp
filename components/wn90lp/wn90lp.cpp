@@ -132,26 +132,26 @@ void Wn90lpClient::taskLoop() {
   // while RS485 and state.meteo still have a single owner. Wall-clock corrections from
   // NTP/GPS therefore cannot create an unsigned underflow or distort the cadence.
   int poll_interval_s_current = 0;
-  int log_interval_s_current = 0;
+  int file_interval_s_current = 0;
   int64_t next_poll_us = esp_timer_get_time();
-  int64_t next_log_us = 0;
+  int64_t next_file_us = 0;
   MeteoData latest{};
   bool latest_online = false;
 
   while (true) {
     const int64_t now_us = esp_timer_get_time();
     const int poll_interval_s = std::max(1, app_config.meteo_poll_interval_s);
-    const int log_interval_s = std::max(10, app_config.meteo_log_interval_s);
+    const int file_interval_s = std::max(10, app_config.meteo_file_interval_s);
     const int64_t poll_interval_us = static_cast<int64_t>(poll_interval_s) * 1'000'000;
-    const int64_t log_interval_us = static_cast<int64_t>(log_interval_s) * 1'000'000;
+    const int64_t file_interval_us = static_cast<int64_t>(file_interval_s) * 1'000'000;
 
     if (poll_interval_s != poll_interval_s_current) {
       poll_interval_s_current = poll_interval_s;
       next_poll_us = now_us;  // apply a runtime interval change immediately
     }
-    if (log_interval_s != log_interval_s_current) {
-      log_interval_s_current = log_interval_s;
-      if (next_log_us != 0) next_log_us = now_us + log_interval_us;
+    if (file_interval_s != file_interval_s_current) {
+      file_interval_s_current = file_interval_s;
+      if (next_file_us != 0) next_file_us = now_us + file_interval_us;
     }
 
     if (now_us >= next_poll_us) {
@@ -159,7 +159,7 @@ void Wn90lpClient::taskLoop() {
         latest = getData();
         latest_online = true;
         UpdateState([&latest](SharedState& s) { s.meteo = latest; });
-        if (next_log_us == 0) next_log_us = esp_timer_get_time();  // log first valid reading immediately
+        if (next_file_us == 0) next_file_us = esp_timer_get_time();  // write first valid reading immediately
       } else {
         latest_online = false;
         UpdateState([](SharedState& s) { s.meteo.online = false; });
@@ -170,30 +170,30 @@ void Wn90lpClient::taskLoop() {
     }
 
     int64_t after_poll_us = esp_timer_get_time();
-    if (next_log_us != 0 && after_poll_us >= next_log_us) {
+    if (next_file_us != 0 && after_poll_us >= next_file_us) {
       if (latest_online) {
         if (AppendMeteoLog(latest)) {
           ESP_LOGI(kTag, "logged t=%.1f°C h=%.0f%% ws=%.1fm/s p=%.1fhPa",
                    latest.temp_c, latest.humidity_pct,
                    latest.wind_speed_ms, latest.pressure_hpa);
           do {
-            next_log_us += log_interval_us;
-          } while (next_log_us <= after_poll_us);
+            next_file_us += file_interval_us;
+          } while (next_file_us <= after_poll_us);
         } else {
           // Storage contention is transient in normal operation; retry after the next
           // station poll instead of hammering storage or suppressing attempts for a minute.
-          next_log_us = next_poll_us;
+          next_file_us = next_poll_us;
         }
       } else {
         // Do not persist a stale reading while the station is offline. Reconsider it
         // immediately after the next scheduled station poll.
-        next_log_us = next_poll_us;
+        next_file_us = next_poll_us;
       }
     }
 
     after_poll_us = esp_timer_get_time();
     int64_t wake_us = next_poll_us;
-    if (next_log_us != 0) wake_us = std::min(wake_us, next_log_us);
+    if (next_file_us != 0) wake_us = std::min(wake_us, next_file_us);
     const int64_t delay_us = std::max<int64_t>(1'000, wake_us - after_poll_us);
     const TickType_t delay_ticks = std::max<TickType_t>(1, pdMS_TO_TICKS((delay_us + 999) / 1000));
     vTaskDelay(delay_ticks);
@@ -308,8 +308,6 @@ MeteoData Wn90lpClient::getData() const {
 // CSV logging with hourly rotation and upload queue
 // ---------------------------------------------------------------------------
 
-// Track the currently open meteo log across calls (single writer task).
-static std::string s_current_meteo_path;
 // Hour bucket (year/day/hour) of the currently open file; -1 = none open yet.
 static int s_current_meteo_bucket = -1;
 
@@ -336,31 +334,33 @@ bool AppendMeteoLog(const MeteoData& d) {
 
   const std::string mount = ActiveStorageMountPoint();
   const int bucket = ((tm_buf.tm_year * 366 + tm_buf.tm_yday) * 24) + tm_buf.tm_hour;
+  std::string current_meteo_path = ActiveMeteoLogPathLocked();
 
   // Hourly rotation: the filename carries the full start date-time, so we can't detect
   // an hour change from the name — track the hour bucket separately. Rotate when the
   // hour changes or when the storage backend switched (old file on a different mount).
   const bool mount_changed =
-      !s_current_meteo_path.empty() && s_current_meteo_path.rfind(mount, 0) != 0;
-  if (!s_current_meteo_path.empty() && (bucket != s_current_meteo_bucket || mount_changed)) {
+      !current_meteo_path.empty() && current_meteo_path.rfind(mount, 0) != 0;
+  if (!current_meteo_path.empty() && (bucket != s_current_meteo_bucket || mount_changed)) {
     if (!mount_changed) {
       struct stat st {};
-      if (stat(s_current_meteo_path.c_str(), &st) == 0 && st.st_size > 0) {
-        RenameIntoDir(s_current_meteo_path, ActiveToUploadDir());
-        ESP_LOGI("METEO", "rotated and queued: %s", s_current_meteo_path.c_str());
+      if (stat(current_meteo_path.c_str(), &st) == 0 && st.st_size > 0) {
+        if (!RenameIntoDir(current_meteo_path, ActiveToUploadDir())) return false;
+        ESP_LOGI("METEO", "rotated and queued: %s", current_meteo_path.c_str());
       }
     }
-    s_current_meteo_path.clear();
+    current_meteo_path.clear();
   }
 
   // Open a new file (named after the current date-time) when none is active yet.
-  if (s_current_meteo_path.empty()) {
+  if (current_meteo_path.empty()) {
     char fname[80];
     MeteoFilename(tm_buf, fname, sizeof(fname));
-    s_current_meteo_path = mount + "/" + fname;
+    current_meteo_path = mount + "/" + fname;
     s_current_meteo_bucket = bucket;
   }
-  const std::string& path = s_current_meteo_path;
+  SetActiveMeteoLogPathLocked(current_meteo_path);
+  const std::string& path = current_meteo_path;
 
   FILE* f = fopen(path.c_str(), "a");
   if (!f) {

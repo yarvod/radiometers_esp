@@ -871,7 +871,7 @@ void UploadTask(void*) {
   {
     SdLockGuard guard(pdMS_TO_TICKS(1000));
     if (guard.locked() && MountActiveStorage()) {
-      MoveRootMeteoFilesToUploadLocked("");
+      MoveRootMeteoFilesToUploadLocked(ActiveMeteoLogPathLocked());
       if (app_config.storage_backend == StorageBackend::kSd && !log_file) {
         UnmountLogSd();
       }

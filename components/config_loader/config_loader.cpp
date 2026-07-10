@@ -151,8 +151,8 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
   std::string gps_mode_val = config->gps_mode;
   bool meteo_poll_interval_set = false;
   int meteo_poll_interval_val = config->meteo_poll_interval_s;
-  bool meteo_log_interval_set = false;
-  int meteo_log_interval_val = config->meteo_log_interval_s;
+  bool meteo_file_interval_set = false;
+  int meteo_file_interval_val = config->meteo_file_interval_s;
   bool meteo_enabled_set = false;
   bool meteo_enabled_val = config->meteo_enabled;
 
@@ -260,11 +260,11 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
         meteo_poll_interval_val = v;
         meteo_poll_interval_set = true;
       }
-    } else if (key == "meteo_log_interval_s") {
+    } else if (key == "meteo_file_interval_s") {
       const int v = std::atoi(value.c_str());
       if (v >= 10 && v <= 86400) {
-        meteo_log_interval_val = v;
-        meteo_log_interval_set = true;
+        meteo_file_interval_val = v;
+        meteo_file_interval_set = true;
       }
     } else if (key == "meteo_enabled") {
       if (ParseBool(value, &meteo_enabled_val)) meteo_enabled_set = true;
@@ -297,18 +297,8 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
   if (net_priority_set) config->net_priority = net_priority_val;
   if (gps_rtcm_types_set) config->gps_rtcm_types = gps_rtcm_types_val;
   if (gps_mode_set) config->gps_mode = gps_mode_val;
-  if (meteo_poll_interval_set) {
-    // Configs saved by firmware before meteo_log_interval_s existed always contain
-    // the old default poll=60. The missing new key is our migration marker; without
-    // this conversion upgraded devices would never pick up the new 9-second default.
-    if (meteo_poll_interval_val == 60 && !meteo_log_interval_set) {
-      config->meteo_poll_interval_s = 9;
-      ESP_LOGI(kTag, "Migrated legacy meteo poll interval from 60s to 9s");
-    } else {
-      config->meteo_poll_interval_s = meteo_poll_interval_val;
-    }
-  }
-  if (meteo_log_interval_set) config->meteo_log_interval_s = meteo_log_interval_val;
+  if (meteo_poll_interval_set) config->meteo_poll_interval_s = meteo_poll_interval_val;
+  if (meteo_file_interval_set) config->meteo_file_interval_s = meteo_file_interval_val;
   if (meteo_enabled_set) config->meteo_enabled = meteo_enabled_val;
   if (pid_kp_set || pid_ki_set || pid_kd_set || pid_sp_set || pid_sensor_set || pid_mask_set) {
     pid_config.kp = pid_kp; pid_config.ki = pid_ki; pid_config.kd = pid_kd;
@@ -332,7 +322,7 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
          minio_endpoint_set || minio_access_set || minio_secret_set || minio_bucket_set ||
          minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set ||
          mqtt_enabled_set || net_mode_set || net_priority_set || gps_rtcm_types_set ||
-         gps_mode_set || meteo_poll_interval_set || meteo_log_interval_set ||
+         gps_mode_set || meteo_poll_interval_set || meteo_file_interval_set ||
          meteo_enabled_set || pid_config.from_file;
 }
 
@@ -560,7 +550,7 @@ std::string BuildConfigText(const AppConfig& cfg, const PidConfig& pid) {
   if (!cfg.mqtt_password.empty()) AppendConfigLine(&text, "mqtt_password = %s\n", cfg.mqtt_password.c_str());
   AppendConfigLine(&text, "mqtt_enabled = %s\n", cfg.mqtt_enabled ? "true" : "false");
   AppendConfigLine(&text, "meteo_poll_interval_s = %d\n", cfg.meteo_poll_interval_s);
-  AppendConfigLine(&text, "meteo_log_interval_s = %d\n", cfg.meteo_log_interval_s);
+  AppendConfigLine(&text, "meteo_file_interval_s = %d\n", cfg.meteo_file_interval_s);
   AppendConfigLine(&text, "meteo_enabled = %s\n", cfg.meteo_enabled ? "true" : "false");
   return text;
 }

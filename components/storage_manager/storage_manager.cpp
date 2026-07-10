@@ -26,6 +26,7 @@ static sdmmc_card_t*     s_log_sd_card = nullptr;
 static bool              s_log_sd_mounted = false;
 static bool              s_flash_mounted = false;
 static wl_handle_t       s_flash_wl = WL_INVALID_HANDLE;
+static std::string       s_active_meteo_log_path;
 
 // ---------- init ----------
 
@@ -152,6 +153,14 @@ std::string ActiveToUploadDir() {
 
 std::string ActiveUploadedDir() {
   return std::string(ActiveStorageMountPoint()) + "/uploaded";
+}
+
+std::string ActiveMeteoLogPathLocked() {
+  return s_active_meteo_log_path;
+}
+
+void SetActiveMeteoLogPathLocked(const std::string& path) {
+  s_active_meteo_log_path = path;
 }
 
 // ---------- path helpers ----------

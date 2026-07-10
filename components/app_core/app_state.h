@@ -80,7 +80,7 @@ struct AppConfig {
   std::string gps_mode;
   int meteo_poll_interval_s;  // WN90LP station poll interval; default 9 (sensor updates ~8.8s)
   bool meteo_enabled;         // set false in config.txt to skip UART init entirely
-  int meteo_log_interval_s;   // how often a CSV row is written; default 60 (decoupled from poll)
+  int meteo_file_interval_s;  // CSV write interval; default 60 (independent from poll)
 };
 
 struct PidConfig {

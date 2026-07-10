@@ -16,6 +16,9 @@
   - `wifi_ssid`
   - `wifi_password` (минимум 8 символов, максимум 63)
   - `usb_mass_storage` (`true`/`false`) — при наличии в файле перекрывает сохранённый режим USB на этот запуск.
+  - `meteo_enabled` (`true`/`false`)
+  - `meteo_poll_interval_s` — период опроса WN90LP и обновления `state.meteo` (по умолчанию 9 с)
+  - `meteo_file_interval_s` — независимый период записи последнего показания в CSV (по умолчанию 60 с)
 
 Пример `config.txt`:
 ```
@@ -25,6 +28,11 @@ wifi_password = termostatica2022
 
 # Включить USB Mass Storage (true/false)
 usb_mass_storage = false
+
+# WN90LP: state обновляется каждые 9 с, CSV пишется каждые 60 с
+meteo_enabled = true
+meteo_poll_interval_s = 9
+meteo_file_interval_s = 60
 ```
 
 ## Сборка и прошивка локально

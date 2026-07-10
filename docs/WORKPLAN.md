@@ -26,11 +26,12 @@ meteo_readings 1 ── N measurements
 - [x] **MQTT poison-message could terminate the worker.** Non-object/invalid UTF-8,
   non-finite numbers and out-of-range meteo timestamps are rejected; each MQTT
   message is isolated so one bad retained payload cannot create a restart loop.
-- [x] **Existing devices would keep the legacy 60-second poll.** A saved config with
-  `meteo_poll_interval_s=60` and no `meteo_log_interval_s` is recognized as the old
-  format and migrated to the new 9-second default.
+- [x] **Poll and file periods were conflated by the old single-period design.** The
+  configuration now has two explicit, independent keys with no aliases or hidden
+  migration rules: `meteo_poll_interval_s=9` for station/state refresh and
+  `meteo_file_interval_s=60` for CSV writes.
 - [x] **The nominal 60-second CSV cadence was actually 63+ seconds and used wall
-  clock arithmetic.** Poll and log deadlines now use independent monotonic schedules;
+  clock arithmetic.** Poll and file deadlines now use independent monotonic schedules;
   NTP/GPS corrections no longer distort the cadence.
 
 ### Additional findings fixed in the same slice
@@ -71,16 +72,14 @@ meteo_readings 1 ── N measurements
   duplicate-delivery repair.
 - [ ] Exercise migration `00020 -> 00021 -> 00020` on a production-sized PostgreSQL
   snapshot while telemetry writes are running.
-- [ ] Hardware smoke-test an upgraded device with a legacy saved config:
-  - UART reports the `60s -> 9s` migration once;
+- [ ] Hardware smoke-test a device with the new explicit config:
+  - the loaded values are `meteo_poll_interval_s=9` and `meteo_file_interval_s=60`;
   - WN90LP polls near 9 seconds;
   - CSV writes stay near 60 seconds;
   - temporary storage contention retries without losing the full minute;
   - `/measure` contains a finite, valid `meteo` snapshot only while online.
 - [ ] Verify old firmware without a `meteo` object still stores measurements with
   `meteo_reading_id = NULL`.
-- [ ] Ensure the untracked `00021_meteo_readings.py` migration is included in the
-  eventual commit/deployment artifact.
 - [ ] Optional second phase: expose linked meteo data through the API and frontend.
 
 ## Current verification
@@ -88,5 +87,5 @@ meteo_readings 1 ── N measurements
 - Backend unit suite: **39 passed**.
 - Python `compileall`: passed.
 - Alembic chain: single head `00021`; incremental SQL generation passes.
-- ESP-IDF build: passed; application binary `0x166690`, `0x99970` bytes (30%) free.
+- ESP-IDF build: passed; application binary `0x166610`, `0x999f0` bytes (30%) free.
 - Not yet verified: live PostgreSQL upgrade/downgrade and physical WN90LP/storage timing.
