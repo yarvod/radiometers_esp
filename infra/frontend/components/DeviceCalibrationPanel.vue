@@ -247,6 +247,7 @@ const page = ref(1)
 const limit = 10
 const total = ref(0)
 const samplingPhase = ref<1 | 2 | null>(null)
+let samplingRunId = 0
 const samples1 = ref<AdcSample[]>([])
 const samples2 = ref<AdcSample[]>([])
 
@@ -485,12 +486,14 @@ const startSample = async (phase: 1 | 2) => {
   const durationMs = Math.max(1, Number(form.durationSec) || 1) * 1000
   const intervalMs = 500
   const startedAt = Date.now()
+  const runId = ++samplingRunId
   samplingPhase.value = phase
   modalStatus.value = `Замер нагрузки ${phase}...`
 
-  while (samplingPhase.value === phase && Date.now() - startedAt < durationMs) {
+  while (samplingRunId === runId && samplingPhase.value === phase && Date.now() - startedAt < durationMs) {
     try {
       const snapshot = await store.getState(nuxtApp.$mqtt, props.deviceId)
+      if (samplingRunId !== runId || samplingPhase.value !== phase) break
       if (!snapshot) {
         // Older firmware answers get_state without resp.data and publishes the
         // snapshot on the separate state topic. Give that message a short time
@@ -505,13 +508,16 @@ const startSample = async (phase: 1 | 2) => {
     await sleep(intervalMs)
   }
 
-  if (samplingPhase.value === phase) {
-    samplingPhase.value = null
+  if (samplingRunId !== runId || samplingPhase.value !== phase) {
+    modalStatus.value = `Замер нагрузки ${phase} остановлен: ${target.value.length} samples`
+    return
   }
+  samplingPhase.value = null
   modalStatus.value = `Замер нагрузки ${phase} завершен: ${target.value.length} samples`
 }
 
 const stopSample = () => {
+  samplingRunId += 1
   samplingPhase.value = null
 }
 
@@ -587,6 +593,8 @@ watch(
   },
   { immediate: true }
 )
+onDeactivated(stopSample)
+onBeforeUnmount(stopSample)
 </script>
 
 <style scoped>

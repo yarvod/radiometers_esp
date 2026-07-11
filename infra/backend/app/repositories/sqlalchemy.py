@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import delete, func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import aggregate_order_by, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import (
@@ -831,6 +831,122 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
         )
         result = await self._session.execute(stmt)
         return result.scalar_one()
+
+    def _base_query(self, device_id: str, start: datetime | None, end: datetime | None):
+        filters = [MeteoReadingModel.device_id == device_id]
+        if start:
+            filters.append(MeteoReadingModel.timestamp >= start)
+        if end:
+            filters.append(MeteoReadingModel.timestamp <= end)
+        return filters
+
+    async def count(self, device_id: str, start: datetime | None, end: datetime | None) -> int:
+        query = select(func.count()).select_from(MeteoReadingModel).where(*self._base_query(device_id, start, end))
+        result = await self._session.execute(query)
+        return int(result.scalar_one())
+
+    async def bounds(
+        self, device_id: str, start: datetime | None, end: datetime | None
+    ) -> tuple[datetime | None, datetime | None]:
+        query = select(func.min(MeteoReadingModel.timestamp), func.max(MeteoReadingModel.timestamp)).where(
+            *self._base_query(device_id, start, end)
+        )
+        result = await self._session.execute(query)
+        row = result.one()
+        return row[0], row[1]
+
+    async def list(
+        self, device_id: str, start: datetime | None, end: datetime | None, limit: int
+    ) -> Sequence[MeteoReading]:
+        query = (
+            select(MeteoReadingModel)
+            .where(*self._base_query(device_id, start, end))
+            .order_by(MeteoReadingModel.timestamp.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(query)
+        return [self._to_entity(model) for model in result.scalars().all()]
+
+    async def list_aggregated(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        bucket_seconds: int,
+        limit: int,
+        origin: datetime,
+        coverage_end: datetime,
+    ) -> Sequence[MeteoReading]:
+        origin_epoch = origin.timestamp()
+        bucket = origin_epoch + func.floor(
+            (func.extract("epoch", MeteoReadingModel.timestamp) - origin_epoch) / bucket_seconds
+        ) * bucket_seconds
+        bucket_ts = func.to_timestamp(bucket).label("bucket_ts")
+        wind_radians = func.radians(MeteoReadingModel.wind_dir_deg)
+        wind_direction = func.mod(
+            func.degrees(func.atan2(func.avg(func.sin(wind_radians)), func.avg(func.cos(wind_radians)))) + 360.0,
+            360.0,
+        ).label("wind_dir_deg")
+        rainfall = (
+            func.array_agg(
+                aggregate_order_by(MeteoReadingModel.rainfall_mm, MeteoReadingModel.timestamp.desc())
+            )
+            .filter(MeteoReadingModel.rainfall_mm.is_not(None))[1]
+            .label("rainfall_mm")
+        )
+        query = (
+            select(
+                bucket_ts,
+                func.avg(MeteoReadingModel.temp_c).label("temp_c"),
+                func.avg(MeteoReadingModel.humidity_pct).label("humidity_pct"),
+                func.avg(MeteoReadingModel.wind_speed_ms).label("wind_speed_ms"),
+                func.max(MeteoReadingModel.gust_speed_ms).label("gust_speed_ms"),
+                wind_direction,
+                func.avg(MeteoReadingModel.pressure_hpa).label("pressure_hpa"),
+                rainfall,
+                func.avg(MeteoReadingModel.light_lux).label("light_lux"),
+                func.avg(MeteoReadingModel.uvi).label("uvi"),
+            )
+            .where(*self._base_query(device_id, start, end), MeteoReadingModel.timestamp <= coverage_end)
+            .group_by(bucket_ts)
+            .order_by(bucket_ts.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(query)
+        return [
+            MeteoReading(
+                device_id=device_id,
+                timestamp=row.bucket_ts,
+                timestamp_ms=int(row.bucket_ts.timestamp() * 1000),
+                temp_c=float(row.temp_c) if row.temp_c is not None else None,
+                humidity_pct=float(row.humidity_pct) if row.humidity_pct is not None else None,
+                wind_speed_ms=float(row.wind_speed_ms) if row.wind_speed_ms is not None else None,
+                gust_speed_ms=float(row.gust_speed_ms) if row.gust_speed_ms is not None else None,
+                wind_dir_deg=int(round(float(row.wind_dir_deg))) % 360 if row.wind_dir_deg is not None else None,
+                pressure_hpa=float(row.pressure_hpa) if row.pressure_hpa is not None else None,
+                rainfall_mm=float(row.rainfall_mm) if row.rainfall_mm is not None else None,
+                light_lux=float(row.light_lux) if row.light_lux is not None else None,
+                uvi=float(row.uvi) if row.uvi is not None else None,
+            )
+            for row in result
+        ]
+
+    @staticmethod
+    def _to_entity(model: MeteoReadingModel) -> MeteoReading:
+        return MeteoReading(
+            device_id=model.device_id,
+            timestamp=model.timestamp,
+            timestamp_ms=model.timestamp_ms,
+            temp_c=model.temp_c,
+            humidity_pct=model.humidity_pct,
+            wind_speed_ms=model.wind_speed_ms,
+            gust_speed_ms=model.gust_speed_ms,
+            wind_dir_deg=model.wind_dir_deg,
+            pressure_hpa=model.pressure_hpa,
+            rainfall_mm=model.rainfall_mm,
+            light_lux=model.light_lux,
+            uvi=model.uvi,
+        )
 
 
 class SqlRadiometerCalibrationRepository(RadiometerCalibrationRepository):

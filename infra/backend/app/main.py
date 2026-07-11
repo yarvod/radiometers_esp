@@ -12,6 +12,7 @@ from app.api.routes import (
     devices_router,
     gnss_data_router,
     measurements_router,
+    meteo_readings_router,
     soundings_router,
     station_soundings_router,
     stations_router,
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(devices_router, prefix="/api")
     app.include_router(gnss_data_router, prefix="/api")
     app.include_router(measurements_router, prefix="/api")
+    app.include_router(meteo_readings_router, prefix="/api")
     app.include_router(stations_router, prefix="/api")
     app.include_router(soundings_router, prefix="/api")
     app.include_router(station_soundings_router, prefix="/api")

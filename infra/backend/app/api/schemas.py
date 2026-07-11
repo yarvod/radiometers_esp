@@ -466,6 +466,29 @@ class MeasurementsResponse(BaseModel):
     temp_outlier_filter: dict[str, object] = Field(default_factory=dict)
 
 
+class MeteoReadingPointOut(BaseModel):
+    timestamp: datetime
+    timestamp_ms: int
+    temp_c: Optional[float] = None
+    humidity_pct: Optional[float] = None
+    wind_speed_ms: Optional[float] = None
+    gust_speed_ms: Optional[float] = None
+    wind_dir_deg: Optional[int] = None
+    pressure_hpa: Optional[float] = None
+    rainfall_mm: Optional[float] = None
+    light_lux: Optional[float] = None
+    uvi: Optional[float] = None
+
+
+class MeteoReadingsResponse(BaseModel):
+    points: list[MeteoReadingPointOut]
+    raw_count: int
+    limit: int
+    bucket_seconds: int
+    bucket_label: str
+    aggregated: bool
+
+
 class MeasurementLatestResponse(BaseModel):
     timestamp: Optional[datetime]
     timestamp_ms: Optional[int]

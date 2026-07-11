@@ -316,6 +316,35 @@ class MeteoReadingRepository(ABC):
         (device_id, timestamp_ms). Returns the meteo_readings.id."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def count(self, device_id: str, start: datetime | None, end: datetime | None) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def bounds(
+        self, device_id: str, start: datetime | None, end: datetime | None
+    ) -> tuple[datetime | None, datetime | None]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list(
+        self, device_id: str, start: datetime | None, end: datetime | None, limit: int
+    ) -> Sequence[MeteoReading]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_aggregated(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        bucket_seconds: int,
+        limit: int,
+        origin: datetime,
+        coverage_end: datetime,
+    ) -> Sequence[MeteoReading]:
+        raise NotImplementedError
+
 
 class RadiometerCalibrationRepository(ABC):
     @abstractmethod

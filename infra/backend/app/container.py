@@ -48,6 +48,7 @@ from app.services.devices import DeviceService
 from app.services.errors import ErrorService
 from app.services.gnss_data import GnssDataService
 from app.services.measurements import MeasurementService
+from app.services.meteo_readings import MeteoReadingService
 from app.services.soundings import SoundingService
 from app.services.stations import StationService
 from app.services.users import UserService
@@ -155,6 +156,10 @@ class AppProvider(Provider):
         self, measurements: MeasurementRepository, meteo_readings: MeteoReadingRepository
     ) -> MeasurementService:
         return MeasurementService(measurements, meteo_readings)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_meteo_reading_service(self, meteo_readings: MeteoReadingRepository) -> MeteoReadingService:
+        return MeteoReadingService(meteo_readings)
 
     @provide(scope=Scope.REQUEST)
     def provide_gnss_data_service(self, gnss_data: GnssDataRepository) -> GnssDataService:

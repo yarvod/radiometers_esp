@@ -528,7 +528,9 @@ input { width: 100%; box-sizing: border-box; }
   .config-binding-row { grid-template-columns: 1fr; gap: 6px; }
 }
 .device-page .chart-stack { display: flex; flex-direction: column; gap: 20px; }
+.device-page .device-feature-stack { display: flex; flex-direction: column; gap: 18px; }
 .device-page .chart-box { background: transparent; border: none; padding: 0; height: 481px; display: flex; flex-direction: column; gap: 8px; }
+.device-page .compact-chart-box { height: 340px; }
 .device-page .chart-box h4 { margin: 0; font-size: 16px; color: #1f2933; }
 .device-page .chart-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .device-page .chart-head-controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; min-width: 0; }
