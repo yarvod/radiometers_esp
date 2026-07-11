@@ -9,6 +9,8 @@
   backup; partial saves are rolled back to the previous values.
 - Published the configured intervals in device state and added editors to the
   Nuxt Meteo tab and the local embedded web UI.
+- Made the Data tab initialize its history range immediately to the last 24 hours
+  in the browser timezone, using the same local-input/UTC-query conversion as Meteo.
 
 ## 2026-07-11 — Device page decomposition and meteo history
 

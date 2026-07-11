@@ -209,6 +209,7 @@ import type {
   TempOutlierFilterStats,
 } from '~/types/device-data'
 import type { HistoryChartDefinition } from '~/types/charts'
+import { browserTimezoneLabel, localInputToIso, toLocalInputValue } from '~/utils/datetime'
 const { apiFetch } = useApi()
 const props = defineProps<{
   deviceId: string
@@ -375,11 +376,6 @@ const parseDateAny = (value: string) => {
   const dt = new Date(value)
   if (Number.isNaN(dt.getTime())) return null
   return dt
-}
-
-const localInputToIso = (value: string) => {
-  const dt = parseLocalInput(value)
-  return dt ? dt.toISOString() : ''
 }
 
 const formatTimestamp = (value: string) => {
@@ -584,11 +580,6 @@ const markAtmosphereConfigDirty = () => {
   scheduleAtmosphereReload()
 }
 
-const toLocalInputValue = (date: Date) => {
-  const offset = date.getTimezoneOffset() * 60000
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
-}
-
 const formatRangeDate = (value: string) => {
   const dt = parseDateAny(value)
   if (!dt || Number.isNaN(dt.getTime())) return value
@@ -627,11 +618,6 @@ const validateHistoryDate = (field: 'from' | 'to') => {
   }
   historyDateError.value = ''
   return true
-}
-
-const getHistoryWindowEnd = (timestamp: string) => {
-  const dt = parseDateAny(timestamp)
-  return dt ?? null
 }
 
 const setHistoryWindow = (end: Date) => {
@@ -1238,24 +1224,6 @@ async function loadHistory() {
   }
 }
 
-async function loadLatestWindow() {
-  if (!deviceId.value) return
-  try {
-    const res = await apiFetch<{ timestamp: string | null }>(`/api/measurements/last?device_id=${deviceId.value}`)
-    if (res.timestamp) {
-      const end = getHistoryWindowEnd(res.timestamp)
-      if (end) {
-        setHistoryWindow(end)
-        return
-      }
-    }
-    setHistoryWindow(new Date())
-    historyStatus.value = 'Нет данных, показываю последние сутки'
-  } catch (e) {
-    setHistoryWindow(new Date())
-  }
-}
-
 const startHistoryTimer = () => {
   if (historyTimer) clearInterval(historyTimer)
   historyTimer = setInterval(() => {
@@ -1334,21 +1302,16 @@ const saveConfig = async () => {
 }
 
 const initialize = async () => {
+  setHistoryWindow(new Date())
   seedConfigForm()
   loadStationOptions()
   loadAtmosphereCoefficientDefaults()
-  await Promise.all([loadGnssDataSets(), loadLatestWindow()])
+  await loadGnssDataSets()
   await loadHistory()
 }
 
 onMounted(() => {
-  if (process.client) {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local'
-    const offsetMin = new Date().getTimezoneOffset()
-    const sign = offsetMin <= 0 ? '+' : '-'
-    const abs = Math.abs(offsetMin)
-    browserTzLabel.value = `${tz} (UTC${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')})`
-  }
+  browserTzLabel.value = browserTimezoneLabel()
   initialize()
 })
 
