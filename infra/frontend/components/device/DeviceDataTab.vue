@@ -1310,9 +1310,13 @@ const initialize = async () => {
   await loadHistory()
 }
 
+onBeforeMount(() => {
+  if (!historyFilters.from || !historyFilters.to) setHistoryWindow(new Date())
+})
+
 onMounted(() => {
+  void initialize()
   browserTzLabel.value = browserTimezoneLabel()
-  initialize()
 })
 
 onBeforeUnmount(() => {
@@ -1323,6 +1327,7 @@ onBeforeUnmount(() => {
 
 onDeactivated(stopHistoryTimer)
 onActivated(() => {
+  if (!historyFilters.from || !historyFilters.to) setHistoryWindow(new Date())
   if (historyAutoRefresh.value) startHistoryTimer()
 })
 

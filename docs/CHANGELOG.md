@@ -11,6 +11,8 @@
   Nuxt Meteo tab and the local embedded web UI.
 - Made the Data tab initialize its history range immediately to the last 24 hours
   in the browser timezone, using the same local-input/UTC-query conversion as Meteo.
+- Hardened that default range across initial mount and KeepAlive activation so the
+  date inputs are populated before asynchronous history/config loading begins.
 - Corrected MinIO telemetry so attempts count real enabled queued-file processing
   rather than empty/disabled polling cycles; added remote success/failure and local
   archive-failure counters plus an uptime-based last-result age to both UIs.
