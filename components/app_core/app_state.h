@@ -185,7 +185,12 @@ struct SharedState {
   uint32_t heap_psram_free_bytes;
   uint32_t heap_psram_largest_free_block_bytes;
   uint32_t minio_upload_attempts;
+  uint32_t minio_upload_successes;
+  uint32_t minio_upload_failures;
+  uint32_t minio_archive_failures;
   uint64_t minio_last_attempt_ms;
+  uint64_t minio_last_success_ms;
+  uint64_t minio_last_failure_ms;
   MeteoData meteo;
 };
 
@@ -265,6 +270,8 @@ extern std::string current_log_path;
 
 SharedState CopyState();
 void UpdateState(const std::function<void(SharedState&)>& updater);
+// For rare diagnostic events that must not be silently dropped under contention.
+void UpdateStateBlocking(const std::function<void(SharedState&)>& updater);
 void ScheduleRestart();
 uint32_t LoadAndIncrementBootId();
 uint32_t GetBootId();

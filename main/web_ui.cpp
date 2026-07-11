@@ -434,8 +434,11 @@ Moving: <span id="stepperMoving">No</span>
               <div>Internal largest block: <span id="heapInternalLargestFreeBlockBytes">--</span> bytes</div>
               <div>PSRAM heap free: <span id="heapPsramFreeBytes">--</span> bytes</div>
               <div>PSRAM largest block: <span id="heapPsramLargestFreeBlockBytes">--</span> bytes</div>
-              <div>MinIO upload attempts: <span id="minioUploadAttempts">--</span></div>
-              <div>MinIO last attempt: <span id="minioLastAttempt">--</span></div>
+              <div>MinIO attempts since boot: <span id="minioUploadAttempts">--</span></div>
+              <div>MinIO successful PUTs: <span id="minioUploadSuccesses">--</span></div>
+              <div>MinIO failed: <span id="minioUploadFailures">--</span></div>
+              <div>MinIO local archive failed: <span id="minioArchiveFailures">--</span></div>
+              <div>MinIO last result: <span id="minioLastAttempt">--</span></div>
             </div>
             <div class="form-group">
               <label for="storageBackend">Storage for logs/uploads</label>
@@ -1105,11 +1108,31 @@ document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes
       setMetricText('heapPsramLargestFreeBlockBytes', data.heapPsramLargestFreeBlockBytes);
       const minioAttemptsEl = document.getElementById('minioUploadAttempts');
       if (minioAttemptsEl) minioAttemptsEl.textContent = data.minioUploadAttempts ?? '--';
+      const minioSuccessesEl = document.getElementById('minioUploadSuccesses');
+      if (minioSuccessesEl) minioSuccessesEl.textContent = data.minioUploadSuccesses ?? '--';
+      const minioFailuresEl = document.getElementById('minioUploadFailures');
+      if (minioFailuresEl) minioFailuresEl.textContent = data.minioUploadFailures ?? '--';
+      const minioArchiveFailuresEl = document.getElementById('minioArchiveFailures');
+      if (minioArchiveFailuresEl) minioArchiveFailuresEl.textContent = data.minioArchiveFailures ?? '--';
       const minioLastEl = document.getElementById('minioLastAttempt');
       if (minioLastEl) {
-        minioLastEl.textContent = Number.isFinite(data.minioLastAttemptMs)
-          ? `${Math.round(data.minioLastAttemptMs / 1000)}s since boot`
-          : '--';
+        const attempts = Number(data.minioUploadAttempts);
+        const attemptMs = Number(data.minioLastAttemptMs);
+        const uptimeMs = Number(data.uptimeMs);
+        if (!Number.isFinite(attempts) || attempts <= 0 || !Number.isFinite(attemptMs) || attemptMs <= 0) {
+          minioLastEl.textContent = '--';
+        } else {
+          const successMs = Number(data.minioLastSuccessMs);
+          const failureMs = Number(data.minioLastFailureMs);
+          const succeeded = Number.isFinite(successMs) && successMs >= attemptMs && successMs >= failureMs;
+          const failed = Number.isFinite(failureMs) && failureMs >= attemptMs;
+          const resultMs = succeeded ? successMs : (failed ? failureMs : attemptMs);
+          const age = Number.isFinite(uptimeMs) && uptimeMs >= resultMs
+            ? `${Math.round((uptimeMs - resultMs) / 1000)}s ago`
+            : `at ${Math.round(resultMs / 1000)}s after boot`;
+          const result = succeeded ? 'success' : (failed ? 'failed' : 'attempted');
+          minioLastEl.textContent = `${result}, ${age}`;
+        }
       }
 
       const mask = Number.isFinite(data.pidSensorMask) ? data.pidSensorMask : 0;

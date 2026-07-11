@@ -30,7 +30,7 @@
 
       <div class="card">
         <div class="card-head"><h3>Система</h3><span class="badge">Управление</span></div>
-        <div class="status-row"><span class="chip" :class="{ online: externalPowerOn === true, subtle: externalPowerOn === null }">EXT_PWR_ON: {{ externalPowerOn === null ? '—' : externalPowerOn ? 'ON' : 'OFF' }}</span><span class="chip subtle">Heap: {{ formatBytes(state.heapFreeBytes) }}</span><span class="chip subtle">Largest: {{ formatBytes(state.heapLargestFreeBlockBytes) }}</span><span class="chip subtle">MinIO tries: {{ optionalCount(state.minioUploadAttempts) }}</span><span class="chip subtle">Last MinIO: {{ minioLastAttemptLabel }}</span></div>
+        <div class="status-row"><span class="chip" :class="{ online: externalPowerOn === true, subtle: externalPowerOn === null }">EXT_PWR_ON: {{ externalPowerOn === null ? '—' : externalPowerOn ? 'ON' : 'OFF' }}</span><span class="chip subtle">Heap: {{ formatBytes(state.heapFreeBytes) }}</span><span class="chip subtle">Largest: {{ formatBytes(state.heapLargestFreeBlockBytes) }}</span><span v-if="state.minioEnabled === false" class="chip subtle">MinIO выключен</span><template v-else-if="hasMinioOutcomeCounters"><span class="chip subtle">MinIO попыток с запуска: {{ optionalCount(state.minioUploadAttempts) }}</span><span class="chip success">успешных PUT: {{ optionalCount(state.minioUploadSuccesses) }}</span><span class="chip" :class="Number(state.minioUploadFailures) > 0 ? 'danger' : 'subtle'">ошибок загрузки: {{ optionalCount(state.minioUploadFailures) }}</span><span v-if="Number(state.minioArchiveFailures) > 0" class="chip danger">ошибок архива: {{ optionalCount(state.minioArchiveFailures) }}</span><span class="chip subtle">последний PUT: {{ minioLastAttemptLabel }}</span></template><span v-else class="chip subtle">MinIO статистика: нужна новая прошивка</span></div>
         <div class="form-group"><label>Пауза EXT_PWR_ON, мс</label><input type="number" min="100" max="30000" step="100" v-model.number="externalPowerOffMs" /></div>
         <div class="actions"><button class="btn success" @click="setExternalPower(true)" :disabled="systemBusy">ON</button><button class="btn warning ghost" @click="setExternalPower(false)" :disabled="systemBusy">OFF</button><button class="btn primary" @click="cycleExternalPower" :disabled="systemBusy">Передернуть</button><button class="btn ghost" @click="syncConfig" :disabled="systemBusy">Синхр. config</button><button class="btn danger" @click="restart" :disabled="systemBusy">Перезагрузить</button></div>
         <p class="muted" v-if="systemStatus">{{ systemStatus }}</p>
@@ -85,6 +85,7 @@ const externalPowerOn = computed<boolean | null>(() => typeof props.state.extern
 const pidEnabled = computed<boolean | null>(() => typeof props.state.pidEnabled === 'boolean' ? props.state.pidEnabled : null)
 const stepperEnabled = computed<boolean | null>(() => typeof props.state.stepperEnabled === 'boolean' ? props.state.stepperEnabled : null)
 const stepperMoving = computed<boolean | null>(() => typeof props.state.stepperMoving === 'boolean' ? props.state.stepperMoving : null)
+const hasMinioOutcomeCounters = computed(() => Number.isFinite(Number(props.state.minioUploadSuccesses)) && Number.isFinite(Number(props.state.minioUploadFailures)))
 const storageUsage = computed(() => { const total = Number(props.state.sdTotalBytes || 0); const used = Number(props.state.sdUsedBytes || 0); return total > 0 ? `${formatBytes(used)} / ${formatBytes(total)}` : '—' })
 const format = (value: unknown, digits: number) => {
   if (value === null || value === undefined || value === '') return '—'
@@ -94,9 +95,19 @@ const formatBytes = (value: unknown) => { const bytes = Number(value); if (!Numb
 const optionalCount = (value: unknown) => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? '—' : String(Math.max(0, Math.trunc(Number(value))))
 const optionalValue = (value: unknown) => value === null || value === undefined || value === '' ? '—' : String(value)
 const minioLastAttemptLabel = computed(() => {
-  if (props.state.minioLastAttemptMs === null || props.state.minioLastAttemptMs === undefined) return '—'
-  const value = Number(props.state.minioLastAttemptMs)
-  return Number.isFinite(value) ? `${Math.round(value / 1000)}s after boot` : '—'
+  const attempts = Number(props.state.minioUploadAttempts)
+  const attemptMs = Number(props.state.minioLastAttemptMs)
+  if (!Number.isFinite(attempts) || attempts <= 0 || !Number.isFinite(attemptMs) || attemptMs <= 0) return '—'
+  const successMs = Number(props.state.minioLastSuccessMs)
+  const failureMs = Number(props.state.minioLastFailureMs)
+  const succeeded = Number.isFinite(successMs) && successMs >= attemptMs && successMs >= failureMs
+  const failed = Number.isFinite(failureMs) && failureMs >= attemptMs
+  const resultMs = succeeded ? successMs : failed ? failureMs : attemptMs
+  const uptimeMs = Number(props.state.uptimeMs)
+  const age = Number.isFinite(uptimeMs) && uptimeMs >= resultMs
+    ? `${Math.round((uptimeMs - resultMs) / 1000)} сек назад`
+    : `на ${Math.round(resultMs / 1000)}-й секунде после запуска`
+  return succeeded ? `успешно, ${age}` : failed ? `ошибка, ${age}` : age
 })
 const message = (error: any, fallback: string) => error?.message || fallback
 const pidDiagnostics = computed(() => [

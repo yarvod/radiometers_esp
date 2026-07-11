@@ -95,6 +95,17 @@ void UpdateState(const std::function<void(SharedState&)>& updater) {
   }
 }
 
+void UpdateStateBlocking(const std::function<void(SharedState&)>& updater) {
+  if (!state_mutex) {
+    updater(state);
+    return;
+  }
+  if (xSemaphoreTake(state_mutex, portMAX_DELAY) == pdTRUE) {
+    updater(state);
+    xSemaphoreGive(state_mutex);
+  }
+}
+
 void ScheduleRestart() {
   xTaskCreate(
       [](void*) {

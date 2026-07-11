@@ -255,7 +255,13 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddNumberToObject(root, "heapPsramLargestFreeBlockBytes",
                           static_cast<double>(snapshot.heap_psram_largest_free_block_bytes));
   cJSON_AddNumberToObject(root, "minioUploadAttempts", snapshot.minio_upload_attempts);
+  cJSON_AddNumberToObject(root, "minioUploadSuccesses", snapshot.minio_upload_successes);
+  cJSON_AddNumberToObject(root, "minioUploadFailures", snapshot.minio_upload_failures);
+  cJSON_AddNumberToObject(root, "minioArchiveFailures", snapshot.minio_archive_failures);
   cJSON_AddNumberToObject(root, "minioLastAttemptMs", static_cast<double>(snapshot.minio_last_attempt_ms));
+  cJSON_AddNumberToObject(root, "minioLastSuccessMs", static_cast<double>(snapshot.minio_last_success_ms));
+  cJSON_AddNumberToObject(root, "minioLastFailureMs", static_cast<double>(snapshot.minio_last_failure_ms));
+  cJSON_AddNumberToObject(root, "uptimeMs", static_cast<double>(esp_timer_get_time() / 1000ULL));
   cJSON_AddNumberToObject(root, "heaterPower", snapshot.heater_power);
   cJSON_AddNumberToObject(root, "fanPower", snapshot.fan_power);
   cJSON_AddBoolToObject(root, "externalPowerOn", snapshot.external_power_on);

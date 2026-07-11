@@ -6,6 +6,7 @@
 #include "app_services.h"
 #include "app_utils.h"
 #include "cJSON.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "motion_controller.h"
 
@@ -108,7 +109,13 @@ std::string BuildStateJsonInternal() {
   cJSON_AddNumberToObject(root, "heapPsramLargestFreeBlockBytes",
                           static_cast<double>(snapshot.heap_psram_largest_free_block_bytes));
   cJSON_AddNumberToObject(root, "minioUploadAttempts", snapshot.minio_upload_attempts);
+  cJSON_AddNumberToObject(root, "minioUploadSuccesses", snapshot.minio_upload_successes);
+  cJSON_AddNumberToObject(root, "minioUploadFailures", snapshot.minio_upload_failures);
+  cJSON_AddNumberToObject(root, "minioArchiveFailures", snapshot.minio_archive_failures);
   cJSON_AddNumberToObject(root, "minioLastAttemptMs", static_cast<double>(snapshot.minio_last_attempt_ms));
+  cJSON_AddNumberToObject(root, "minioLastSuccessMs", static_cast<double>(snapshot.minio_last_success_ms));
+  cJSON_AddNumberToObject(root, "minioLastFailureMs", static_cast<double>(snapshot.minio_last_failure_ms));
+  cJSON_AddNumberToObject(root, "uptimeMs", static_cast<double>(esp_timer_get_time() / 1000ULL));
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
   cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());

@@ -695,17 +695,26 @@ static bool UploadFileToMinio(const std::string& path) {
   size_t n = 0;
   bool ok = true;
   while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-    int written = esp_http_client_write(client, buf, n);
-    if (written < 0) {
-      ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP write failed");
-      ESP_LOGE(kTag, "HTTP write failed");
-      ok = false;
-      break;
+    size_t offset = 0;
+    while (offset < n) {
+      const int written = esp_http_client_write(client, buf + offset, n - offset);
+      if (written <= 0) {
+        ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP write failed or incomplete");
+        ESP_LOGE(kTag, "HTTP write failed at %u/%u bytes", static_cast<unsigned>(offset), static_cast<unsigned>(n));
+        ok = false;
+        break;
+      }
+      offset += static_cast<size_t>(written);
     }
+    if (!ok) break;
+  }
+  if (ferror(f)) {
+    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "Upload file read failed");
+    ESP_LOGE(kTag, "Failed while reading upload file %s", path.c_str());
+    ok = false;
   }
   fclose(f);
   if (!ok) {
-    ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning, "HTTP write failed");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return false;
@@ -732,8 +741,6 @@ static bool UploadPendingOnce() {
   constexpr int kMaxUploadsPerCycle = 1;
   constexpr int kMaxUploadAttemptsPerCycle = 1;
   UpdateState([](SharedState& s) {
-    s.minio_upload_attempts++;
-    s.minio_last_attempt_ms = esp_timer_get_time() / 1000ULL;
     s.heap_free_bytes = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT));
     s.heap_min_free_bytes = static_cast<uint32_t>(heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     s.heap_largest_free_block_bytes = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
@@ -744,6 +751,10 @@ static bool UploadPendingOnce() {
     s.heap_psram_largest_free_block_bytes =
         static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   });
+  if (!app_config.minio_enabled) {
+    ErrorManagerClear(ErrorCode::kMinioUpload);
+    return false;
+  }
   std::vector<std::string> files;
   {
     SdLockGuard guard(pdMS_TO_TICKS(50));
@@ -780,17 +791,40 @@ static bool UploadPendingOnce() {
       break;
     }
     attempts++;
-    if (UploadFileToMinio(f)) {
+    const uint64_t attempt_ms = esp_timer_get_time() / 1000ULL;
+    const bool upload_succeeded = UploadFileToMinio(f);
+    bool archived = false;
+    if (upload_succeeded) {
       SdLockGuard guard(pdMS_TO_TICKS(200));
       if (!guard.locked() || !MountActiveStorage()) {
         ESP_LOGW(kTag, "Storage busy, cannot move uploaded file %s", f.c_str());
-        continue;
-      }
-      const std::string uploaded_dir = ActiveUploadedDir();
-      if (MoveFileToDir(f, uploaded_dir.c_str(), nullptr)) {
-        uploaded++;
+        ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning,
+                        "MinIO PUT succeeded but local file archive is busy");
+      } else {
+        const std::string uploaded_dir = ActiveUploadedDir();
+        if (MoveFileToDir(f, uploaded_dir.c_str(), nullptr)) {
+          uploaded++;
+          archived = true;
+        } else {
+          ESP_LOGW(kTag, "MinIO PUT succeeded but failed to move %s to uploaded", f.c_str());
+          ErrorManagerSet(ErrorCode::kMinioUpload, ErrorSeverity::kWarning,
+                          "MinIO PUT succeeded but local file archive failed");
+        }
       }
     }
+    const uint64_t result_ms = esp_timer_get_time() / 1000ULL;
+    UpdateStateBlocking([attempt_ms, upload_succeeded, archived, result_ms](SharedState& s) {
+      if (s.minio_upload_attempts < UINT32_MAX) s.minio_upload_attempts++;
+      s.minio_last_attempt_ms = attempt_ms;
+      if (upload_succeeded) {
+        if (s.minio_upload_successes < UINT32_MAX) s.minio_upload_successes++;
+        s.minio_last_success_ms = result_ms;
+        if (!archived && s.minio_archive_failures < UINT32_MAX) s.minio_archive_failures++;
+      } else {
+        if (s.minio_upload_failures < UINT32_MAX) s.minio_upload_failures++;
+        s.minio_last_failure_ms = result_ms;
+      }
+    });
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
   if (uploaded > 0) {

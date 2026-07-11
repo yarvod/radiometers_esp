@@ -19,6 +19,7 @@
 #include "driver/gpio.h"
 #include "error_manager.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "hw_pins.h"
 #include "mqtt_client.h"
@@ -422,8 +423,10 @@ void BuildMqttState(char* out, size_t out_len) {
                "\"heapFreeBytes\":%u,\"heapMinFreeBytes\":%u,\"heapLargestFreeBlockBytes\":%u,"
                "\"heapInternalFreeBytes\":%u,\"heapInternalLargestFreeBlockBytes\":%u,"
                "\"heapPsramFreeBytes\":%u,\"heapPsramLargestFreeBlockBytes\":%u,"
-               "\"minioUploadAttempts\":%u,\"minioLastAttemptMs\":%llu,"
-               "\"timestamp\":%llu",
+               "\"minioUploadAttempts\":%u,\"minioUploadSuccesses\":%u,\"minioUploadFailures\":%u,"
+               "\"minioArchiveFailures\":%u,"
+               "\"minioLastAttemptMs\":%llu,\"minioLastSuccessMs\":%llu,\"minioLastFailureMs\":%llu,"
+               "\"uptimeMs\":%llu,\"timestamp\":%llu",
                state.eth_link_up ? "true" : "false",
                state.eth_ip_up ? "true" : "false",
                static_cast<unsigned long long>(state.sd_total_bytes),
@@ -439,7 +442,13 @@ void BuildMqttState(char* out, size_t out_len) {
                static_cast<unsigned>(state.heap_psram_free_bytes),
                static_cast<unsigned>(state.heap_psram_largest_free_block_bytes),
                static_cast<unsigned>(state.minio_upload_attempts),
+               static_cast<unsigned>(state.minio_upload_successes),
+               static_cast<unsigned>(state.minio_upload_failures),
+               static_cast<unsigned>(state.minio_archive_failures),
                static_cast<unsigned long long>(state.minio_last_attempt_ms),
+               static_cast<unsigned long long>(state.minio_last_success_ms),
+               static_cast<unsigned long long>(state.minio_last_failure_ms),
+               static_cast<unsigned long long>(esp_timer_get_time() / 1000ULL),
                static_cast<unsigned long long>(state.last_update_ms));
     if (!state.usb_error.empty()) {
       JsonAppend(&b, ",\"usbError\":");
