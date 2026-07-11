@@ -136,6 +136,7 @@ const char INDEX_HTML[] = R"rawliteral(
         <button class="tab-button" data-tab="tab-stepper">Stepper</button>
         <button class="tab-button" data-tab="tab-wifi">Wi‑Fi</button>
         <button class="tab-button" data-tab="tab-gps">GPS</button>
+        <button class="tab-button" data-tab="tab-meteo">Meteo</button>
         <button class="tab-button" data-tab="tab-system">System</button>
         <button class="tab-button" data-tab="tab-files">Files</button>
         <button class="tab-button" data-tab="tab-flash">Flash</button>
@@ -392,6 +393,26 @@ Moving: <span id="stepperMoving">No</span>
             <button class="btn" onclick="applyGpsConfig()">Save GPS Settings</button>
             <button class="btn" onclick="probeGpsMode()">Refresh Actual Mode</button>
             <div class="note" id="gpsConfigStatus">Settings are saved to config.txt. Reconfigure is queued without restarting the web UI.</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-meteo" class="tab-content">
+        <div class="controls">
+          <div class="control-panel">
+            <h3>WN90LP intervals</h3>
+            <div class="form-group">
+              <label for="meteoPollIntervalS">State polling interval, seconds</label>
+              <input type="number" id="meteoPollIntervalS" value="9" min="1" max="3600" step="1">
+              <div class="note">How often the station is polled and the live state is refreshed.</div>
+            </div>
+            <div class="form-group">
+              <label for="meteoFileIntervalS">CSV write interval, seconds</label>
+              <input type="number" id="meteoFileIntervalS" value="60" min="10" max="86400" step="1">
+              <div class="note">How often the latest valid reading is appended to the meteo file.</div>
+            </div>
+            <button class="btn" id="meteoConfigApplyBtn" onclick="applyMeteoConfig()">Save Meteo Settings</button>
+            <div class="note" id="meteoConfigStatus">Settings are applied immediately and synchronized to SD config.txt and the NVS backup.</div>
           </div>
         </div>
       </div>
@@ -1010,6 +1031,8 @@ Moving: <span id="stepperMoving">No</span>
       if (storageBackendSelectEl && document.activeElement !== storageBackendSelectEl) {
         storageBackendSelectEl.value = data.storageBackend || 'sd';
       }
+      setValueIfIdle('meteoPollIntervalS', data.meteoPollIntervalS ?? 9);
+      setValueIfIdle('meteoFileIntervalS', data.meteoFileIntervalS ?? 60);
       document.getElementById('stepperStatus').textContent =
         (data.stepperEnabled ? 'Enabled' : 'Disabled') + (data.stepperHomeStatus ? ` / ${data.stepperHomeStatus}` : '');
       document.getElementById('stepperPosition').textContent = data.stepperPosition;
@@ -1574,6 +1597,41 @@ document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes
       }).catch(err => {
         if (status) status.textContent = err.message || 'GPS settings save failed';
         alert(err.message || 'Ошибка сохранения GPS настроек');
+      });
+    }
+
+    function applyMeteoConfig() {
+      const pollIntervalS = Number(document.getElementById('meteoPollIntervalS')?.value);
+      const fileIntervalS = Number(document.getElementById('meteoFileIntervalS')?.value);
+      const status = document.getElementById('meteoConfigStatus');
+      const button = document.getElementById('meteoConfigApplyBtn');
+      if (!Number.isInteger(pollIntervalS) || pollIntervalS < 1 || pollIntervalS > 3600) {
+        if (status) status.textContent = 'Polling interval must be an integer from 1 to 3600 seconds.';
+        return;
+      }
+      if (!Number.isInteger(fileIntervalS) || fileIntervalS < 10 || fileIntervalS > 86400) {
+        if (status) status.textContent = 'CSV interval must be an integer from 10 to 86400 seconds.';
+        return;
+      }
+      if (button) button.disabled = true;
+      if (status) status.textContent = 'Saving to SD and NVS...';
+      fetch('/meteo/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pollIntervalS, fileIntervalS }),
+      }).then(async response => {
+        const text = await response.text();
+        if (!response.ok) throw new Error(text || 'Meteo config save failed');
+        return text ? JSON.parse(text) : {};
+      }).then(data => {
+        setValueIfIdle('meteoPollIntervalS', data.meteoPollIntervalS ?? pollIntervalS);
+        setValueIfIdle('meteoFileIntervalS', data.meteoFileIntervalS ?? fileIntervalS);
+        if (status) status.textContent = 'Meteo settings saved to SD and NVS; new intervals are active.';
+        refreshData();
+      }).catch(error => {
+        if (status) status.textContent = error.message || 'Meteo config save failed';
+      }).finally(() => {
+        if (button) button.disabled = false;
       });
     }
 

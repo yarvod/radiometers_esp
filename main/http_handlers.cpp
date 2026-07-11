@@ -290,6 +290,8 @@ esp_err_t DataHandler(httpd_req_t* req) {
   }
   cJSON_AddItemToObject(root, "gpsRtcmTypes", gps_types);
   cJSON_AddStringToObject(root, "gpsMode", app_config.gps_mode.c_str());
+  cJSON_AddNumberToObject(root, "meteoPollIntervalS", app_config.meteo_poll_interval_s);
+  cJSON_AddNumberToObject(root, "meteoFileIntervalS", app_config.meteo_file_interval_s);
   char gps_actual_mode[256] = {};
   GetGpsCurrentModeText(gps_actual_mode, sizeof(gps_actual_mode));
   cJSON_AddStringToObject(root, "gpsActualMode", gps_actual_mode);
@@ -2139,6 +2141,58 @@ esp_err_t CloudApplyHandler(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"status\":\"cloud_applied\"}");
 }
 
+esp_err_t MeteoConfigApplyHandler(httpd_req_t* req) {
+  const size_t buf_len = std::min<size_t>(req->content_len, 256);
+  if (buf_len == 0 || req->content_len > 256) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body size");
+    return ESP_FAIL;
+  }
+  std::string body(buf_len, '\0');
+  size_t received_total = 0;
+  while (received_total < buf_len) {
+    const int received = httpd_req_recv(req, body.data() + received_total, buf_len - received_total);
+    if (received <= 0) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
+      return ESP_FAIL;
+    }
+    received_total += static_cast<size_t>(received);
+  }
+
+  cJSON* root = cJSON_Parse(body.c_str());
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+  cJSON* poll_item = cJSON_GetObjectItem(root, "pollIntervalS");
+  cJSON* file_item = cJSON_GetObjectItem(root, "fileIntervalS");
+  const bool valid_numbers = poll_item && file_item && cJSON_IsNumber(poll_item) && cJSON_IsNumber(file_item) &&
+                             poll_item->valuedouble == poll_item->valueint &&
+                             file_item->valuedouble == file_item->valueint;
+  MeteoConfigApplyRequest action_req;
+  if (valid_numbers) {
+    action_req.poll_interval_s = poll_item->valueint;
+    action_req.file_interval_s = file_item->valueint;
+  }
+  cJSON_Delete(root);
+  if (!valid_numbers) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Intervals must be integers");
+    return ESP_FAIL;
+  }
+  if (action_req.poll_interval_s < 1 || action_req.poll_interval_s > 3600 ||
+      action_req.file_interval_s < 10 || action_req.file_interval_s > 86400) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Intervals are outside the allowed range");
+    return ESP_FAIL;
+  }
+
+  ActionResult res = ActionMeteoConfigApply(action_req);
+  if (!res.ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, res.message.c_str());
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, res.json.c_str());
+}
+
 esp_err_t GpsApplyHandler(httpd_req_t* req) {
   const size_t buf_len = std::min<size_t>(req->content_len, 512);
   if (buf_len == 0) {
@@ -2345,6 +2399,7 @@ httpd_handle_t StartHttpServer() {
   httpd_uri_t wifi_apply_uri = {.uri = "/wifi/apply", .method = HTTP_POST, .handler = WifiApplyHandler, .user_ctx = nullptr};
   httpd_uri_t net_apply_uri = {.uri = "/net/apply", .method = HTTP_POST, .handler = NetApplyHandler, .user_ctx = nullptr};
   httpd_uri_t cloud_apply_uri = {.uri = "/cloud/apply", .method = HTTP_POST, .handler = CloudApplyHandler, .user_ctx = nullptr};
+  httpd_uri_t meteo_config_apply_uri = {.uri = "/meteo/config", .method = HTTP_POST, .handler = MeteoConfigApplyHandler, .user_ctx = nullptr};
   httpd_uri_t gps_apply_uri = {.uri = "/gps/apply", .method = HTTP_POST, .handler = GpsApplyHandler, .user_ctx = nullptr};
   httpd_uri_t gps_probe_uri = {.uri = "/gps/probe", .method = HTTP_POST, .handler = GpsProbeHandler, .user_ctx = nullptr};
   httpd_uri_t config_sync_internal_uri = {.uri = "/config/sync_internal_flash", .method = HTTP_POST, .handler = ConfigSyncInternalFlashHandler, .user_ctx = nullptr};
@@ -2384,6 +2439,7 @@ httpd_handle_t StartHttpServer() {
   httpd_register_uri_handler(http_server, &wifi_apply_uri);
   httpd_register_uri_handler(http_server, &net_apply_uri);
   httpd_register_uri_handler(http_server, &cloud_apply_uri);
+  httpd_register_uri_handler(http_server, &meteo_config_apply_uri);
   httpd_register_uri_handler(http_server, &gps_apply_uri);
   httpd_register_uri_handler(http_server, &gps_probe_uri);
   httpd_register_uri_handler(http_server, &config_sync_internal_uri);

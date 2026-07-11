@@ -118,6 +118,8 @@ std::string BuildStateJsonInternal() {
   }
   cJSON_AddItemToObject(root, "gpsRtcmTypes", gps_types);
   cJSON_AddStringToObject(root, "gpsMode", app_config.gps_mode.c_str());
+  cJSON_AddNumberToObject(root, "meteoPollIntervalS", app_config.meteo_poll_interval_s);
+  cJSON_AddNumberToObject(root, "meteoFileIntervalS", app_config.meteo_file_interval_s);
   char gps_actual_mode[256] = {};
   GetGpsCurrentModeText(gps_actual_mode, sizeof(gps_actual_mode));
   cJSON_AddStringToObject(root, "gpsActualMode", gps_actual_mode);
@@ -439,6 +441,37 @@ ActionResult ActionGpsApply(const GpsApplyRequest& req) {
 ActionResult ActionGpsProbe() {
   ProbeGpsMode();
   return {true, "gps_probe_sent", {}};
+}
+
+ActionResult ActionMeteoConfigApply(const MeteoConfigApplyRequest& req) {
+  if (req.poll_interval_s < 1 || req.poll_interval_s > 3600) {
+    return {false, "meteo poll interval must be between 1 and 3600 seconds", {}};
+  }
+  if (req.file_interval_s < 10 || req.file_interval_s > 86400) {
+    return {false, "meteo file interval must be between 10 and 86400 seconds", {}};
+  }
+
+  const int old_poll_interval_s = app_config.meteo_poll_interval_s;
+  const int old_file_interval_s = app_config.meteo_file_interval_s;
+  app_config.meteo_poll_interval_s = req.poll_interval_s;
+  app_config.meteo_file_interval_s = req.file_interval_s;
+
+  const ConfigSaveResult saved = SaveConfigEverywhere(app_config, pid_config);
+  if (!saved.fully_synced()) {
+    app_config.meteo_poll_interval_s = old_poll_interval_s;
+    app_config.meteo_file_interval_s = old_file_interval_s;
+    const ConfigSaveResult rolled_back = SaveConfigEverywhere(app_config, pid_config);
+    if (!rolled_back.fully_synced()) {
+      return {false, "meteo config save failed and rollback could not synchronize NVS and SD", {}};
+    }
+    return {false, "meteo config was not changed because NVS and SD could not both be saved", {}};
+  }
+
+  const std::string payload = "{\"meteoPollIntervalS\":" +
+                              std::to_string(app_config.meteo_poll_interval_s) +
+                              ",\"meteoFileIntervalS\":" +
+                              std::to_string(app_config.meteo_file_interval_s) + "}";
+  return {true, "meteo_config_saved", payload};
 }
 
 ActionResult ActionConfigSyncInternalFlash() {

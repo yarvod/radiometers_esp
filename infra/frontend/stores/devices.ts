@@ -273,5 +273,8 @@ export const useDevicesStore = defineStore('devices', {
     async gpsProbe(mqtt: MqttClient, deviceId: string) {
       return this.sendCommand(mqtt, deviceId, { type: 'gps_probe' })
     },
+    async meteoConfigApply(mqtt: MqttClient, deviceId: string, payload: { pollIntervalS: number; fileIntervalS: number }) {
+      return this.sendCommand(mqtt, deviceId, { type: 'meteo_config_apply', ...payload })
+    },
   },
 })

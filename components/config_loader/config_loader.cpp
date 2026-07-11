@@ -442,21 +442,21 @@ void LoadConfigFromSdCard(AppConfig* config) {
   }
 }
 
-bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid) {
+ConfigSaveResult SaveConfigEverywhere(const AppConfig& cfg, const PidConfig& pid) {
   const std::string config_text = BuildConfigText(cfg, pid);
   const bool internal_saved = SaveConfigTextToInternalFlash(config_text);
   SdLockGuard guard;
   if (!guard.locked()) {
     ESP_LOGW(kTag, "SD mutex unavailable, config saved only to ESP internal flash");
     ErrorManagerSet(ErrorCode::kSdMutex, ErrorSeverity::kWarning, "SD mutex unavailable during config save");
-    return internal_saved;
+    return {internal_saved, false};
   }
   ErrorManagerClear(ErrorCode::kSdMutex);
   const bool already_mounted = IsLogSdMounted();
   if (!already_mounted) {
     if (!MountLogSd()) {
       ESP_LOGW(kTag, "SD unavailable, config saved only to ESP internal flash");
-      return internal_saved;
+      return {internal_saved, false};
     }
   }
   const char* tmp_path    = "/sdcard/config.tmp";
@@ -465,13 +465,13 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid) {
   if (!f) {
     ESP_LOGE(kTag, "Failed to open %s for writing", tmp_path);
     if (!already_mounted && !log_file) UnmountLogSd();
-    return internal_saved;
+    return {internal_saved, false};
   }
   if (fwrite(config_text.data(), 1, config_text.size(), f) != config_text.size()) {
     ESP_LOGE(kTag, "Failed to write %s", tmp_path);
     fclose(f); remove(tmp_path);
     if (!already_mounted && !log_file) UnmountLogSd();
-    return internal_saved;
+    return {internal_saved, false};
   }
   bool write_ok = (fflush(f) == 0);
   if (write_ok && fsync(fileno(f)) != 0) write_ok = false;
@@ -480,7 +480,7 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid) {
     ESP_LOGE(kTag, "Failed to flush %s", tmp_path);
     remove(tmp_path);
     if (!already_mounted && !log_file) UnmountLogSd();
-    return internal_saved;
+    return {internal_saved, false};
   }
   remove(backup_path);
   if (rename(CONFIG_FILE_PATH, backup_path) != 0 && errno != ENOENT) {
@@ -491,12 +491,17 @@ bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid) {
     rename(backup_path, CONFIG_FILE_PATH);
     remove(tmp_path);
     if (!already_mounted && !log_file) UnmountLogSd();
-    return internal_saved;
+    return {internal_saved, false};
   }
   remove(backup_path);
   if (!already_mounted && !log_file) UnmountLogSd();
   ESP_LOGI(kTag, "Config saved to %s", CONFIG_FILE_PATH);
-  return internal_saved;
+  return {internal_saved, true};
+}
+
+bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid) {
+  // Keep the existing fallback contract for callers that can operate without SD.
+  return SaveConfigEverywhere(cfg, pid).nvs_saved;
 }
 
 // ---------------------------------------------------------------------------

@@ -67,6 +67,11 @@ struct GpsApplyRequest {
   std::string mode;
 };
 
+struct MeteoConfigApplyRequest {
+  int poll_interval_s = 9;
+  int file_interval_s = 60;
+};
+
 struct UploadedClearRequest {
   int max_files = 1000;
 };
@@ -99,6 +104,7 @@ ActionResult ActionNetApply(const NetApplyRequest& req);
 ActionResult ActionCloudApply(const CloudApplyRequest& req);
 ActionResult ActionGpsApply(const GpsApplyRequest& req);
 ActionResult ActionGpsProbe();
+ActionResult ActionMeteoConfigApply(const MeteoConfigApplyRequest& req);
 ActionResult ActionConfigSyncInternalFlash();
 ActionResult ActionUploadedClear(const UploadedClearRequest& req);
 ActionResult ActionCalibrate();

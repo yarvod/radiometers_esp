@@ -16,8 +16,16 @@ bool LoadConfigFromInternalFlash(AppConfig* config);
 bool SaveConfigToInternalFlash(const AppConfig& cfg, const PidConfig& pid);
 bool SyncConfigToInternalFlash();
 
+struct ConfigSaveResult {
+  bool nvs_saved = false;
+  bool sd_saved = false;
+
+  bool fully_synced() const { return nvs_saved && sd_saved; }
+};
+
 // SD-backed — opens its own early-boot SD mount independent of StorageManager.
 void LoadConfigFromSdCard(AppConfig* config);
+ConfigSaveResult SaveConfigEverywhere(const AppConfig& cfg, const PidConfig& pid);
 bool SaveConfigToSdCard(const AppConfig& cfg, const PidConfig& pid);
 
 // Serialise current config to text (used by save functions and HTTP export).

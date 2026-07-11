@@ -465,6 +465,8 @@ void BuildMqttState(char* out, size_t out_len) {
   }
   JsonAppend(&b, "],\"gpsMode\":");
   JsonAppendEscaped(&b, app_config.gps_mode.c_str());
+  JsonAppend(&b, ",\"meteoPollIntervalS\":%d,\"meteoFileIntervalS\":%d",
+             app_config.meteo_poll_interval_s, app_config.meteo_file_interval_s);
   JsonAppend(&b, ",\"gpsActualMode\":");
   char gps_actual_mode[256] = {};
   GetGpsCurrentModeText(gps_actual_mode, sizeof(gps_actual_mode));
@@ -703,6 +705,19 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     res = ActionGpsApply(req);
   } else if (type == "gps_probe") {
     res = ActionGpsProbe();
+  } else if (type == "meteo_config_apply") {
+    MeteoConfigApplyRequest req;
+    cJSON* poll_item = cJSON_GetObjectItem(root, "pollIntervalS");
+    cJSON* file_item = cJSON_GetObjectItem(root, "fileIntervalS");
+    if (poll_item && file_item && cJSON_IsNumber(poll_item) && cJSON_IsNumber(file_item) &&
+        poll_item->valuedouble == poll_item->valueint && file_item->valuedouble == file_item->valueint) {
+      req.poll_interval_s = poll_item->valueint;
+      req.file_interval_s = file_item->valueint;
+    } else {
+      req.poll_interval_s = 0;
+      req.file_interval_s = 0;
+    }
+    res = ActionMeteoConfigApply(req);
   } else if (type == "config_sync_internal_flash") {
     res = ActionConfigSyncInternalFlash();
   } else if (type == "uploaded_clear" || type == "clear_uploaded") {

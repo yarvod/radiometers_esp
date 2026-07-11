@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-11 — Runtime meteo interval configuration
+
+- Added one validated firmware action for WN90LP polling (`1..3600` seconds) and
+  CSV writes (`10..86400` seconds), shared by MQTT and the local HTTP UI.
+- Meteo interval changes take effect without restart and are accepted only when
+  the generated `config.txt` is synchronized successfully to both SD and its NVS
+  backup; partial saves are rolled back to the previous values.
+- Published the configured intervals in device state and added editors to the
+  Nuxt Meteo tab and the local embedded web UI.
+
 ## 2026-07-11 — Device page decomposition and meteo history
 
 - Reduced `pages/[deviceId].vue` from 3769 lines to a route shell and moved Data,
