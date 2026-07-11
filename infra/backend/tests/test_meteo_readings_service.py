@@ -134,6 +134,8 @@ async def test_sql_meteo_aggregation_uses_physical_field_rules():
     assert "avg(meteo_readings.temp_c)" in sql
     assert "max(meteo_readings.gust_speed_ms)" in sql
     assert "atan2" in sql and "sin" in sql and "cos" in sql
+    assert "mod(" not in sql
+    assert "floor(degrees(atan2" in sql
     assert "extract(epoch from meteo_readings.timestamp)" in sql
     assert "array_agg(meteo_readings.rainfall_mm order by meteo_readings.timestamp desc)" in sql
     assert "filter (where meteo_readings.rainfall_mm is not null)" in sql

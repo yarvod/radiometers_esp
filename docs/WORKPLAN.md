@@ -4,6 +4,8 @@ The corrective code pass has no open P1 findings after independent backend and
 frontend review. Automated checks are green. One deployment-level verification
 remains because it requires an authenticated running stack and real device data:
 
+- [ ] Deploy the PostgreSQL wind-direction normalization fix and confirm the real
+  `/api/meteo-readings` request no longer returns 500 in `ru1` backend logs.
 - [ ] Exercise restart/external-power confirmations, PID state, calibration tab
   switching, GNSS import/refresh, and empty/populated meteo ranges in the browser.
 

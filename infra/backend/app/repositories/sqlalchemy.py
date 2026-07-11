@@ -883,9 +883,11 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
         ) * bucket_seconds
         bucket_ts = func.to_timestamp(bucket).label("bucket_ts")
         wind_radians = func.radians(MeteoReadingModel.wind_dir_deg)
-        wind_direction = func.mod(
-            func.degrees(func.atan2(func.avg(func.sin(wind_radians)), func.avg(func.cos(wind_radians)))) + 360.0,
-            360.0,
+        mean_direction = func.degrees(
+            func.atan2(func.avg(func.sin(wind_radians)), func.avg(func.cos(wind_radians)))
+        )
+        wind_direction = (
+            mean_direction - func.floor(mean_direction / 360.0) * 360.0
         ).label("wind_dir_deg")
         rainfall = (
             func.array_agg(

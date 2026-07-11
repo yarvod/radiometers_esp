@@ -18,6 +18,9 @@
   silently truncating the selected interval.
 - Added timezone-aware range validation, mandatory date bounds and regression tests
   for response schemas and bucket boundary coverage.
+- Replaced PostgreSQL-incompatible `mod(double precision, double precision)` in the
+  circular wind-direction aggregate with a `floor`-based normalization verified on
+  the production PostgreSQL 15 dataset.
 - Restored firmware-compatible PID mask/index decoding, confirmations for dangerous
   commands, unknown-value rendering, MinIO uptime semantics and legacy Wi-Fi mode.
 - Kept calibration state alive across tabs while cancelling its sampling loop on
