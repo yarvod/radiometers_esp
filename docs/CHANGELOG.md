@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-15 — Restore live GNSS position after receiver reconfiguration
+
+- Restored continuous position updates on UM982 COM2 by configuring `GPGGA`
+  once per second alongside periodic ZDA and RTCM output.
+- Made ZDA/GGA dispatch independent of the GP/GN talker prefix, matching UM982
+  responses such as `$GNZDA` to commands issued as `GPZDA`.
+
 ## 2026-07-11 — Runtime meteo interval configuration
 
 - Added one validated firmware action for WN90LP polling (`1..3600` seconds) and

@@ -25,6 +25,8 @@ constexpr size_t kParserMaxBuffer = 8192;
 constexpr size_t kRtcmMaxPayloadLen = 1023;
 constexpr TickType_t kReadTimeout = pdMS_TO_TICKS(100);
 constexpr TickType_t kCommandDelay = pdMS_TO_TICKS(150);
+bool s_logged_first_valid_time = false;
+bool s_logged_first_valid_position = false;
 
 bool HexNibble(char c, uint8_t* out) {
   if (!out) return false;
@@ -73,6 +75,10 @@ std::string TrimLine(const std::string& raw) {
     end--;
   }
   return raw.substr(begin, end - begin);
+}
+
+bool IsNmeaSentenceType(const std::string& line, const char* type) {
+  return type && line.size() >= 6 && line[0] == '$' && line.compare(3, 3, type) == 0;
 }
 
 std::string ToLower(std::string s) {
@@ -531,8 +537,10 @@ void GpsUnicoreClient::configurePeriodicOutput(const std::vector<uint16_t>& rtcm
 
   sendCommand("GPZDA COM2 30");
   vTaskDelay(kCommandDelay);
+  sendCommand("GPGGA COM2 1");
+  vTaskDelay(kCommandDelay);
 
-  ESP_LOGI(TAG_GPS, "Configuring UM982 periodic RTCM3 output on COM2 every 30 seconds");
+  ESP_LOGI(TAG_GPS, "Configuring UM982 position output every second and RTCM3 output every 30 seconds on COM2");
   for (uint16_t type : sanitized) {
     std::string cmd = "RTCM";
     cmd += std::to_string(type);
@@ -793,7 +801,7 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
     return;
   }
 
-  const bool is_zda = line.rfind("$GNZDA", 0) == 0 || line.rfind("$GPZDA", 0) == 0;
+  const bool is_zda = IsNmeaSentenceType(line, "ZDA");
   if (is_zda) {
     GpsDateTime parsed{};
     if (!parseZdaLine(line, parsed)) {
@@ -822,10 +830,14 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
       ESP_LOGD(TAG_GPS, "UTC %04u-%02u-%02u %02u:%02u:%02u.%03u",
                parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second, parsed.millisecond);
     }
+    if (!s_logged_first_valid_time) {
+      s_logged_first_valid_time = true;
+      ESP_LOGI(TAG_GPS, "First valid ZDA: %s", line.c_str());
+    }
     return;
   }
 
-  const bool is_gga = line.rfind("$GNGGA", 0) == 0 || line.rfind("$GPGGA", 0) == 0;
+  const bool is_gga = IsNmeaSentenceType(line, "GGA");
   if (is_gga) {
     GpsPosition parsed{};
     if (!parseGgaLine(line, parsed)) {
@@ -841,11 +853,17 @@ void GpsUnicoreClient::handleLine(const std::string& raw_line) {
     ESP_LOGD(TAG_GPS, "Position lat=%.8f lon=%.8f alt=%.2f fix=%d sats=%d",
              parsed.latitude_deg, parsed.longitude_deg, parsed.altitude_m,
              parsed.fix_quality, parsed.satellites);
+    if (!s_logged_first_valid_position) {
+      s_logged_first_valid_position = true;
+      ESP_LOGI(TAG_GPS, "First valid GGA: lat=%.8f lon=%.8f alt=%.2f fix=%d sats=%d",
+               parsed.latitude_deg, parsed.longitude_deg, parsed.altitude_m,
+               parsed.fix_quality, parsed.satellites);
+    }
     return;
   }
 
   if (line.rfind("$command", 0) == 0) {
-    ESP_LOGD(TAG_GPS, "Command response: %s", line.c_str());
+    ESP_LOGI(TAG_GPS, "Command response: %s", line.c_str());
   } else if (line.rfind("#VERSION", 0) == 0 || line.rfind("#MODE", 0) == 0) {
     ESP_LOGD(TAG_GPS, "Receiver response: %s", line.c_str());
     if (line.rfind("#MODE", 0) == 0) {
