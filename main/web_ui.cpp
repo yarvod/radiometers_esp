@@ -379,6 +379,10 @@ Moving: <span id="stepperMoving">No</span>
                 <label for="ethStaticGateway">Gateway</label>
                 <input type="text" id="ethStaticGateway" inputmode="decimal" placeholder="192.168.1.1">
               </div>
+              <div class="form-group">
+                <label for="ethStaticDns">DNS</label>
+                <input type="text" id="ethStaticDns" inputmode="decimal" placeholder="8.8.8.8">
+              </div>
             </div>
             <button class="btn" onclick="applyNetwork()">Apply Network</button>
           </div>
@@ -1020,6 +1024,7 @@ Moving: <span id="stepperMoving">No</span>
         setValueIfIdle('ethStaticIp', data.ethStaticIp || '192.168.1.50');
         setValueIfIdle('ethStaticNetmask', data.ethStaticNetmask || '255.255.255.0');
         setValueIfIdle('ethStaticGateway', data.ethStaticGateway || '192.168.1.1');
+        setValueIfIdle('ethStaticDns', data.ethStaticDns || '8.8.8.8');
         updateEthStaticVisibility();
         const gpsModeEl = document.getElementById('gpsMode');
         if (gpsModeEl) gpsModeEl.value = data.gpsMode || 'base_time_60';
@@ -1583,10 +1588,11 @@ document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes
       const ethIp = document.getElementById('ethStaticIp').value.trim();
       const ethNetmask = document.getElementById('ethStaticNetmask').value.trim();
       const ethGateway = document.getElementById('ethStaticGateway').value.trim();
+      const ethDns = document.getElementById('ethStaticDns').value.trim();
       fetch('/net/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, priority, ethDhcp, ethIp, ethNetmask, ethGateway })
+        body: JSON.stringify({ mode, priority, ethDhcp, ethIp, ethNetmask, ethGateway, ethDns })
       }).then(res => {
         if (!res.ok) throw new Error('Failed to apply network');
         return res.json();

@@ -146,10 +146,11 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
   bool net_priority_set = false;
   NetPriority net_priority_val = config->net_priority;
   bool eth_dhcp_set = false, eth_dhcp_val = config->eth_dhcp;
-  bool eth_static_ip_set = false, eth_static_netmask_set = false, eth_static_gateway_set = false;
+  bool eth_static_ip_set = false, eth_static_netmask_set = false, eth_static_gateway_set = false, eth_static_dns_set = false;
   std::string eth_static_ip = config->eth_static_ip;
   std::string eth_static_netmask = config->eth_static_netmask;
   std::string eth_static_gateway = config->eth_static_gateway;
+  std::string eth_static_dns = config->eth_static_dns;
   bool gps_rtcm_types_set = false;
   std::vector<uint16_t> gps_rtcm_types_val = config->gps_rtcm_types;
   bool gps_mode_set = false;
@@ -257,6 +258,8 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
       eth_static_netmask = value; eth_static_netmask_set = true;
     } else if (key == "eth_static_gateway") {
       eth_static_gateway = value; eth_static_gateway_set = true;
+    } else if (key == "eth_static_dns") {
+      eth_static_dns = value; eth_static_dns_set = true;
     } else if (key == "gps_rtcm_types") {
       gps_rtcm_types_val = ParseRtcmTypesString(value); gps_rtcm_types_set = true;
     } else if (key == "gps_mode") {
@@ -312,6 +315,7 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
   if (eth_static_ip_set) config->eth_static_ip = eth_static_ip;
   if (eth_static_netmask_set) config->eth_static_netmask = eth_static_netmask;
   if (eth_static_gateway_set) config->eth_static_gateway = eth_static_gateway;
+  if (eth_static_dns_set) config->eth_static_dns = eth_static_dns;
   if (gps_rtcm_types_set) config->gps_rtcm_types = gps_rtcm_types_val;
   if (gps_mode_set) config->gps_mode = gps_mode_val;
   if (meteo_poll_interval_set) config->meteo_poll_interval_s = meteo_poll_interval_val;
@@ -339,7 +343,7 @@ bool ParseConfigText(const std::string& text, AppConfig* config) {
          minio_endpoint_set || minio_access_set || minio_secret_set || minio_bucket_set ||
          minio_enabled_set || mqtt_uri_set || mqtt_user_set || mqtt_password_set ||
          mqtt_enabled_set || net_mode_set || net_priority_set || eth_dhcp_set ||
-         eth_static_ip_set || eth_static_netmask_set || eth_static_gateway_set || gps_rtcm_types_set ||
+         eth_static_ip_set || eth_static_netmask_set || eth_static_gateway_set || eth_static_dns_set || gps_rtcm_types_set ||
          gps_mode_set || meteo_poll_interval_set || meteo_file_interval_set ||
          meteo_enabled_set || pid_config.from_file;
 }
@@ -538,6 +542,7 @@ std::string BuildConfigText(const AppConfig& cfg, const PidConfig& pid) {
   AppendConfigLine(&text, "eth_static_ip = %s\n", cfg.eth_static_ip.c_str());
   AppendConfigLine(&text, "eth_static_netmask = %s\n", cfg.eth_static_netmask.c_str());
   AppendConfigLine(&text, "eth_static_gateway = %s\n", cfg.eth_static_gateway.c_str());
+  AppendConfigLine(&text, "eth_static_dns = %s\n", cfg.eth_static_dns.c_str());
   text += "gps_rtcm_types = ";
   if (cfg.gps_rtcm_types.empty()) {
     text += "1004,1006,1033";

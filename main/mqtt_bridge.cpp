@@ -15,6 +15,7 @@
 #include "app_utils.h"
 #include "gps_module.h"
 #include "motion_controller.h"
+#include "network_manager.h"
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "error_manager.h"
@@ -474,6 +475,8 @@ void BuildMqttState(char* out, size_t out_len) {
   JsonAppendEscaped(&b, app_config.eth_static_netmask.c_str());
   JsonAppend(&b, ",\"ethStaticGateway\":");
   JsonAppendEscaped(&b, app_config.eth_static_gateway.c_str());
+  JsonAppend(&b, ",\"ethStaticDns\":");
+  JsonAppendEscaped(&b, app_config.eth_static_dns.c_str());
   JsonAppend(&b, ",\"gpsRtcmTypes\":[");
   for (size_t i = 0; i < app_config.gps_rtcm_types.size(); ++i) {
     JsonAppend(&b, "%s%u", i == 0 ? "" : ",", static_cast<unsigned>(app_config.gps_rtcm_types[i]));
@@ -705,9 +708,11 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
     req.eth_ip = get_str("ethIp");
     req.eth_netmask = get_str("ethNetmask");
     req.eth_gateway = get_str("ethGateway");
+    req.eth_dns = get_str("ethDns");
     if (req.eth_ip.empty()) req.eth_ip = app_config.eth_static_ip;
     if (req.eth_netmask.empty()) req.eth_netmask = app_config.eth_static_netmask;
     if (req.eth_gateway.empty()) req.eth_gateway = app_config.eth_static_gateway;
+    if (req.eth_dns.empty()) req.eth_dns = app_config.eth_static_dns;
     res = ActionNetApply(req);
   } else if (type == "cloud_apply") {
     CloudApplyRequest req;
@@ -798,6 +803,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED: {
       mqtt_connected = true;
+      NotifyMqttConnected();
       ErrorManagerClearLocal(ErrorCode::kMqttDisconnected);
       ErrorManagerClearLocal(ErrorCode::kMqttTransport);
       const std::string device = SanitizeId(app_config.device_id);
@@ -836,8 +842,15 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
     }
     case MQTT_EVENT_DISCONNECTED: {
       mqtt_connected = false;
+      const bool route_switched = NotifyMqttDisconnected();
       ErrorManagerSetLocal(ErrorCode::kMqttDisconnected, ErrorSeverity::kWarning, "MQTT disconnected");
-      ESP_LOGW(TAG_MQTT, "MQTT disconnected");
+      ESP_LOGW(TAG_MQTT, "MQTT disconnected%s", route_switched ? ", retrying on alternate interface" : "");
+      if (route_switched) {
+        esp_err_t reconnect_err = esp_mqtt_client_reconnect(event->client);
+        if (reconnect_err != ESP_OK) {
+          ESP_LOGW(TAG_MQTT, "MQTT immediate reconnect failed: %s", esp_err_to_name(reconnect_err));
+        }
+      }
       break;
     }
     default:

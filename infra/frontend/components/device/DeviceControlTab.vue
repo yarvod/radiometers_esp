@@ -67,6 +67,7 @@
           <div class="form-group"><label>IP-адрес Ethernet</label><input v-model.trim="network.ethIp" inputmode="decimal" placeholder="192.168.1.50" @input="networkDirty = true" /></div>
           <div class="form-group"><label>Маска сети</label><input v-model.trim="network.ethNetmask" inputmode="decimal" placeholder="255.255.255.0" @input="networkDirty = true" /></div>
           <div class="form-group"><label>Шлюз</label><input v-model.trim="network.ethGateway" inputmode="decimal" placeholder="192.168.1.1" @input="networkDirty = true" /></div>
+          <div class="form-group"><label>DNS</label><input v-model.trim="network.ethDns" inputmode="decimal" placeholder="8.8.8.8" @input="networkDirty = true" /></div>
         </template>
         <button class="btn primary" @click="applyNetwork">Применить сеть</button><p class="muted" v-if="networkStatus">{{ networkStatus }}</p><div class="divider"></div>
         <div class="form-group"><label>Wi-Fi режим</label><select v-model="wifi.mode" @change="wifiDirty = true"><option value="sta">STA</option><option value="ap">AP</option></select></div><div class="form-group"><label>SSID</label><input v-model="wifi.ssid" @input="wifiDirty = true" /></div><div class="form-group"><label>Пароль</label><input type="password" v-model="wifi.password" @input="wifiDirty = true" /></div><button class="btn primary" @click="applyWifi">Применить Wi-Fi</button><p class="muted" v-if="wifiStatus">{{ wifiStatus }}</p>
@@ -85,7 +86,7 @@ const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1500, offsetSteps: 0, loggingMotorSteps: 100, loggingReturnMode: 'home', reverse: false })
 const pid = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
 const wifi = reactive({ mode: 'sta', ssid: '', password: '' })
-const network = reactive({ mode: 'wifi', priority: 'wifi', ethDhcp: true, ethIp: '192.168.1.50', ethNetmask: '255.255.255.0', ethGateway: '192.168.1.1' })
+const network = reactive({ mode: 'wifi', priority: 'wifi', ethDhcp: true, ethIp: '192.168.1.50', ethNetmask: '255.255.255.0', ethGateway: '192.168.1.1', ethDns: '8.8.8.8' })
 const heaterPower = ref(0); const externalPowerOffMs = ref(1000); const systemBusy = ref(false)
 const heaterDirty = ref(false); const pidDirty = ref(false); const stepperDirty = ref(false); const wifiDirty = ref(false); const networkDirty = ref(false)
 const logStatus = ref(''); const systemStatus = ref(''); const pidStatus = ref(''); const stepperStatus = ref(''); const wifiStatus = ref(''); const networkStatus = ref('')
@@ -164,8 +165,8 @@ const validIpv4 = (value: string) => {
   return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
 }
 const applyNetwork = async () => {
-  if (!network.ethDhcp && ![network.ethIp, network.ethNetmask, network.ethGateway].every(validIpv4)) {
-    networkStatus.value = 'Проверьте IP-адрес, маску сети и шлюз'
+  if (!network.ethDhcp && ![network.ethIp, network.ethNetmask, network.ethGateway, network.ethDns].every(validIpv4)) {
+    networkStatus.value = 'Проверьте IP-адрес, маску сети, шлюз и DNS'
     return
   }
   try {
@@ -199,6 +200,7 @@ const seed = () => {
     network.ethIp = String(state.ethStaticIp || '192.168.1.50')
     network.ethNetmask = String(state.ethStaticNetmask || '255.255.255.0')
     network.ethGateway = String(state.ethStaticGateway || '192.168.1.1')
+    network.ethDns = String(state.ethStaticDns || '8.8.8.8')
   }
 }
 watch(() => props.deviceId, () => { Object.values({ logStatus, systemStatus, pidStatus, stepperStatus, wifiStatus, networkStatus }).forEach((item) => { item.value = '' }); heaterDirty.value = false; pidDirty.value = false; stepperDirty.value = false; wifiDirty.value = false; networkDirty.value = false; seed() })

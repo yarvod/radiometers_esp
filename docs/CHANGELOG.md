@@ -6,6 +6,11 @@
   IPv4 address, netmask, and gateway fields.
 - Added the same Ethernet controls to the Nuxt device page over MQTT, with
   client-side IPv4 validation and dirty-form protection from live state updates.
+- Kept both interfaces active in Wi-Fi + Ethernet mode and made repeated MQTT
+  disconnects rotate the default route to the other interface, with an immediate
+  reconnect and cooldown to avoid route flapping.
+- Added an explicit static Ethernet DNS setting to both UIs and MQTT, defaulting
+  to `8.8.8.8`, since a static interface has no DHCP lease from which to learn DNS.
 - Persisted Ethernet IPv4 settings in `config.txt` and its NVS backup, validated
   manual addresses before save, and applied static addressing to the W5500 before start.
 

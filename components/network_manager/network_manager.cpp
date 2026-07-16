@@ -69,6 +69,9 @@ static esp_netif_t*       s_eth_netif                 = nullptr;
 static esp_eth_mac_t*     s_eth_mac                   = nullptr;
 static esp_eth_phy_t*     s_eth_phy                   = nullptr;
 static spi_device_interface_config_t s_eth_devcfg     = {};
+static bool               s_mqtt_connected            = false;
+static int                s_mqtt_disconnect_count     = 0;
+static int64_t            s_last_mqtt_route_switch_us = 0;
 
 // ---------- forward declarations ----------
 
@@ -252,6 +255,16 @@ static void NetworkMonitorTask(void*) {
     });
     EnsureConfiguredNetworkProgress();
     if (app_config.net_mode == NetMode::kWifiEth) {
+      esp_netif_t* current = esp_netif_get_default_netif();
+      const int64_t now_us = esp_timer_get_time();
+      if (s_mqtt_connected ||
+          (s_last_mqtt_route_switch_us != 0 && now_us - s_last_mqtt_route_switch_us < 60000000)) {
+        if (current && !TrySyncTimeOnNetif(current, check_timeout_ms)) {
+          s_sntp_time_available = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(interval_ms));
+        continue;
+      }
       bool wifi_up = false, eth_up = false;
       ReadNetworkUpFlags(&wifi_up, &eth_up);
       esp_netif_t* prefer = (app_config.net_priority == NetPriority::kWifi) ? s_wifi_netif_sta : s_eth_netif;
@@ -315,7 +328,7 @@ void EthEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, v
     if (s_wifi_inited &&
         (app_config.net_mode == NetMode::kEthOnly ||
          (app_config.net_mode == NetMode::kWifiEth && app_config.net_priority == NetPriority::kEth))) {
-      StopWifiInterface(true);
+      if (app_config.net_mode == NetMode::kEthOnly) StopWifiInterface(true);
     }
     UpdateDefaultNetif();
   }
@@ -408,9 +421,15 @@ static esp_err_t ConfigureEthernetIpv4() {
     if (dhcp_err != ESP_OK && dhcp_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return dhcp_err;
     ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(s_eth_netif, &ip_info), kTag,
                         "Failed to configure static Ethernet IPv4");
-    ESP_LOGI(kTag, "Ethernet static IPv4: %s/%s gateway %s",
+    esp_netif_dns_info_t dns_info{};
+    dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+    ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(app_config.eth_static_dns.c_str(), &dns_info.ip.u_addr.ip4), kTag,
+                        "Invalid static Ethernet DNS");
+    ESP_RETURN_ON_ERROR(esp_netif_set_dns_info(s_eth_netif, ESP_NETIF_DNS_MAIN, &dns_info), kTag,
+                        "Failed to configure static Ethernet DNS");
+    ESP_LOGI(kTag, "Ethernet static IPv4: %s/%s gateway %s DNS %s",
              app_config.eth_static_ip.c_str(), app_config.eth_static_netmask.c_str(),
-             app_config.eth_static_gateway.c_str());
+             app_config.eth_static_gateway.c_str(), app_config.eth_static_dns.c_str());
     return ESP_OK;
   }
   esp_err_t stop_err = esp_netif_dhcpc_stop(s_eth_netif);
@@ -470,17 +489,56 @@ void ApplyNetworkConfig() {
     StartConfigApFallbackTask(eth_start_ok ? 15000 : 1000);
   } else {
     StopConfigApFallbackTask();
-    if (app_config.net_priority == NetPriority::kEth) {
-      StopWifiInterface(false);
-      const bool eth_start_ok = StartEthernet();
-      StartEthPreferredWifiFallbackTask(eth_start_ok ? 15000 : 1000);
-    } else {
-      StopEthPreferredWifiFallbackTask();
-      StartEthernet();
-      InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
-    }
+    StopEthPreferredWifiFallbackTask();
+    StartEthernet();
+    InitWifi(app_config.wifi_ssid, app_config.wifi_password, app_config.wifi_ap_mode);
   }
   UpdateDefaultNetif();
+}
+
+void NotifyMqttConnected() {
+  s_mqtt_connected = true;
+  s_mqtt_disconnect_count = 0;
+}
+
+bool NotifyMqttDisconnected() {
+  s_mqtt_connected = false;
+  if (app_config.net_mode != NetMode::kWifiEth) return false;
+
+  EnsureConfiguredNetworkProgress();
+  ++s_mqtt_disconnect_count;
+
+  const int64_t now_us = esp_timer_get_time();
+  if (s_last_mqtt_route_switch_us != 0 &&
+      now_us - s_last_mqtt_route_switch_us < 15000000) {
+    return false;
+  }
+
+  bool wifi_up = false, eth_up = false;
+  ReadNetworkUpFlags(&wifi_up, &eth_up);
+  esp_netif_t* current = esp_netif_get_default_netif();
+  esp_netif_t* alternate = nullptr;
+  const char* alternate_name = nullptr;
+  if (current == s_eth_netif && wifi_up && s_wifi_netif_sta) {
+    alternate = s_wifi_netif_sta;
+    alternate_name = "Wi-Fi";
+  } else if (current == s_wifi_netif_sta && eth_up && s_eth_netif) {
+    alternate = s_eth_netif;
+    alternate_name = "Ethernet";
+  } else if (wifi_up && s_wifi_netif_sta && current != s_wifi_netif_sta) {
+    alternate = s_wifi_netif_sta;
+    alternate_name = "Wi-Fi";
+  } else if (eth_up && s_eth_netif && current != s_eth_netif) {
+    alternate = s_eth_netif;
+    alternate_name = "Ethernet";
+  }
+  if (!alternate) return false;
+
+  esp_netif_set_default_netif(alternate);
+  s_last_mqtt_route_switch_us = now_us;
+  s_mqtt_disconnect_count = 0;
+  ESP_LOGW(kTag, "MQTT unreachable, switching default route to %s", alternate_name);
+  return true;
 }
 
 // ---------- Wi-Fi recovery tasks ----------

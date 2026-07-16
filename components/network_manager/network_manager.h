@@ -19,3 +19,8 @@ bool IsSntpUsable();
 
 // Start background monitoring tasks (net_mon, wifi_mon).  Call once at boot.
 void StartNetworkTasks();
+
+// MQTT reachability is the authoritative Internet health signal. In dual-interface
+// mode, repeated disconnects rotate the default route to the other interface.
+void NotifyMqttConnected();
+bool NotifyMqttDisconnected();

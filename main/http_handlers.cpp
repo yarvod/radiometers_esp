@@ -294,6 +294,7 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "ethStaticIp", app_config.eth_static_ip.c_str());
   cJSON_AddStringToObject(root, "ethStaticNetmask", app_config.eth_static_netmask.c_str());
   cJSON_AddStringToObject(root, "ethStaticGateway", app_config.eth_static_gateway.c_str());
+  cJSON_AddStringToObject(root, "ethStaticDns", app_config.eth_static_dns.c_str());
   cJSON* gps_types = cJSON_CreateArray();
   for (uint16_t type : app_config.gps_rtcm_types) {
     cJSON_AddItemToArray(gps_types, cJSON_CreateNumber(type));
@@ -2088,6 +2089,7 @@ esp_err_t NetApplyHandler(httpd_req_t* req) {
   cJSON* ip_item = cJSON_GetObjectItem(root, "ethIp");
   cJSON* netmask_item = cJSON_GetObjectItem(root, "ethNetmask");
   cJSON* gateway_item = cJSON_GetObjectItem(root, "ethGateway");
+  cJSON* dns_item = cJSON_GetObjectItem(root, "ethDns");
   std::string mode = (mode_item && cJSON_IsString(mode_item) && mode_item->valuestring) ? mode_item->valuestring : "";
   std::string priority =
       (prio_item && cJSON_IsString(prio_item) && prio_item->valuestring) ? prio_item->valuestring : "";
@@ -2097,9 +2099,10 @@ esp_err_t NetApplyHandler(httpd_req_t* req) {
       (netmask_item && cJSON_IsString(netmask_item) && netmask_item->valuestring) ? netmask_item->valuestring : "";
   std::string eth_gateway =
       (gateway_item && cJSON_IsString(gateway_item) && gateway_item->valuestring) ? gateway_item->valuestring : "";
+  std::string eth_dns = (dns_item && cJSON_IsString(dns_item) && dns_item->valuestring) ? dns_item->valuestring : "";
   cJSON_Delete(root);
 
-  ActionResult res = ActionNetApply({mode, priority, eth_dhcp, eth_ip, eth_netmask, eth_gateway});
+  ActionResult res = ActionNetApply({mode, priority, eth_dhcp, eth_ip, eth_netmask, eth_gateway, eth_dns});
   if (!res.ok) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;

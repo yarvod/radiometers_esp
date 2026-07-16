@@ -271,6 +271,7 @@ export const useDevicesStore = defineStore('devices', {
       ethIp: string
       ethNetmask: string
       ethGateway: string
+      ethDns: string
     }) {
       return this.sendCommand(mqtt, deviceId, { type: 'net_apply', ...payload })
     },

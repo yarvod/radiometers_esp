@@ -51,6 +51,7 @@ struct NetApplyRequest {
   std::string eth_ip;
   std::string eth_netmask;
   std::string eth_gateway;
+  std::string eth_dns;
 };
 
 struct CloudApplyRequest {
