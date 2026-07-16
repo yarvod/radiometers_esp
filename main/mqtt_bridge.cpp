@@ -468,6 +468,12 @@ void BuildMqttState(char* out, size_t out_len) {
   JsonAppendEscaped(&b, NetModeName(app_config.net_mode));
   JsonAppend(&b, ",\"netPriority\":");
   JsonAppendEscaped(&b, NetPriorityName(app_config.net_priority));
+  JsonAppend(&b, ",\"ethDhcp\":%s,\"ethStaticIp\":", app_config.eth_dhcp ? "true" : "false");
+  JsonAppendEscaped(&b, app_config.eth_static_ip.c_str());
+  JsonAppend(&b, ",\"ethStaticNetmask\":");
+  JsonAppendEscaped(&b, app_config.eth_static_netmask.c_str());
+  JsonAppend(&b, ",\"ethStaticGateway\":");
+  JsonAppendEscaped(&b, app_config.eth_static_gateway.c_str());
   JsonAppend(&b, ",\"gpsRtcmTypes\":[");
   for (size_t i = 0; i < app_config.gps_rtcm_types.size(); ++i) {
     JsonAppend(&b, "%s%u", i == 0 ? "" : ",", static_cast<unsigned>(app_config.gps_rtcm_types[i]));
@@ -692,7 +698,17 @@ void HandleMqttCommand(const std::string& topic, const std::string& payload) {
   } else if (type == "wifi_apply") {
     res = ActionWifiApply({get_str("mode"), get_str("ssid"), get_str("password")});
   } else if (type == "net_apply") {
-    res = ActionNetApply({get_str("mode"), get_str("priority")});
+    NetApplyRequest req;
+    req.mode = get_str("mode");
+    req.priority = get_str("priority");
+    req.eth_dhcp = get_bool("ethDhcp", app_config.eth_dhcp);
+    req.eth_ip = get_str("ethIp");
+    req.eth_netmask = get_str("ethNetmask");
+    req.eth_gateway = get_str("ethGateway");
+    if (req.eth_ip.empty()) req.eth_ip = app_config.eth_static_ip;
+    if (req.eth_netmask.empty()) req.eth_netmask = app_config.eth_static_netmask;
+    if (req.eth_gateway.empty()) req.eth_gateway = app_config.eth_static_gateway;
+    res = ActionNetApply(req);
   } else if (type == "cloud_apply") {
     CloudApplyRequest req;
     req.device_id = get_str("deviceId");

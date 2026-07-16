@@ -81,6 +81,7 @@ static bool StartConfigAp();
 static void StartConfigApFallbackTask(int delay_ms);
 static void StopConfigApFallbackTask();
 static bool StartEthernet();
+static esp_err_t ConfigureEthernetIpv4();
 static esp_err_t EnsureWifiInit();
 static void StopWifiInterface(bool clear_ap_ip);
 static bool RequestWifiConnect(const char* reason);
@@ -393,9 +394,48 @@ static esp_err_t InitEthernet() {
 #endif
 }
 
+static esp_err_t ConfigureEthernetIpv4() {
+  if (!s_eth_netif) return ESP_ERR_INVALID_STATE;
+  if (!app_config.eth_dhcp) {
+    esp_netif_ip_info_t ip_info{};
+    if (esp_netif_str_to_ip4(app_config.eth_static_ip.c_str(), &ip_info.ip) != ESP_OK ||
+        esp_netif_str_to_ip4(app_config.eth_static_netmask.c_str(), &ip_info.netmask) != ESP_OK ||
+        esp_netif_str_to_ip4(app_config.eth_static_gateway.c_str(), &ip_info.gw) != ESP_OK) {
+      ESP_LOGE(kTag, "Invalid static Ethernet IPv4 configuration");
+      return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t dhcp_err = esp_netif_dhcpc_stop(s_eth_netif);
+    if (dhcp_err != ESP_OK && dhcp_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return dhcp_err;
+    ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(s_eth_netif, &ip_info), kTag,
+                        "Failed to configure static Ethernet IPv4");
+    ESP_LOGI(kTag, "Ethernet static IPv4: %s/%s gateway %s",
+             app_config.eth_static_ip.c_str(), app_config.eth_static_netmask.c_str(),
+             app_config.eth_static_gateway.c_str());
+    return ESP_OK;
+  }
+  esp_err_t stop_err = esp_netif_dhcpc_stop(s_eth_netif);
+  if (stop_err != ESP_OK && stop_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+    return stop_err;
+  }
+  esp_netif_ip_info_t empty{};
+  ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(s_eth_netif, &empty), kTag,
+                      "Failed to clear static Ethernet IPv4");
+  esp_err_t dhcp_err = esp_netif_dhcpc_start(s_eth_netif);
+  if (dhcp_err != ESP_OK && dhcp_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+    return dhcp_err;
+  }
+  ESP_LOGI(kTag, "Ethernet IPv4 mode: DHCP");
+  return ESP_OK;
+}
+
 static bool StartEthernet() {
   if (s_eth_started) return true;
   if (InitEthernet() != ESP_OK) return false;
+  esp_err_t config_err = ConfigureEthernetIpv4();
+  if (config_err != ESP_OK) {
+    ESP_LOGE(kTag, "Ethernet IPv4 setup failed: %s", esp_err_to_name(config_err));
+    return false;
+  }
   ESP_LOGI(kTag, "Starting Ethernet");
   esp_err_t err = esp_eth_start(s_eth_handle);
   if (err == ESP_OK) { s_eth_started = true; return true; }

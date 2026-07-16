@@ -47,6 +47,10 @@ struct WifiApplyRequest {
 struct NetApplyRequest {
   std::string mode;
   std::string priority;
+  bool eth_dhcp = true;
+  std::string eth_ip;
+  std::string eth_netmask;
+  std::string eth_gateway;
 };
 
 struct CloudApplyRequest {

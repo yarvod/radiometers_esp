@@ -6,6 +6,7 @@
 #include "app_services.h"
 #include "app_utils.h"
 #include "cJSON.h"
+#include "esp_netif.h"
 #include "esp_timer.h"
 #include "freertos/task.h"
 #include "motion_controller.h"
@@ -119,6 +120,10 @@ std::string BuildStateJsonInternal() {
   cJSON_AddBoolToObject(root, "wifiApMode", app_config.wifi_ap_mode);
   cJSON_AddStringToObject(root, "wifiMode", app_config.wifi_ap_mode ? "ap" : "sta");
   cJSON_AddStringToObject(root, "wifiSsid", app_config.wifi_ssid.c_str());
+  cJSON_AddBoolToObject(root, "ethDhcp", app_config.eth_dhcp);
+  cJSON_AddStringToObject(root, "ethStaticIp", app_config.eth_static_ip.c_str());
+  cJSON_AddStringToObject(root, "ethStaticNetmask", app_config.eth_static_netmask.c_str());
+  cJSON_AddStringToObject(root, "ethStaticGateway", app_config.eth_static_gateway.c_str());
   cJSON* gps_types = cJSON_CreateArray();
   for (uint16_t type : app_config.gps_rtcm_types) {
     cJSON_AddItemToArray(gps_types, cJSON_CreateNumber(type));
@@ -398,8 +403,22 @@ ActionResult ActionNetApply(const NetApplyRequest& req) {
   if (!req.priority.empty() && !ParseNetPriority(req.priority, &new_priority)) {
     return {false, "invalid net priority", {}};
   }
+  esp_ip4_addr_t ip{}, netmask{}, gateway{};
+  if (!req.eth_dhcp &&
+      (esp_netif_str_to_ip4(req.eth_ip.c_str(), &ip) != ESP_OK ||
+       esp_netif_str_to_ip4(req.eth_netmask.c_str(), &netmask) != ESP_OK ||
+       esp_netif_str_to_ip4(req.eth_gateway.c_str(), &gateway) != ESP_OK ||
+       ip.addr == 0 || netmask.addr == 0 || gateway.addr == 0)) {
+    return {false, "invalid Ethernet IPv4 address, netmask, or gateway", {}};
+  }
   app_config.net_mode = new_mode;
   app_config.net_priority = new_priority;
+  app_config.eth_dhcp = req.eth_dhcp;
+  if (!req.eth_dhcp) {
+    app_config.eth_static_ip = req.eth_ip;
+    app_config.eth_static_netmask = req.eth_netmask;
+    app_config.eth_static_gateway = req.eth_gateway;
+  }
   SaveConfigToSdCard(app_config, pid_config);
   ScheduleNetworkApply();
   return {true, "net_saved_reconnect_scheduled", {}};

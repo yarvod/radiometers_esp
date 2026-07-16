@@ -359,6 +359,27 @@ Moving: <span id="stepperMoving">No</span>
                 <option value="eth">Prefer Ethernet</option>
               </select>
             </div>
+            <div class="form-group">
+              <label for="ethAddressMode">Ethernet IPv4</label>
+              <select id="ethAddressMode" onchange="updateEthStaticVisibility()">
+                <option value="dhcp">DHCP (automatically)</option>
+                <option value="static">Manual</option>
+              </select>
+            </div>
+            <div id="ethStaticFields">
+              <div class="form-group">
+                <label for="ethStaticIp">IP address</label>
+                <input type="text" id="ethStaticIp" inputmode="decimal" placeholder="192.168.1.50">
+              </div>
+              <div class="form-group">
+                <label for="ethStaticNetmask">Netmask</label>
+                <input type="text" id="ethStaticNetmask" inputmode="decimal" placeholder="255.255.255.0">
+              </div>
+              <div class="form-group">
+                <label for="ethStaticGateway">Gateway</label>
+                <input type="text" id="ethStaticGateway" inputmode="decimal" placeholder="192.168.1.1">
+              </div>
+            </div>
             <button class="btn" onclick="applyNetwork()">Apply Network</button>
           </div>
         </div>
@@ -994,6 +1015,12 @@ Moving: <span id="stepperMoving">No</span>
         if (netModeEl) netModeEl.value = data.netMode || 'wifi';
         const netPriorityEl = document.getElementById('netPriority');
         if (netPriorityEl) netPriorityEl.value = data.netPriority || 'wifi';
+        const ethAddressModeEl = document.getElementById('ethAddressMode');
+        if (ethAddressModeEl) ethAddressModeEl.value = data.ethDhcp === false ? 'static' : 'dhcp';
+        setValueIfIdle('ethStaticIp', data.ethStaticIp || '192.168.1.50');
+        setValueIfIdle('ethStaticNetmask', data.ethStaticNetmask || '255.255.255.0');
+        setValueIfIdle('ethStaticGateway', data.ethStaticGateway || '192.168.1.1');
+        updateEthStaticVisibility();
         const gpsModeEl = document.getElementById('gpsMode');
         if (gpsModeEl) gpsModeEl.value = data.gpsMode || 'base_time_60';
         const gpsTypes = Array.isArray(data.gpsRtcmTypes) ? data.gpsRtcmTypes.join(',') : '1004,1006,1033';
@@ -1552,10 +1579,14 @@ document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes
     function applyNetwork() {
       const mode = document.getElementById('netMode').value;
       const priority = document.getElementById('netPriority').value;
+      const ethDhcp = document.getElementById('ethAddressMode').value === 'dhcp';
+      const ethIp = document.getElementById('ethStaticIp').value.trim();
+      const ethNetmask = document.getElementById('ethStaticNetmask').value.trim();
+      const ethGateway = document.getElementById('ethStaticGateway').value.trim();
       fetch('/net/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, priority })
+        body: JSON.stringify({ mode, priority, ethDhcp, ethIp, ethNetmask, ethGateway })
       }).then(res => {
         if (!res.ok) throw new Error('Failed to apply network');
         return res.json();
@@ -1564,6 +1595,12 @@ document.getElementById('stepperMoving').textContent = data.stepperMoving ? 'Yes
       }).catch(err => {
         alert('Network apply failed: ' + err.message);
       });
+    }
+
+    function updateEthStaticVisibility() {
+      const mode = document.getElementById('ethAddressMode');
+      const fields = document.getElementById('ethStaticFields');
+      if (mode && fields) fields.style.display = mode.value === 'static' ? '' : 'none';
     }
 
     function applyCloudConfig() {

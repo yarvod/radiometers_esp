@@ -76,6 +76,10 @@ struct AppConfig {
   bool mqtt_enabled;
   NetMode net_mode;
   NetPriority net_priority;
+  bool eth_dhcp;
+  std::string eth_static_ip;
+  std::string eth_static_netmask;
+  std::string eth_static_gateway;
   std::vector<uint16_t> gps_rtcm_types;
   std::string gps_mode;
   int meteo_poll_interval_s;  // WN90LP station poll interval; default 9 (sensor updates ~8.8s)

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-16 — Configurable Ethernet IPv4
+
+- Added DHCP/manual Ethernet selection to the embedded local WebUI, including
+  IPv4 address, netmask, and gateway fields.
+- Added the same Ethernet controls to the Nuxt device page over MQTT, with
+  client-side IPv4 validation and dirty-form protection from live state updates.
+- Persisted Ethernet IPv4 settings in `config.txt` and its NVS backup, validated
+  manual addresses before save, and applied static addressing to the W5500 before start.
+
 ## 2026-07-15 — Restore live GNSS position after receiver reconfiguration
 
 - Restored continuous position updates on UM982 COM2 by configuring `GPGGA`

@@ -264,7 +264,14 @@ export const useDevicesStore = defineStore('devices', {
     async wifiApply(mqtt: MqttClient, deviceId: string, payload: { mode: string; ssid: string; password: string }) {
       return this.sendCommand(mqtt, deviceId, { type: 'wifi_apply', ...payload })
     },
-    async netApply(mqtt: MqttClient, deviceId: string, payload: { mode: string; priority: string }) {
+    async netApply(mqtt: MqttClient, deviceId: string, payload: {
+      mode: string
+      priority: string
+      ethDhcp: boolean
+      ethIp: string
+      ethNetmask: string
+      ethGateway: string
+    }) {
       return this.sendCommand(mqtt, deviceId, { type: 'net_apply', ...payload })
     },
     async gpsApply(mqtt: MqttClient, deviceId: string, payload: { mode: string; rtcmTypes: number[] }) {

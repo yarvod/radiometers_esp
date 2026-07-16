@@ -290,6 +290,10 @@ esp_err_t DataHandler(httpd_req_t* req) {
   cJSON_AddStringToObject(root, "wifiPassword", app_config.wifi_password.c_str());
   cJSON_AddStringToObject(root, "netMode", NetModeToString(app_config.net_mode).c_str());
   cJSON_AddStringToObject(root, "netPriority", NetPriorityToString(app_config.net_priority).c_str());
+  cJSON_AddBoolToObject(root, "ethDhcp", app_config.eth_dhcp);
+  cJSON_AddStringToObject(root, "ethStaticIp", app_config.eth_static_ip.c_str());
+  cJSON_AddStringToObject(root, "ethStaticNetmask", app_config.eth_static_netmask.c_str());
+  cJSON_AddStringToObject(root, "ethStaticGateway", app_config.eth_static_gateway.c_str());
   cJSON* gps_types = cJSON_CreateArray();
   for (uint16_t type : app_config.gps_rtcm_types) {
     cJSON_AddItemToArray(gps_types, cJSON_CreateNumber(type));
@@ -2060,7 +2064,7 @@ esp_err_t WifiApplyHandler(httpd_req_t* req) {
 }
 
 esp_err_t NetApplyHandler(httpd_req_t* req) {
-  const size_t buf_len = std::min<size_t>(req->content_len, 160);
+  const size_t buf_len = std::min<size_t>(req->content_len, 384);
   if (buf_len == 0) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
     return ESP_FAIL;
@@ -2080,12 +2084,22 @@ esp_err_t NetApplyHandler(httpd_req_t* req) {
   }
   cJSON* mode_item = cJSON_GetObjectItem(root, "mode");
   cJSON* prio_item = cJSON_GetObjectItem(root, "priority");
+  cJSON* dhcp_item = cJSON_GetObjectItem(root, "ethDhcp");
+  cJSON* ip_item = cJSON_GetObjectItem(root, "ethIp");
+  cJSON* netmask_item = cJSON_GetObjectItem(root, "ethNetmask");
+  cJSON* gateway_item = cJSON_GetObjectItem(root, "ethGateway");
   std::string mode = (mode_item && cJSON_IsString(mode_item) && mode_item->valuestring) ? mode_item->valuestring : "";
   std::string priority =
       (prio_item && cJSON_IsString(prio_item) && prio_item->valuestring) ? prio_item->valuestring : "";
+  const bool eth_dhcp = !dhcp_item || !cJSON_IsBool(dhcp_item) || cJSON_IsTrue(dhcp_item);
+  std::string eth_ip = (ip_item && cJSON_IsString(ip_item) && ip_item->valuestring) ? ip_item->valuestring : "";
+  std::string eth_netmask =
+      (netmask_item && cJSON_IsString(netmask_item) && netmask_item->valuestring) ? netmask_item->valuestring : "";
+  std::string eth_gateway =
+      (gateway_item && cJSON_IsString(gateway_item) && gateway_item->valuestring) ? gateway_item->valuestring : "";
   cJSON_Delete(root);
 
-  ActionResult res = ActionNetApply({mode, priority});
+  ActionResult res = ActionNetApply({mode, priority, eth_dhcp, eth_ip, eth_netmask, eth_gateway});
   if (!res.ok) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, res.message.c_str());
     return ESP_FAIL;

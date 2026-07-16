@@ -60,7 +60,15 @@
       <div class="card">
         <div class="card-head"><h3>Сеть</h3><span class="badge">Wi-Fi / Ethernet</span></div>
         <div class="status-row"><span class="chip strong">IP: {{ state.wifiIp || '--' }}</span><span class="chip subtle">STA: {{ state.wifiStaIp || '--' }}</span><span class="chip subtle">AP: {{ state.wifiApIp || '--' }}</span><span class="chip subtle">ETH: {{ state.ethIp || '--' }}</span></div>
-        <div class="form-group"><label>Сетевой режим</label><select v-model="network.mode" @change="networkDirty = true"><option value="wifi">Только Wi-Fi</option><option value="eth">Только Ethernet</option><option value="both">Wi-Fi + Ethernet</option></select></div><div class="form-group"><label>Приоритет</label><select v-model="network.priority" @change="networkDirty = true"><option value="wifi">Wi-Fi</option><option value="eth">Ethernet</option></select></div><button class="btn primary" @click="applyNetwork">Применить сеть</button><p class="muted" v-if="networkStatus">{{ networkStatus }}</p><div class="divider"></div>
+        <div class="form-group"><label>Сетевой режим</label><select v-model="network.mode" @change="networkDirty = true"><option value="wifi">Только Wi-Fi</option><option value="eth">Только Ethernet</option><option value="both">Wi-Fi + Ethernet</option></select></div>
+        <div class="form-group"><label>Приоритет</label><select v-model="network.priority" @change="networkDirty = true"><option value="wifi">Wi-Fi</option><option value="eth">Ethernet</option></select></div>
+        <div class="form-group"><label>Адрес Ethernet</label><select v-model="network.ethDhcp" @change="networkDirty = true"><option :value="true">DHCP</option><option :value="false">Вручную</option></select></div>
+        <template v-if="!network.ethDhcp">
+          <div class="form-group"><label>IP-адрес Ethernet</label><input v-model.trim="network.ethIp" inputmode="decimal" placeholder="192.168.1.50" @input="networkDirty = true" /></div>
+          <div class="form-group"><label>Маска сети</label><input v-model.trim="network.ethNetmask" inputmode="decimal" placeholder="255.255.255.0" @input="networkDirty = true" /></div>
+          <div class="form-group"><label>Шлюз</label><input v-model.trim="network.ethGateway" inputmode="decimal" placeholder="192.168.1.1" @input="networkDirty = true" /></div>
+        </template>
+        <button class="btn primary" @click="applyNetwork">Применить сеть</button><p class="muted" v-if="networkStatus">{{ networkStatus }}</p><div class="divider"></div>
         <div class="form-group"><label>Wi-Fi режим</label><select v-model="wifi.mode" @change="wifiDirty = true"><option value="sta">STA</option><option value="ap">AP</option></select></div><div class="form-group"><label>SSID</label><input v-model="wifi.ssid" @input="wifiDirty = true" /></div><div class="form-group"><label>Пароль</label><input type="password" v-model="wifi.password" @input="wifiDirty = true" /></div><button class="btn primary" @click="applyWifi">Применить Wi-Fi</button><p class="muted" v-if="wifiStatus">{{ wifiStatus }}</p>
       </div>
     </div>
@@ -76,7 +84,8 @@ const store = useDevicesStore(); const nuxtApp = useNuxtApp(); store.init(nuxtAp
 const log = reactive({ filename: 'data', useMotor: false, durationSec: 1 })
 const stepper = reactive({ steps: 400, speedUs: 1500, offsetSteps: 0, loggingMotorSteps: 100, loggingReturnMode: 'home', reverse: false })
 const pid = reactive({ setpoint: 25, sensorIndices: [] as number[], kp: 1, ki: 0, kd: 0 })
-const wifi = reactive({ mode: 'sta', ssid: '', password: '' }); const network = reactive({ mode: 'wifi', priority: 'wifi' })
+const wifi = reactive({ mode: 'sta', ssid: '', password: '' })
+const network = reactive({ mode: 'wifi', priority: 'wifi', ethDhcp: true, ethIp: '192.168.1.50', ethNetmask: '255.255.255.0', ethGateway: '192.168.1.1' })
 const heaterPower = ref(0); const externalPowerOffMs = ref(1000); const systemBusy = ref(false)
 const heaterDirty = ref(false); const pidDirty = ref(false); const stepperDirty = ref(false); const wifiDirty = ref(false); const networkDirty = ref(false)
 const logStatus = ref(''); const systemStatus = ref(''); const pidStatus = ref(''); const stepperStatus = ref(''); const wifiStatus = ref(''); const networkStatus = ref('')
@@ -150,7 +159,23 @@ const stepperEnable = () => stepperCall('Включаю...', () => store.stepper
 const stepperMove = () => stepperCall('Двигаю...', () => store.stepperMove(nuxtApp.$mqtt, props.deviceId, { steps: stepper.steps, reverse: stepper.reverse, speedUs: stepper.speedUs }))
 const saveStepper = () => stepperCall('Сохраняю...', async () => { await store.stepperSettings(nuxtApp.$mqtt, props.deviceId, { speedUs: Math.max(1, stepper.speedUs), offsetSteps: stepper.offsetSteps, loggingMotorSteps: Math.min(20000, Math.max(1, stepper.loggingMotorSteps)), loggingHomeEachCycle: stepper.loggingReturnMode !== 'steps' }); stepperDirty.value = false })
 const applyWifi = async () => { try { await store.wifiApply(nuxtApp.$mqtt, props.deviceId, wifi); wifiDirty.value = false; wifiStatus.value = 'Wi-Fi обновлен' } catch (e) { wifiStatus.value = message(e, 'Ошибка Wi-Fi') } }
-const applyNetwork = async () => { try { await store.netApply(nuxtApp.$mqtt, props.deviceId, network); networkDirty.value = false; networkStatus.value = 'Сетевой режим обновлен' } catch (e) { networkStatus.value = message(e, 'Ошибка сети') } }
+const validIpv4 = (value: string) => {
+  const parts = value.split('.')
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
+}
+const applyNetwork = async () => {
+  if (!network.ethDhcp && ![network.ethIp, network.ethNetmask, network.ethGateway].every(validIpv4)) {
+    networkStatus.value = 'Проверьте IP-адрес, маску сети и шлюз'
+    return
+  }
+  try {
+    await store.netApply(nuxtApp.$mqtt, props.deviceId, { ...network })
+    networkDirty.value = false
+    networkStatus.value = 'Настройки сети обновлены'
+  } catch (e) {
+    networkStatus.value = message(e, 'Ошибка сети')
+  }
+}
 
 const seed = () => {
   const state = props.state
@@ -167,7 +192,14 @@ const seed = () => {
   }
   if (!stepperDirty.value) { stepper.speedUs = Number(state.stepperSpeedUs ?? stepper.speedUs); stepper.offsetSteps = Number(state.stepperHomeOffsetSteps ?? stepper.offsetSteps); stepper.loggingMotorSteps = Number(state.loggingMotorSteps ?? stepper.loggingMotorSteps); stepper.loggingReturnMode = state.loggingHomeEachCycle === false ? 'steps' : 'home' }
   if (!wifiDirty.value) { wifi.mode = (state.wifiMode === 'ap' || state.wifiApMode === true) ? 'ap' : 'sta'; wifi.ssid = String(state.wifiSsid || '') }
-  if (!networkDirty.value) { network.mode = String(state.netMode || 'wifi'); network.priority = state.netPriority === 'eth' ? 'eth' : 'wifi' }
+  if (!networkDirty.value) {
+    network.mode = String(state.netMode || 'wifi')
+    network.priority = state.netPriority === 'eth' ? 'eth' : 'wifi'
+    network.ethDhcp = state.ethDhcp !== false
+    network.ethIp = String(state.ethStaticIp || '192.168.1.50')
+    network.ethNetmask = String(state.ethStaticNetmask || '255.255.255.0')
+    network.ethGateway = String(state.ethStaticGateway || '192.168.1.1')
+  }
 }
 watch(() => props.deviceId, () => { Object.values({ logStatus, systemStatus, pidStatus, stepperStatus, wifiStatus, networkStatus }).forEach((item) => { item.value = '' }); heaterDirty.value = false; pidDirty.value = false; stepperDirty.value = false; wifiDirty.value = false; networkDirty.value = false; seed() })
 watch(() => props.state, seed, { deep: true, immediate: true })

@@ -34,6 +34,10 @@ AppConfig app_config{
     false,              // mqtt_enabled
     NetMode::kWifiOnly, // net_mode
     NetPriority::kWifi, // net_priority
+    true,               // eth_dhcp
+    "192.168.1.50",    // eth_static_ip
+    "255.255.255.0",   // eth_static_netmask
+    "192.168.1.1",     // eth_static_gateway
     {1004, 1006, 1033}, // gps_rtcm_types
     "base_time_60",     // gps_mode
     9,                  // meteo_poll_interval_s (station updates ~8.8s; keep state.meteo fresh)
