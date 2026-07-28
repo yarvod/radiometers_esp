@@ -34,6 +34,7 @@
     <p class="muted" v-if="timezoneLabel">Таймзона браузера: {{ timezoneLabel }}</p>
     <div class="actions">
       <button class="btn primary" type="button" @click="load" :disabled="loading">Загрузить</button>
+      <button class="btn ghost" type="button" @click="downloadCsv" :disabled="!hasAnyData">Скачать CSV</button>
       <label class="checkbox"><input type="checkbox" v-model="autoRefresh" /><span>Автообновление</span></label>
       <label class="compact" v-if="autoRefresh">Интервал, сек
         <input type="number" min="5" max="300" step="5" v-model.number="refreshSeconds" />
@@ -60,7 +61,9 @@
 
 <script setup lang="ts">
 import type { MeteoHistoryPoint, MeteoHistoryResponse } from '~/types/device'
-import { browserTimezoneLabel, formatChartTimestamp, localInputToIso, toLocalInputValue } from '~/utils/datetime'
+import type { HistoryChartDefinition } from '~/types/charts'
+import { downloadCsvFile, historyChartCsvFilename, historyChartToCsv } from '~/utils/chartCsv'
+import { browserTimezoneLabel, formatChartTimestamp, localInputToIso, parseDateAny, toLocalInputValue } from '~/utils/datetime'
 
 const props = defineProps<{ deviceId: string }>()
 const { apiFetch } = useApi()
@@ -103,6 +106,35 @@ const dataset = (label: string, key: keyof MeteoHistoryPoint, color: string, axi
   label, data: values(key), borderColor: color, backgroundColor: color, borderWidth: 2,
   pointRadius: 0, tension: 0.2, yAxisID: axis,
 })
+const csvDefinition = computed<HistoryChartDefinition>(() => {
+  const datasets: Array<Record<string, any>> = []
+  if (hasTemperatureHumidity.value) {
+    datasets.push(dataset('Температура, °C', 'temp_c', '#d62728'))
+    datasets.push(dataset('Влажность, %', 'humidity_pct', '#1f77b4'))
+  }
+  if (hasPressure.value) datasets.push(dataset('Давление, hPa', 'pressure_hpa', '#9467bd'))
+  if (hasWind.value) {
+    datasets.push(dataset('Ветер, м/с', 'wind_speed_ms', '#2ca02c'))
+    datasets.push(dataset('Порывы, м/с', 'gust_speed_ms', '#ff7f0e'))
+  }
+  if (hasDirection.value) datasets.push(dataset('Направление, °', 'wind_dir_deg', '#17becf'))
+  if (hasRainfall.value) datasets.push(dataset('Осадки, мм', 'rainfall_mm', '#1f77b4'))
+  if (hasLightUvi.value) {
+    datasets.push(dataset('Освещённость, лк', 'light_lux', '#bcbd22'))
+    datasets.push(dataset('УФ-индекс', 'uvi', '#e377c2'))
+  }
+  return {
+    key: 'meteo',
+    title: 'История метеоданных',
+    labels: labels(),
+    datetimes: points.value.map((point) => parseDateAny(point.timestamp)?.toISOString() || point.timestamp),
+    datasets,
+  }
+})
+const downloadCsv = () => {
+  if (!hasAnyData.value) return
+  downloadCsvFile(historyChartToCsv(csvDefinition.value), historyChartCsvFilename(csvDefinition.value))
+}
 const axis = (title: string, position: 'left' | 'right' = 'left', extra: Record<string, any> = {}) => ({
   type: 'linear', position, title: { display: true, text: title }, ticks: { maxTicksLimit: 6 }, ...extra,
 })

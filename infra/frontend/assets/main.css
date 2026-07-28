@@ -545,6 +545,7 @@ input { width: 100%; box-sizing: border-box; }
 .device-page .compact-controls select { min-width: 220px; }
 .device-page .chart-body { position: relative; flex: 1; min-height: 0; }
 .device-page .chart-body canvas { width: 100% !important; height: 100% !important; }
+.device-page .chart-actions { display: flex; justify-content: flex-end; }
 @media (max-width: 640px) {
   .device-page .chart-box { height: 468px; }
   .device-page .chart-head-row, .device-page .chart-head-controls, .device-page .axis-controls { align-items: flex-start; justify-content: flex-start; }

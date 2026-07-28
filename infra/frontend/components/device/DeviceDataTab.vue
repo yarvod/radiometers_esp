@@ -665,6 +665,7 @@ const normalizeHistorySelection = (indices: number[], count: number) => {
 }
 
 const historyLabels = computed(() => historyData.value.map((row) => formatTimestamp(row.timestamp)))
+const historyDatetimes = computed(() => historyData.value.map((row) => dateTimeKey(row.timestamp)))
 
 const buildDataset = (label: string, data: (number | null)[], color: string) => ({
   label,
@@ -777,6 +778,7 @@ const buildLoadCheckDatasets = () => {
 type ChartTimelineEntry = {
   key: string
   label: string
+  datetime: string
   sort: number
 }
 
@@ -785,13 +787,15 @@ const timelineSortValue = (value: string) => {
   return dt && !Number.isNaN(dt.getTime()) ? dt.getTime() : Number.MAX_SAFE_INTEGER
 }
 
-const buildTimeline = (entries: { key: string; timestamp: string }[]) => {
+const buildTimeline = (entries: { timestamp: string }[]) => {
   const byKey = new Map<string, ChartTimelineEntry>()
   entries.forEach((entry) => {
-    if (!byKey.has(entry.key)) {
-      byKey.set(entry.key, {
-        key: entry.key,
+    const key = dateTimeKey(entry.timestamp)
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        key,
         label: formatTimestamp(entry.timestamp),
+        datetime: key,
         sort: timelineSortValue(entry.timestamp),
       })
     }
@@ -818,9 +822,8 @@ const mapTimelineValues = (timeline: ChartTimelineEntry[], values: Map<string, n
 
 const buildTeffDatasets = () => {
   const response = atmosphereData.value
-  if (!response) return { labels: [], datasets: [] }
+  if (!response) return { labels: [], datetimes: [], datasets: [] }
   const timeline = buildTimeline(response.t_eff_points.map((point) => ({
-    key: dateTimeKey(point.sounding_time),
     timestamp: point.sounding_time,
   })))
   const byStation = new Map<string, Map<string, number>>()
@@ -831,6 +834,7 @@ const buildTeffDatasets = () => {
   })
   return {
     labels: timeline.map((entry) => entry.label),
+    datetimes: timeline.map((entry) => entry.datetime),
     datasets: Array.from(byStation.entries()).map(([stationId, values], idx) =>
       buildAtmosphereDataset(response.station_labels[stationId] || stationId, mapTimelineValues(timeline, values), palette[idx % palette.length])
     ),
@@ -853,17 +857,19 @@ const atmosphereAdcSeries = computed(() => {
 
 const buildTauDatasets = () => {
   const points = atmosphereData.value?.measurement_points || []
-  const timeline = buildTimeline(points.map((point, idx) => ({ key: `m:${idx}`, timestamp: point.timestamp })))
+  const timeline = buildTimeline(points.map((point) => ({ timestamp: point.timestamp })))
   return {
     labels: timeline.map((entry) => entry.label),
+    datetimes: timeline.map((entry) => entry.datetime),
     datasets: atmosphereAdcSeries.value
       .map((series) => {
         const key = `tau${series.key}` as keyof AtmosphereMeasurementPoint
-        const data = points.map((point) => {
+        const values = new Map<string, number>()
+        points.forEach((point) => {
           const y = point[key]
-          return Number.isFinite(y) ? Number(y) : null
+          if (Number.isFinite(y)) values.set(dateTimeKey(point.timestamp), Number(y))
         })
-        return buildAtmosphereDataset(`${series.label} tau`, data, series.color)
+        return buildAtmosphereDataset(`${series.label} tau`, mapTimelineValues(timeline, values), series.color)
       })
       .filter((dataset) => dataset.data.some((value: number | null) => Number.isFinite(value))),
   }
@@ -871,30 +877,27 @@ const buildTauDatasets = () => {
 
 const buildPwvAtmosphereDatasets = () => {
   const response = atmosphereData.value
-  const measurementEntries = (response?.measurement_points || []).map((point, idx) => ({
-    key: `m:${idx}`,
+  const measurementEntries = (response?.measurement_points || []).map((point) => ({
     timestamp: point.timestamp,
   }))
   const profileEntries = (response?.t_eff_points || []).map((point) => ({
-    key: `p:${point.station_id}:${dateTimeKey(point.sounding_time)}`,
     timestamp: point.sounding_time,
   }))
   const gnssEntries = gnssSeries.value.flatMap((series) =>
     series.points.map((point) => ({
-      key: `g:${series.dataset.id}:${dateTimeKey(point.measured_at)}`,
       timestamp: point.measured_at,
     })),
   )
   const timeline = buildTimeline([...measurementEntries, ...profileEntries, ...gnssEntries])
-  if (!timeline.length) return { labels: [], datasets: [] }
+  if (!timeline.length) return { labels: [], datetimes: [], datasets: [] }
   const radiometerDatasets = response
     ? atmosphereAdcSeries.value
         .map((series) => {
           const key = `pwv${series.key}` as keyof AtmosphereMeasurementPoint
           const values = new Map<string, number>()
-          response.measurement_points.forEach((point, idx) => {
+          response.measurement_points.forEach((point) => {
             const y = point[key]
-            if (Number.isFinite(y)) values.set(`m:${idx}`, Number(y))
+            if (Number.isFinite(y)) values.set(dateTimeKey(point.timestamp), Number(y))
           })
           return buildAtmosphereDataset(`${series.label} PWV`, mapTimelineValues(timeline, values), series.color)
         })
@@ -904,7 +907,7 @@ const buildPwvAtmosphereDatasets = () => {
   ;(response?.t_eff_points || []).forEach((point) => {
     if (!Number.isFinite(point.pwv_profile)) return
     if (!byStation.has(point.station_id)) byStation.set(point.station_id, new Map())
-    byStation.get(point.station_id)!.set(`p:${point.station_id}:${dateTimeKey(point.sounding_time)}`, Number(point.pwv_profile))
+    byStation.get(point.station_id)!.set(dateTimeKey(point.sounding_time), Number(point.pwv_profile))
   })
   const profileDatasets = Array.from(byStation.entries()).map(([stationId, values], idx) => {
     const dataset = buildAtmosphereDataset(
@@ -921,7 +924,7 @@ const buildPwvAtmosphereDatasets = () => {
       const values = new Map<string, number>()
       series.points.forEach((point) => {
         if (Number.isFinite(point.pw_mm)) {
-          values.set(`g:${series.dataset.id}:${dateTimeKey(point.measured_at)}`, Number(point.pw_mm))
+          values.set(dateTimeKey(point.measured_at), Number(point.pw_mm))
         }
       })
       const dataset = buildAtmosphereDataset(
@@ -936,6 +939,7 @@ const buildPwvAtmosphereDatasets = () => {
     .filter((dataset) => dataset.data.some((value: number | null) => Number.isFinite(value)))
   return {
     labels: timeline.map((entry) => entry.label),
+    datetimes: timeline.map((entry) => entry.datetime),
     datasets: [...radiometerDatasets, ...profileDatasets, ...gnssDatasets],
   }
 }
@@ -957,10 +961,10 @@ const pwvRadiometerStatus = computed(() => {
 })
 
 const measurementChartDefinitions = computed<HistoryChartDefinition[]>(() => [
-  { key: 'temp', title: 'Температуры', labels: historyLabels.value, datasets: buildTempDatasets() },
-  { key: 'adc', title: 'ADC + Cal', labels: historyLabels.value, datasets: buildAdcDatasets() },
-  { key: 'brightness', title: 'Яркостная температура Tk', labels: historyLabels.value, datasets: buildBrightnessDatasets() },
-  { key: 'loadCheck', title: 'Контроль теплой нагрузки', labels: historyLabels.value, datasets: buildLoadCheckDatasets() },
+  { key: 'temp', title: 'Температуры', labels: historyLabels.value, datetimes: historyDatetimes.value, datasets: buildTempDatasets() },
+  { key: 'adc', title: 'ADC + Cal', labels: historyLabels.value, datetimes: historyDatetimes.value, datasets: buildAdcDatasets() },
+  { key: 'brightness', title: 'Яркостная температура Tk', labels: historyLabels.value, datetimes: historyDatetimes.value, datasets: buildBrightnessDatasets() },
+  { key: 'loadCheck', title: 'Контроль теплой нагрузки', labels: historyLabels.value, datetimes: historyDatetimes.value, datasets: buildLoadCheckDatasets() },
 ])
 
 const atmosphereChartDefinitions = computed<Record<'teff' | 'tau' | 'pwv', HistoryChartDefinition>>(() => {

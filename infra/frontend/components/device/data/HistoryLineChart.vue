@@ -15,17 +15,24 @@
     <slot name="before" />
     <div v-if="axisError" class="axis-error">{{ axisError }}</div>
     <div class="chart-body"><canvas ref="canvas"></canvas></div>
+    <div class="chart-actions">
+      <button class="btn ghost sm" type="button" :disabled="!hasData" @click="downloadCsv">
+        Скачать CSV
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import type { HistoryChartDefinition } from '~/types/charts'
+import { downloadCsvFile, historyChartCsvFilename, historyChartToCsv } from '~/utils/chartCsv'
 
 const props = defineProps<{ definition: HistoryChartDefinition }>()
 const canvas = ref<HTMLCanvasElement | null>(null)
 const axis = reactive<{ auto: boolean; min: number | ''; max: number | '' }>({ auto: true, min: '', max: '' })
 let ChartCtor: any = null
 let chart: any = null
+const hasData = computed(() => props.definition.datetimes.length > 0 && props.definition.datasets.length > 0)
 
 const axisNumber = (value: number | '') => value === '' || !Number.isFinite(Number(value)) ? undefined : Number(value)
 const axisError = computed(() => {
@@ -74,6 +81,10 @@ const render = async () => {
   chart.update('none')
 }
 const resetAxis = () => Object.assign(axis, { auto: true, min: '', max: '' })
+const downloadCsv = () => {
+  if (!hasData.value) return
+  downloadCsvFile(historyChartToCsv(props.definition), historyChartCsvFilename(props.definition))
+}
 watch(() => props.definition, render, { deep: true })
 watch(axis, render, { deep: true })
 onMounted(async () => { const module: any = await import('chart.js/auto'); ChartCtor = module?.Chart || module?.default || module; render() })
