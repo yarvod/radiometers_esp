@@ -1,19 +1,16 @@
-FROM node:20-alpine AS base
+FROM node:24.16.0-alpine3.22 AS base
 WORKDIR /app
 
 FROM base AS deps
-COPY package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
-FROM base AS dev
-COPY package*.json ./
-RUN npm install
+FROM deps AS dev
 COPY . .
 EXPOSE 3000
 CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3000"]
 
-FROM base AS build
-COPY --from=deps /app/node_modules ./node_modules
+FROM deps AS build
 COPY . .
 RUN npm run build
 

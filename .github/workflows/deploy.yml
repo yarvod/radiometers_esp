@@ -17,11 +17,11 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Detect changes
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             frontend:
@@ -30,11 +30,6 @@ jobs:
               - 'infra/backend/**'
             compose:
               - 'infra/compose-prod.yml'
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
 
       - name: Build frontend image
         if: steps.changes.outputs.frontend == 'true' || steps.changes.outputs.compose == 'true'

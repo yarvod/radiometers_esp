@@ -2,6 +2,7 @@
   "name": "esp-frontend",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@11.13.0",
   "scripts": {
     "dev": "nuxt dev",
     "build": "nuxt build",

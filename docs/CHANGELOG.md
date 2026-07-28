@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-29 — Reproducible frontend and CI builds
+
+- Pinned the frontend container to Node 24.16.0 on Alpine 3.22 and recorded
+  npm 11.13.0 as the project package manager, replacing the floating Node 20
+  image and its npm 10 dependency installer.
+- Made both development and production build stages inherit the same clean
+  `npm ci` dependency layer.
+- Added a frontend `.dockerignore` so host `node_modules`, `.nuxt`, and
+  `.output` directories cannot enter or overwrite Linux image contents.
+- Updated GitHub Actions to Node 24-compatible `checkout` and `paths-filter`
+  releases and removed the unused host `setup-node` step.
+- Replaced the stale agent guide with the current firmware/backend/frontend
+  structure and an explicit verification matrix that requires both Nuxt and
+  clean Docker builds for frontend changes.
+
 ## 2026-07-16 — Configurable Ethernet IPv4
 
 - Added DHCP/manual Ethernet selection to the embedded local WebUI, including

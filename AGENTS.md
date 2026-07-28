@@ -1,144 +1,214 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the maintained repository guide for coding agents. Keep it aligned
+with the tree whenever an entry point, subsystem, build command, or deployment
+path changes. Do not copy stale structure from old prompts or generated output.
 
-## Project overview
+## Repository scope
 
-Two independent subsystems:
-1. **ESP32-S3 firmware** (root / `main/`) — C++ ESP-IDF project for a microradiometer device
-2. **Cloud infrastructure** (`infra/`) — Python/FastAPI backend + Nuxt 3 frontend + supporting services
+The repository contains two deployable systems:
 
----
+1. ESP32-S3 firmware built with ESP-IDF.
+2. Cloud infrastructure under `infra/`: FastAPI workers and API, Nuxt frontend,
+   and the supporting Docker Compose services.
+
+## Repository map
+
+| Path | Role |
+|---|---|
+| `CMakeLists.txt`, `sdkconfig*`, `partitions.csv` | ESP-IDF project and board/build configuration |
+| `main/` | Firmware composition layer: application entry point, HTTP/Web UI, control actions, and MQTT bridge |
+| `components/app_core/` | Shared firmware state, context, utilities, error manager, and GPIO definitions |
+| `components/config_loader/` | SD/NVS configuration loading and persistence |
+| `components/data_logger/` | Measurement logging |
+| `components/gps_module/` | GNSS receiver and positioning logic |
+| `components/motion_controller/` | Motor, relay, and motion control |
+| `components/network_manager/` | Wi-Fi, Ethernet, and network failover |
+| `components/sensor_hub/` | LTC2440 and temperature sensor acquisition |
+| `components/storage_manager/` | SD/storage ownership |
+| `components/upload_pipeline/` | File maintenance and remote upload |
+| `components/wn90lp/` | WN90LP Modbus weather-station driver |
+| `managed_components/` | ESP-IDF managed dependencies; do not hand-edit during normal feature work |
+| `tests/firmware/` | Host-side firmware test harness and stubs |
+| `infra/backend/app/api/routes/` | FastAPI HTTP route adapters |
+| `infra/backend/app/services/` | Backend application/domain services |
+| `infra/backend/app/repositories/` | Repository interfaces and SQLAlchemy implementations |
+| `infra/backend/app/db/` | Database models and sessions |
+| `infra/backend/app/worker.py` | MQTT ingestion worker |
+| `infra/backend/app/arq_worker.py` | ARQ jobs and scheduled work |
+| `infra/backend/alembic/` | Database migrations |
+| `infra/backend/tests/` | Backend pytest suite |
+| `infra/frontend/pages/` | Nuxt routes; `[deviceId].vue` is the device-page shell |
+| `infra/frontend/components/device/` | Device feature tabs and their owned components |
+| `infra/frontend/stores/devices.ts` | Pinia device state and MQTT actions |
+| `infra/frontend/plugins/mqtt.client.ts` | Browser MQTT connection |
+| `infra/frontend/utils/`, `types/` | Shared frontend utilities and contracts |
+| `infra/docker-compose.yml` | Local development stack |
+| `infra/compose-prod.yml` | Production service definitions |
+| `infra/scripts/` | Backup and restore scripts |
+| `.github/workflows/deploy.yml` | Docker image build, push, and production deployment |
+| `docs/` | Workplan, changelog, and known bugs |
+
+Generated or machine-local directories are not source: `build/`,
+`infra/frontend/node_modules/`, `infra/frontend/.nuxt/`,
+`infra/frontend/.output/`, `infra/.venv/`, `.pytest_cache/`, and `.DS_Store`.
+Do not document generated files as architecture and do not commit them.
 
 ## Shell conventions
 
-- Prefix **all** shell commands with `rtk` to reduce token usage (e.g. `rtk git status`, `rtk find ...`). The hook rewrites them transparently.
-- **Large-output commands MUST use `rtk`** so output is filtered/compressed before reaching context. This is especially important for: `rtk idf.py build`, `rtk grep -r`, `rtk find`, `rtk docker compose`.
-- `get_idf` is a shell alias that sources the ESP-IDF environment: `. $HOME/esp/esp-idf/export.sh`. Run it before any `idf.py` command in a fresh shell.
-- Use `uv` for Python package management (e.g. `rtk uv pip install -r requirements.txt`).
+- Prefix every shell command and every segment of a command chain with `rtk`.
+- Use `rg`/`rg --files` for search, invoked through `rtk proxy` when needed.
+- Run commands from the subsystem directory shown below so configuration and
+  relative paths resolve consistently.
+- Preserve unrelated working-tree changes.
 
----
+## Architecture boundaries
 
-## Firmware (ESP-IDF, ESP32-S3)
+### Firmware
 
-### Build & flash
+- `main/app_main.cpp` composes components; reusable hardware and domain logic
+  belongs in the matching directory under `components/`.
+- Shared state and pins live in `components/app_core/`, not `main/`.
+- Access shared state through the helpers/context provided by `app_core`; keep
+  synchronization ownership there.
+- Register new firmware components in their own `CMakeLists.txt` and in
+  `main/CMakeLists.txt` requirements.
+- `managed_components/` is controlled by the ESP-IDF component manager.
 
-```bash
-# Source ESP-IDF first (if not already active)
-get_idf
+### Backend
 
-rtk idf.py set-target esp32s3
-rtk idf.py build
-rtk idf.py flash monitor
-```
+- Routes translate HTTP schemas and delegate to services.
+- Services depend on repository interfaces, not SQLAlchemy implementations.
+- Dependency wiring is in `app/container.py`.
+- MQTT topic ingestion is owned by `app/worker.py`; scheduled/background jobs
+  are owned by `app/arq_worker.py`.
+- Add schema changes as a new sequential migration under
+  `infra/backend/alembic/versions/`; do not rewrite applied migrations.
+- Runtime settings use the `APP_` prefix and are defined in
+  `app/core/config.py`.
 
-Or inside the Dev Container (`.devcontainer/Dockerfile` uses the official `espressif/idf` image):
+### Frontend
 
-```bash
-# VS Code: Reopen in Container → then run the idf.py commands above
-```
+- Nuxt routes stay thin. Device-tab behavior belongs under
+  `components/device/`, with feature-specific children under `data/`, `gps/`,
+  and `meteo/`.
+- REST access goes through `composables/useApi.ts`; live device state and MQTT
+  commands go through `stores/devices.ts`.
+- Browser-only integrations belong in `.client.ts` plugins or guarded client
+  code.
+- Shared date/time, CSV, and chart contracts belong in `utils/` and `types/`,
+  not duplicated across components.
+- Keep `package.json` and `package-lock.json` synchronized. Validation uses
+  `npm ci`; use `npm install` only when intentionally changing dependencies and
+  commit the resulting lock-file update.
+- The deployment toolchain versions are pinned in `infra/frontend/Dockerfile`
+  and `package.json`. Update them deliberately and verify a clean image build.
 
-### Key firmware files
+## Required verification
 
-| File | Purpose |
-|---|---|
-| `main/app_main.cpp` | Entry point; task creation, SPI/I2C/UART init, Wi-Fi/Ethernet setup |
-| `main/app_state.h/.cpp` | Global `SharedState`, `AppConfig`, `PidConfig` — single mutex-protected state object |
-| `main/hw_pins.h` | All GPIO constants; change here when adapting to new board revisions |
-| `main/http_handlers.cpp` | HTTP API handlers (`/data`, `/calibrate`, `/stepper/*`, etc.) |
-| `main/web_ui.cpp` | Embedded web UI (served from flash/SD) |
-| `main/mqtt_bridge.cpp` | MQTT publish of `{deviceId}/measure`, `{deviceId}/state`, `{deviceId}/error` |
-| `main/ltc2440.cpp` | LTC2440 24-bit ADC SPI driver |
-| `main/gps_unicore.cpp` | Unicore GPS UART driver (UART2, GPIO 9/10) |
-| `main/wn90lp.h/.cpp` | WN90LP weather station driver (UART1, RS485, GPIO 11/12/13) |
+Run the checks for every subsystem touched. A partial check must be reported as
+partial; do not say “the build passes” when only one layer was tested.
 
-### Architecture notes
+### Frontend changes
 
-- **SPI2 (HSPI) is shared** between three LTC2440 ADCs and the W5500 Ethernet chip; each device has its own CS pin (see `hw_pins.h`).
-- State is global (`extern AppConfig app_config; extern SharedState state;`) protected by `state_mutex`. Use `CopyState()` / `UpdateState()` helpers — never lock manually.
-- Configuration is loaded at boot from `config.txt` on the SD card (or NVS fallback), then merged with compiled-in defaults in `main/app_state.h`.
-- USB operates in CDC (default) or MSC mode, toggled at runtime via the web UI and persisted in NVS.
-
-### WN90LP weather station (RS485 / Modbus RTU)
-
-- **Protocol**: Modbus RTU, default device address `0x90`, 9600 8N1, CRC16 (poly 0xA001 reflected).
-- **Single bulk request** reads all 9 registers `0x0165–0x016D` in one frame: light, UVI, temperature, humidity, wind speed, gust speed, wind direction, rainfall, ABS pressure. Sensor reporting interval is 8.8 s; we **poll every `meteo_poll_interval_s` (default 9 s)** to keep `state.meteo` fresh, and **write a CSV row every `meteo_file_interval_s` (default 60 s)** — the two cadences are independent in the single `wn90lp` task.
-- **Graceful absence**: if the station doesn't respond, `MeteoData::online = false`; the task keeps running silently. No `ESP_LOGE` on simple timeout.
-- **CSV log**: the latest valid poll is written every `meteo_file_interval_s` to an hourly `meteo_YYYYMMDD_HHMMSS_<bootId>.txt` file (header written once per file); completed files are queued for upload.
-- **Wiring** (`hw_pins.h`): `METEO_RS485_TX=GPIO13`, `METEO_RS485_RX=GPIO11`, `METEO_RS485_RTS=GPIO12`.
-- Register decode rules: light × 10 lux; UVI / 10; temperature = (raw − 400) / 10 °C; wind/gust × 0.1 m/s; pressure × 0.1 hPa. Invalid sentinel: `0xFFFF` (temperature: `0x07FF`) → field set to `NaN`.
-
----
-
-## Infrastructure (`infra/`)
-
-### Starting the full stack
+From `infra/frontend/`:
 
 ```bash
-cd infra
-rtk cp example.env .env       # fill in required vars
-rtk docker compose up          # starts postgres, redis, mosquitto, minio, backend, worker, arq-worker, frontend
-```
-
-Backend auto-runs `alembic upgrade head` on startup.
-
-### Backend (FastAPI + SQLAlchemy async)
-
-```bash
-cd infra/backend
-
-# Install deps
-rtk uv pip install -r requirements.txt -r requirements-dev.txt
-
-# Run API server locally (needs .env or APP_* env vars)
-rtk uvicorn app.main:app --reload
-
-# Run MQTT worker (subscribes to broker, persists measurements)
-rtk python -m app.worker
-
-# Run ARQ background worker (soundings import, station refresh, scheduled jobs)
-rtk arq app.arq_worker.WorkerSettings
-
-# Run tests
-rtk pytest
-rtk pytest tests/test_worker_handlers.py   # single file
-```
-
-Environment variables use the `APP_` prefix (pydantic-settings); see `app/core/config.py` for all keys. For local dev, create `infra/backend/.env`.
-
-#### Backend architecture
-
-- **DI**: `dishka` container defined in `app/container.py`. Services and repositories are injected per-request scope; `Settings`, `AsyncEngine`, and `ArqRedis` are app-scoped.
-- **Repository pattern**: interfaces in `app/repositories/interfaces.py`, SQLAlchemy implementations in `app/repositories/sqlalchemy.py`. Always depend on interfaces in services.
-- **MQTT worker** (`app/worker.py`): subscribes to `+/measure`, `+/state`, `+/error`; `device_id` is the first path segment of the topic.
-- **ARQ worker** (`app/arq_worker.py`): cron jobs for station data refresh (Wyoming sounding API) and sounding schedule ticks; job functions for on-demand sounding load/export.
-- **Migrations**: `alembic/versions/` numbered sequentially (`00001_init.py` …). Always generate new migrations with `rtk alembic revision --autogenerate -m "description"`.
-
-### Frontend (Nuxt 3)
-
-```bash
-cd infra/frontend
-rtk npm install
-rtk npm run dev      # http://localhost:3000
 rtk npm run build
 ```
 
-The frontend subscribes to the MQTT broker directly over WebSocket (port 9001) for live data, and calls the REST API (`NUXT_PUBLIC_API_BASE`) for historical data. State is managed in `stores/devices.ts` (Pinia). Charts use Chart.js; maps use Leaflet.
+From the repository root, always verify the clean deployment path as well:
 
----
+```bash
+rtk docker build --no-cache --progress=plain --platform linux/amd64 --target runner \
+  -t radiometer-frontend-check infra/frontend
+```
 
-## Project docs (`docs/`)
+The `linux/amd64` Docker build is mandatory for frontend source, dependency,
+lock-file, or Dockerfile changes because it matches the GitHub-hosted deployment
+build, independently runs `npm ci` in Linux, and then runs the Nuxt build. A
+local `npm run build` with an existing `node_modules` directory is not a
+substitute. If Docker is unavailable, state explicitly that deployment build
+verification remains outstanding.
 
-| File | Purpose |
-|---|---|
-| `docs/WORKPLAN.md` | In-progress and TODO tasks with checkboxes |
-| `docs/CHANGELOG.md` | What changed and when |
-| `docs/BUGS.md` | Known open/closed bugs |
+When dependencies change, additionally run a clean install before the local
+build:
 
-Keep these up to date as features are implemented.
+```bash
+rtk npm ci
+rtk npm run build
+```
 
----
+### Backend changes
 
-### Deployment
+From `infra/backend/`:
 
-CI (`.github/workflows/deploy.yml`) builds and pushes Docker images to GHCR on push to `main` when `infra/frontend/**` or `infra/backend/**` changes, then deploys with `infra/compose-prod.yml`.
+```bash
+rtk pytest
+rtk python -m compileall -q app tests
+```
+
+For backend code, requirements, migrations, or Dockerfile changes, also run from
+the repository root:
+
+```bash
+rtk docker build --no-cache --progress=plain --platform linux/amd64 \
+  -t radiometer-backend-check infra/backend
+```
+
+### Firmware changes
+
+Load the installed ESP-IDF environment (`get_idf` in the configured developer
+shell), then run from the repository root:
+
+```bash
+rtk idf.py build
+```
+
+Run the relevant host tests under `tests/firmware/` when their source/stub map
+covers the component being changed. Do not treat a host test as a replacement
+for the ESP-IDF build.
+
+### Documentation-only changes
+
+At minimum:
+
+```bash
+rtk git diff --check
+```
+
+### Final check
+
+Before handoff:
+
+```bash
+rtk git diff --check
+rtk git status --short
+```
+
+Report the exact checks that ran, their outcomes, and any check that could not
+run. Warnings should be distinguished from failures.
+
+## Docker and deployment
+
+- Frontend production images use the final `runner` stage in
+  `infra/frontend/Dockerfile`.
+- `.dockerignore` must exclude host dependencies and Nuxt build output so macOS
+  or stale local artifacts cannot overwrite Linux dependencies in the image.
+- Local services use `infra/docker-compose.yml`; production uses
+  `infra/compose-prod.yml`. Do not mix their assumptions.
+- `.github/workflows/deploy.yml` builds changed frontend/backend images, pushes
+  them to GHCR, and deploys the production Compose file on `main`.
+- Never commit `.env`, credentials, certificates containing private keys, or
+  generated production data.
+
+## Documentation maintenance
+
+- Update this file in the same change whenever paths, ownership boundaries,
+  required checks, Docker stages, or deployment flow change.
+- Update `docs/WORKPLAN.md` when active rollout work changes.
+- Update `docs/BUGS.md` when a known defect is opened or closed.
+- Update `docs/CHANGELOG.md` for user-visible or operational behavior intended
+  for release.
+- Prefer links to canonical files over duplicating volatile implementation
+  details here.
