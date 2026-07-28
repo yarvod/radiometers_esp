@@ -7,7 +7,6 @@ frontend/.turbo
 frontend/.pnpm-store
 frontend/.npmrc
 frontend/yarn.lock
-frontend/package-lock.json
 mosquitto_passwd
 
 # Logs
