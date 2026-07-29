@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import app.services.measurements as measurements_module
 from app.domain.entities import MeasurementPoint
 from app.services.measurements import MeasurementService
 from app.services.temp_outliers import TemperatureOutlierFilterConfig, filter_temperature_outliers
@@ -92,3 +93,53 @@ def test_temperature_outlier_filter_runs_before_bucket_average():
     assert stats.removed_count == 1
     assert len(aggregated) == 1
     assert aggregated[0].temps == [10.0]
+
+
+async def test_large_series_streams_batches_with_exact_window_overlap(monkeypatch):
+    points = [
+        make_point(idx, [temp])
+        for idx, temp in enumerate([10.0, 10.1, 9.9, 10.0, 90.0, 10.1, 10.0, 9.9, 10.0])
+    ]
+
+    class Repository:
+        streamed = False
+
+        async def count(self, device_id, start, end):
+            return len(points)
+
+        async def bounds(self, device_id, start, end):
+            return points[0].timestamp, points[-1].timestamp
+
+        async def list(self, device_id, start, end, limit):
+            raise AssertionError("large filtered ranges must not materialize through list()")
+
+        async def stream_points(self, device_id, start, end, batch_size):
+            self.streamed = True
+            for offset in range(0, len(points), batch_size):
+                yield points[offset : offset + batch_size]
+
+    repository = Repository()
+    monkeypatch.setattr(measurements_module, "_STREAM_BATCH_SIZE", 4)
+    service = MeasurementService(repository, None)  # type: ignore[arg-type]
+    config = TemperatureOutlierFilterConfig(enabled=True, window=5, threshold=3.5, min_count=4)
+
+    actual, raw_count, bucket_seconds, _, aggregated, stats = (
+        await service.list_series_with_temp_outlier_filter(
+            device_id="dev1",
+            start=None,
+            end=None,
+            limit=3,
+            bucket_seconds=3,
+            temp_outlier_filter=config,
+        )
+    )
+    filtered, expected_stats = filter_temperature_outliers(points, config)
+    expected = MeasurementService._aggregate_points(filtered, bucket_seconds=3, limit=3)
+
+    assert repository.streamed is True
+    assert list(actual) == expected
+    assert raw_count == len(points)
+    assert bucket_seconds == 3
+    assert aggregated is True
+    assert stats.removed_count == expected_stats.removed_count == 1
+    assert stats.output_count == expected_stats.output_count

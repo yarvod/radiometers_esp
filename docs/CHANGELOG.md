@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-29 — Scalable filtered measurement history
+
+- Replaced full ORM materialization of Hampel-filtered ranges with a server-side
+  cursor, 20,000-point batches, exact window overlap, and incremental bucket
+  aggregation.
+- Added a composite `(device_id, timestamp, id)` measurement index, created
+  concurrently during migration.
+- Added a unified device-history endpoint so ordinary and atmospheric charts
+  reuse one filtered measurement series instead of querying it twice.
+- Added an explicit calculation spinner/status to the device data tab and made
+  PWV coefficient recalculation user-triggered instead of firing on every edit.
+- Configured two Uvicorn worker processes by default in production Compose; the
+  count remains configurable through `UVICORN_WORKERS`.
+
 ## 2026-07-29 — Reproducible frontend and CI builds
 
 - Pinned the frontend container to Node 24.16.0 on Alpine 3.22 and recorded

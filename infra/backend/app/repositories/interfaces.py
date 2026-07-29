@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Iterable, Sequence
+from typing import AsyncIterator, Iterable, Sequence
 
 from app.domain.entities import (
     AccessToken,
@@ -287,6 +287,16 @@ class MeasurementRepository(ABC):
 
     @abstractmethod
     async def list(self, device_id: str, start: datetime | None, end: datetime | None, limit: int) -> Sequence[Measurement]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def stream_points(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        batch_size: int,
+    ) -> AsyncIterator[Sequence[MeasurementPoint]]:
         raise NotImplementedError
 
     @abstractmethod

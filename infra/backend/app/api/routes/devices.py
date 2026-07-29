@@ -13,17 +13,19 @@ from app.api.schemas import (
     DeviceCreateRequest,
     DeviceGpsConfigOut,
     DeviceGpsConfigUpdateRequest,
+    DeviceHistoryResponse,
     DeviceOut,
     DeviceUpdateRequest,
     ErrorEventOut,
     ErrorEventsResponse,
+    MeasurementPointOut,
     RadiometerCalibrationCreateRequest,
     RadiometerCalibrationOut,
     RadiometerCalibrationUpdateRequest,
     RadiometerCalibrationsResponse,
 )
 from app.domain.entities import User
-from app.services.atmosphere import AtmosphereService
+from app.services.atmosphere import AtmosphereSeries, AtmosphereService
 from app.services.calibrations import CalibrationError, RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
@@ -39,6 +41,27 @@ def parse_datetime(value: str | None) -> datetime | None:
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     return datetime.fromisoformat(raw)
+
+
+def atmosphere_response(series: AtmosphereSeries) -> AtmosphereSeriesResponse:
+    return AtmosphereSeriesResponse(
+        config=series.config,
+        station_labels=series.station_labels,
+        adc_labels=series.adc_labels,
+        t_eff_points=[
+            AtmosphereEffectiveTemperaturePointOut.model_validate(item, from_attributes=True)
+            for item in series.t_eff_points
+        ],
+        measurement_points=[
+            AtmosphereMeasurementPointOut.model_validate(item, from_attributes=True)
+            for item in series.measurement_points
+        ],
+        raw_count=series.raw_count,
+        bucket_seconds=series.bucket_seconds,
+        bucket_label=series.bucket_label,
+        aggregated=series.aggregated,
+        temp_outlier_filter=series.temp_outlier_filter,
+    )
 
 
 def sanitize_rtcm_types(values: list[int] | None) -> list[int] | None:
@@ -172,23 +195,61 @@ async def get_device_atmosphere(
             min_count=temp_outlier_min_count,
         ),
     )
-    return AtmosphereSeriesResponse(
-        config=series.config,
-        station_labels=series.station_labels,
-        adc_labels=series.adc_labels,
-        t_eff_points=[
-            AtmosphereEffectiveTemperaturePointOut.model_validate(item, from_attributes=True)
-            for item in series.t_eff_points
-        ],
-        measurement_points=[
-            AtmosphereMeasurementPointOut.model_validate(item, from_attributes=True)
-            for item in series.measurement_points
+    return atmosphere_response(series)
+
+
+@router.get("/{device_id}/history", response_model=DeviceHistoryResponse)
+@inject
+async def get_device_history(
+    device_id: str,
+    atmosphere: FromDishka[AtmosphereService],
+    start: str | None = Query(None, alias="from"),
+    end: str | None = Query(None, alias="to"),
+    limit: int = Query(default=2000, ge=1, le=10000),
+    bucket_seconds: int | None = Query(default=None, ge=0, le=86400),
+    tau_station_id: str | None = Query(default=None),
+    average: bool = Query(default=False),
+    coefficients: str | None = Query(default=None),
+    temp_outlier_filter: bool = Query(False),
+    temp_outlier_window: int = Query(9, ge=3, le=501),
+    temp_outlier_threshold: float = Query(3.5, gt=0, le=100),
+    temp_outlier_min_count: int = Query(5, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+):
+    series = await atmosphere.build_series(
+        device_id=device_id,
+        start=parse_datetime(start),
+        end=parse_datetime(end),
+        limit=limit,
+        bucket_seconds=bucket_seconds if bucket_seconds and bucket_seconds > 0 else None,
+        tau_station_id=tau_station_id,
+        average=average,
+        coefficient_config=parse_coefficients(coefficients),
+        temp_outlier_filter=TemperatureOutlierFilterConfig(
+            enabled=temp_outlier_filter,
+            window=temp_outlier_window,
+            threshold=temp_outlier_threshold,
+            min_count=temp_outlier_min_count,
+        ),
+    )
+    return DeviceHistoryResponse(
+        points=[
+            MeasurementPointOut.model_validate(item, from_attributes=True)
+            for item in series.source_points
         ],
         raw_count=series.raw_count,
+        limit=limit,
         bucket_seconds=series.bucket_seconds,
         bucket_label=series.bucket_label,
         aggregated=series.aggregated,
+        temp_labels=series.temp_labels,
+        adc_labels=series.adc_labels,
+        temp_addresses=series.temp_addresses,
+        temp_label_map=series.temp_label_map,
+        temp_bindings=series.temp_bindings,
+        brightness_temp_labels=series.brightness_temp_labels,
         temp_outlier_filter=series.temp_outlier_filter,
+        atmosphere=atmosphere_response(series),
     )
 
 

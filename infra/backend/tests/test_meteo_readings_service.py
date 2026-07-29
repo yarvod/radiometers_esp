@@ -7,7 +7,7 @@ from sqlalchemy.dialects import postgresql
 from fastapi import HTTPException
 
 from app.api.routes.meteo_readings import parse_datetime, validate_range
-from app.api.schemas import MeasurementsResponse, MeteoReadingsResponse
+from app.api.schemas import DeviceHistoryResponse, MeasurementsResponse, MeteoReadingsResponse
 from app.domain.entities import MeteoReading
 from app.repositories.interfaces import MeteoReadingRepository
 from app.repositories.sqlalchemy import SqlMeteoReadingRepository
@@ -145,6 +145,7 @@ async def test_sql_meteo_aggregation_uses_physical_field_rules():
 def test_measurement_response_keeps_outlier_stats_out_of_meteo_response():
     assert "temp_outlier_filter" in MeasurementsResponse.model_fields
     assert "temp_outlier_filter" not in MeteoReadingsResponse.model_fields
+    assert "atmosphere" in DeviceHistoryResponse.model_fields
 
 
 def test_parse_datetime_requires_valid_timezone_aware_iso_value():

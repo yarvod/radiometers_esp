@@ -65,7 +65,10 @@
       </div>
       <p class="muted" v-if="historyRangeLabel">{{ historyRangeLabel }}</p>
       <div class="actions">
-        <button class="btn primary" @click="loadHistory" :disabled="historyLoading">Загрузить</button>
+        <button class="btn primary" @click="loadHistory" :disabled="historyLoading">
+          <span v-if="historyLoading" class="loading-spinner" aria-hidden="true"></span>
+          {{ historyLoading ? 'Расчёт…' : 'Загрузить' }}
+        </button>
         <span class="muted" v-if="historyStatus">{{ historyStatus }}</span>
         <span class="muted" v-if="atmosphereStatus">{{ atmosphereStatus }}</span>
       </div>
@@ -127,7 +130,7 @@
             </select>
           </label>
           <div class="actions coefficient-actions">
-            <button class="btn primary sm" type="button" @click="loadAtmosphere">Пересчитать PWV</button>
+            <button class="btn primary sm" type="button" @click="loadHistory" :disabled="historyLoading">Пересчитать PWV</button>
             <button class="btn ghost sm" type="button" @click="saveConfig" :disabled="configSaving">Сохранить коэффициенты</button>
           </div>
         </div>
@@ -203,8 +206,8 @@ import type {
   AtmosphereCoefficientPair,
   AtmosphereMeasurementPoint,
   AtmosphereResponse,
+  DeviceHistoryResponse,
   MeasurementPoint,
-  MeasurementsResponse,
   StationOption,
   TempOutlierFilterStats,
 } from '~/types/device-data'
@@ -330,7 +333,6 @@ const stationOptionsLoading = ref(false)
 const stationSearchQuery = ref('')
 const stationSelectOpen = ref(false)
 let stationSearchTimer: ReturnType<typeof setTimeout> | null = null
-let atmosphereReloadTimer: ReturnType<typeof setTimeout> | null = null
 const historyLoading = ref(false)
 const historyStatus = ref('')
 const historyBucketLabel = ref('')
@@ -568,11 +570,7 @@ const clearAtmosphereBandOverrides = (key: AtmosphereBandKey) => {
 }
 
 const scheduleAtmosphereReload = () => {
-  if (atmosphereReloadTimer) clearTimeout(atmosphereReloadTimer)
-  atmosphereReloadTimer = setTimeout(() => {
-    atmosphereReloadTimer = null
-    loadAtmosphere()
-  }, 350)
+  atmosphereStatus.value = 'Коэффициенты изменены — нажмите «Пересчитать PWV»'
 }
 
 const markAtmosphereConfigDirty = () => {
@@ -1002,7 +1000,7 @@ watch(
   () => {
     if (!deviceConfig.value?.atmosphere_config?.station_ids?.length) return
     if (!historyFilters.from) return
-    loadAtmosphere()
+    atmosphereStatus.value = 'Параметры изменены — нажмите «Пересчитать PWV»'
   }
 )
 
@@ -1114,48 +1112,6 @@ async function loadStationOptions(query = stationSearchQuery.value) {
   }
 }
 
-async function loadAtmosphere() {
-  if (!deviceId.value) return
-  if (!historyFilters.from) return
-  const selected = deviceConfig.value?.atmosphere_config?.station_ids || []
-  if (!selected.length) {
-    atmosphereData.value = null
-    atmosphereStatus.value = 'Выберите станции профилей в настройках устройства'
-    return
-  }
-  try {
-    const params = new URLSearchParams({
-      limit: String(historyFilters.limit),
-      average: atmosphereAverage.value ? 'true' : 'false',
-    })
-    appendTempOutlierFilterParams(params)
-    params.set('coefficients', JSON.stringify(buildAtmosphereCoefficientPayload()))
-    const primary = atmospherePrimaryStation.value || selected[0]
-    if (primary) params.set('tau_station_id', primary)
-    if (historyFilters.bucketMode === 'manual') {
-      const multiplier = historyFilters.bucketUnit === 'h' ? 3600 : historyFilters.bucketUnit === 'm' ? 60 : 1
-      const seconds = Math.max(1, Math.floor(historyFilters.bucketValue * multiplier))
-      params.set('bucket_seconds', String(seconds))
-    }
-    if (historyFilters.from) {
-      const isoFrom = localInputToIso(historyFilters.from)
-      if (isoFrom) params.set('from', isoFrom)
-    }
-    if (historyAutoRefresh.value) {
-      params.set('to', new Date().toISOString())
-    } else if (historyFilters.to) {
-      const isoTo = localInputToIso(historyFilters.to)
-      if (isoTo) params.set('to', isoTo)
-    }
-    const response = await apiFetch<AtmosphereResponse>(`/api/devices/${deviceId.value}/atmosphere?${params.toString()}`)
-    atmosphereData.value = response
-    atmosphereStatus.value = ''
-  } catch (e: any) {
-    atmosphereStatus.value = e?.data?.detail || e?.message || 'Не удалось рассчитать атмосферные параметры'
-    atmosphereData.value = null
-  }
-}
-
 async function loadAtmosphereCoefficientDefaults() {
   if (!deviceId.value) return
   try {
@@ -1173,7 +1129,10 @@ async function loadAtmosphereCoefficientDefaults() {
 async function loadHistory() {
   if (!deviceId.value) return
   historyLoading.value = true
-  historyStatus.value = ''
+  historyStatus.value = tempOutlierFilter.enabled
+    ? 'Читаем измерения батчами и применяем фильтр Хэмпела…'
+    : 'Загружаем и агрегируем измерения…'
+  atmosphereStatus.value = ''
   try {
     if (!validateHistoryDate('from')) {
       historyLoading.value = false
@@ -1186,10 +1145,14 @@ async function loadHistory() {
       }
     }
     const params = new URLSearchParams({
-      device_id: deviceId.value,
       limit: String(historyFilters.limit),
+      average: atmosphereAverage.value ? 'true' : 'false',
     })
     appendTempOutlierFilterParams(params)
+    params.set('coefficients', JSON.stringify(buildAtmosphereCoefficientPayload()))
+    const selected = deviceConfig.value?.atmosphere_config?.station_ids || []
+    const primary = atmospherePrimaryStation.value || selected[0]
+    if (primary) params.set('tau_station_id', primary)
     if (historyFilters.bucketMode === 'manual') {
       const multiplier = historyFilters.bucketUnit === 'h' ? 3600 : historyFilters.bucketUnit === 'm' ? 60 : 1
       const seconds = Math.max(1, Math.floor(historyFilters.bucketValue * multiplier))
@@ -1205,13 +1168,14 @@ async function loadHistory() {
       const isoTo = localInputToIso(historyFilters.to)
       if (isoTo) params.set('to', isoTo)
     }
-    const response = await apiFetch<MeasurementsResponse>(`/api/measurements?${params.toString()}`)
+    const response = await apiFetch<DeviceHistoryResponse>(`/api/devices/${deviceId.value}/history?${params.toString()}`)
     historyData.value = response.points
     historyTempLabels.value = response.temp_labels || []
     historyTempAddresses.value = response.temp_addresses || []
     historyTempBindings.value = response.temp_bindings || {}
     historyBrightnessLabels.value = response.brightness_temp_labels || {}
     historyOutlierFilter.value = response.temp_outlier_filter || null
+    atmosphereData.value = response.atmosphere
     historyBucketLabel.value = response.bucket_label
     historyRawCount.value = response.raw_count
     if (response.aggregated) {
@@ -1219,8 +1183,7 @@ async function loadHistory() {
     } else {
       historyStatus.value = `Получено ${response.points.length} точек`
     }
-    await loadAtmosphere()
-    await loadGnssSeries()
+    void loadGnssSeries()
   } catch (e: any) {
     historyStatus.value = e?.message || 'Не удалось загрузить историю'
   } finally {
@@ -1297,7 +1260,7 @@ const saveConfig = async () => {
     configStatus.value = 'Коэффициенты сохранены'
     emit('config-updated', saved)
     await loadAtmosphereCoefficientDefaults()
-    await loadAtmosphere()
+    await loadHistory()
   } catch (e: any) {
     configStatus.value = e?.data?.detail || e?.message || 'Не удалось сохранить коэффициенты'
   } finally {
@@ -1326,7 +1289,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopHistoryTimer()
   if (stationSearchTimer) clearTimeout(stationSearchTimer)
-  if (atmosphereReloadTimer) clearTimeout(atmosphereReloadTimer)
 })
 
 onDeactivated(stopHistoryTimer)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, tzinfo
 from math import ceil
 from typing import Sequence
 
@@ -9,9 +11,97 @@ from app.repositories.interfaces import MeasurementRepository, MeteoReadingRepos
 from app.services.temp_outliers import (
     TemperatureOutlierFilterConfig,
     TemperatureOutlierFilterStats,
+    bound_temperature_indices,
+    find_temperature_outlier_rows,
     filter_temperature_outliers,
     normalize_filter_config,
 )
+
+_STREAM_BATCH_SIZE = 20_000
+_AVERAGE_FLOAT_FIELDS = (
+    "adc1",
+    "adc2",
+    "adc3",
+    "bus_v",
+    "bus_i",
+    "bus_p",
+    "adc1_cal",
+    "adc2_cal",
+    "adc3_cal",
+    "gps_lat",
+    "gps_lon",
+    "gps_alt",
+    "gps_fix_age_ms",
+)
+_MAX_INT_FIELDS = ("gps_fix_quality", "gps_satellites")
+
+
+@dataclass
+class _BucketAccumulator:
+    sums: dict[str, float] = field(default_factory=dict)
+    counts: dict[str, int] = field(default_factory=dict)
+    maxima: dict[str, int] = field(default_factory=dict)
+    temp_sums: list[float] = field(default_factory=list)
+    temp_counts: list[int] = field(default_factory=list)
+    timezone: tzinfo | None = None
+
+    def add(self, point: MeasurementPoint) -> None:
+        if self.timezone is None:
+            self.timezone = point.timestamp.tzinfo
+        for attr in _AVERAGE_FLOAT_FIELDS:
+            value = getattr(point, attr)
+            if value is None:
+                continue
+            self.sums[attr] = self.sums.get(attr, 0.0) + float(value)
+            self.counts[attr] = self.counts.get(attr, 0) + 1
+        for attr in _MAX_INT_FIELDS:
+            value = getattr(point, attr)
+            if value is None:
+                continue
+            parsed = int(value)
+            current = self.maxima.get(attr)
+            self.maxima[attr] = parsed if current is None else max(current, parsed)
+        while len(self.temp_sums) < len(point.temps):
+            self.temp_sums.append(0.0)
+            self.temp_counts.append(0)
+        for idx, value in enumerate(point.temps):
+            self.temp_sums[idx] += float(value)
+            self.temp_counts[idx] += 1
+
+    def average(self, attr: str, default: float | None = None) -> float | None:
+        count = self.counts.get(attr, 0)
+        return self.sums[attr] / count if count else default
+
+    def to_point(self, bucket_epoch: int) -> MeasurementPoint:
+        timestamp = datetime.fromtimestamp(bucket_epoch, tz=self.timezone)
+        return MeasurementPoint(
+            timestamp=timestamp,
+            timestamp_ms=int(timestamp.timestamp() * 1000),
+            adc1=float(self.average("adc1", 0.0) or 0.0),
+            adc2=float(self.average("adc2", 0.0) or 0.0),
+            adc3=float(self.average("adc3", 0.0) or 0.0),
+            temps=[
+                self.temp_sums[idx] / count
+                for idx, count in enumerate(self.temp_counts)
+                if count
+            ],
+            bus_v=float(self.average("bus_v", 0.0) or 0.0),
+            bus_i=float(self.average("bus_i", 0.0) or 0.0),
+            bus_p=float(self.average("bus_p", 0.0) or 0.0),
+            adc1_cal=self.average("adc1_cal"),
+            adc2_cal=self.average("adc2_cal"),
+            adc3_cal=self.average("adc3_cal"),
+            gps_lat=self.average("gps_lat"),
+            gps_lon=self.average("gps_lon"),
+            gps_alt=self.average("gps_alt"),
+            gps_fix_quality=self.maxima.get("gps_fix_quality"),
+            gps_satellites=self.maxima.get("gps_satellites"),
+            gps_fix_age_ms=(
+                int(value)
+                if (value := self.average("gps_fix_age_ms")) is not None
+                else None
+            ),
+        )
 
 
 class MeasurementService:
@@ -111,6 +201,32 @@ class MeasurementService:
             )
             return [], 0, 0, "raw", False, stats
 
+        if raw_count > limit:
+            min_ts, max_ts = await self._measurements.bounds(device_id=device_id, start=start, end=end)
+            if not min_ts or not max_ts:
+                _, stats = filter_temperature_outliers(
+                    [],
+                    config,
+                    temp_addresses=temp_addresses,
+                    temp_bindings=temp_bindings,
+                )
+                return [], raw_count, 0, "raw", False, stats
+            if bucket_seconds is None or bucket_seconds <= 0:
+                total_seconds = max(1, int((max_ts - min_ts).total_seconds()))
+                bucket_seconds = max(1, ceil(total_seconds / limit))
+            points, stats = await self._stream_filter_and_aggregate(
+                device_id=device_id,
+                start=start,
+                end=end,
+                raw_count=raw_count,
+                bucket_seconds=bucket_seconds,
+                limit=limit,
+                config=config,
+                temp_addresses=temp_addresses,
+                temp_bindings=temp_bindings,
+            )
+            return points, raw_count, bucket_seconds, self._format_bucket(bucket_seconds), True, stats
+
         rows = await self._measurements.list(device_id=device_id, start=start, end=end, limit=raw_count)
         raw_points = [self._to_point(row) for row in rows]
         filtered_points, stats = filter_temperature_outliers(
@@ -137,6 +253,90 @@ class MeasurementService:
         bucket_seconds = max(1, ceil(total_seconds / limit))
         points = self._aggregate_points(filtered_points, bucket_seconds, limit)
         return points, raw_count, bucket_seconds, self._format_bucket(bucket_seconds), True, stats
+
+    async def _stream_filter_and_aggregate(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        raw_count: int,
+        bucket_seconds: int,
+        limit: int,
+        config: TemperatureOutlierFilterConfig,
+        temp_addresses: Sequence[str] | None,
+        temp_bindings: dict[str, str] | None,
+    ) -> tuple[list[MeasurementPoint], TemperatureOutlierFilterStats]:
+        radius = config.window // 2
+        left_context: list[MeasurementPoint] = []
+        pending: list[MeasurementPoint] = []
+        buckets: dict[int, _BucketAccumulator] = {}
+        inspected_indices: list[int] | None = None
+        removed_count = 0
+
+        async def process_core(core_size: int) -> None:
+            nonlocal left_context, pending, inspected_indices, removed_count
+            if core_size <= 0:
+                return
+            core = pending[:core_size]
+            right_context = pending[core_size : core_size + radius]
+            window_points = [*left_context, *core, *right_context]
+            if inspected_indices is None:
+                inspected_indices = bound_temperature_indices(
+                    window_points,
+                    temp_addresses=temp_addresses,
+                    temp_bindings=temp_bindings,
+                )
+            outlier_rows, _ = await asyncio.to_thread(
+                find_temperature_outlier_rows,
+                window_points,
+                config,
+                temp_addresses,
+                temp_bindings,
+                inspected_indices,
+            )
+            offset = len(left_context)
+            for idx, point in enumerate(core):
+                if offset + idx in outlier_rows:
+                    removed_count += 1
+                    continue
+                bucket_epoch = int(point.timestamp.timestamp() // bucket_seconds) * bucket_seconds
+                accumulator = buckets.get(bucket_epoch)
+                if accumulator is None:
+                    if len(buckets) >= limit:
+                        continue
+                    accumulator = _BucketAccumulator()
+                    buckets[bucket_epoch] = accumulator
+                accumulator.add(point)
+            left_context = core[-radius:] if radius else []
+            pending = pending[core_size:]
+            await asyncio.sleep(0)
+
+        async for batch in self._measurements.stream_points(
+            device_id=device_id,
+            start=start,
+            end=end,
+            batch_size=_STREAM_BATCH_SIZE,
+        ):
+            pending.extend(batch)
+            while len(pending) >= _STREAM_BATCH_SIZE + radius:
+                await process_core(_STREAM_BATCH_SIZE)
+        await process_core(len(pending))
+
+        points = [
+            buckets[bucket_epoch].to_point(bucket_epoch)
+            for bucket_epoch in sorted(buckets)[:limit]
+        ]
+        stats = TemperatureOutlierFilterStats(
+            enabled=True,
+            window=config.window,
+            threshold=config.threshold,
+            min_count=config.min_count,
+            inspected_indices=inspected_indices or [],
+            removed_count=removed_count,
+            input_count=raw_count,
+            output_count=max(0, raw_count - removed_count),
+        )
+        return points, stats
 
     async def latest_timestamp(self, device_id: str) -> datetime | None:
         _, max_ts = await self._measurements.bounds(device_id=device_id, start=None, end=None)

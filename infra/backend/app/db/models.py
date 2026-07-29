@@ -146,6 +146,10 @@ class MeasurementModel(Base):
     device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="measurements")
     meteo_reading: Mapped[MeteoReadingModel | None] = relationship("MeteoReadingModel")
 
+    __table_args__ = (
+        Index("ix_measurements_device_timestamp_id", "device_id", "timestamp", "id"),
+    )
+
 
 class MeteoReadingModel(Base):
     __tablename__ = "meteo_readings"

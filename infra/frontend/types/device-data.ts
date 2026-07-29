@@ -120,3 +120,7 @@ export type AtmosphereResponse = {
   aggregated: boolean
   temp_outlier_filter?: TempOutlierFilterStats
 }
+
+export type DeviceHistoryResponse = MeasurementsResponse & {
+  atmosphere: AtmosphereResponse
+}

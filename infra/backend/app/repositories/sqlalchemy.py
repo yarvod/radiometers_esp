@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import AsyncIterator, Sequence
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by, insert as pg_insert
@@ -682,6 +682,64 @@ class SqlMeasurementRepository(MeasurementRepository):
         query = query.order_by(MeasurementModel.timestamp.asc()).limit(limit)
         result = await self._session.execute(query)
         return [to_measurement(row) for row in result.scalars().all()]
+
+    async def stream_points(
+        self,
+        device_id: str,
+        start: datetime | None,
+        end: datetime | None,
+        batch_size: int,
+    ) -> AsyncIterator[Sequence[MeasurementPoint]]:
+        query = select(
+            MeasurementModel.timestamp,
+            MeasurementModel.timestamp_ms,
+            MeasurementModel.adc1,
+            MeasurementModel.adc2,
+            MeasurementModel.adc3,
+            MeasurementModel.temps,
+            MeasurementModel.bus_v,
+            MeasurementModel.bus_i,
+            MeasurementModel.bus_p,
+            MeasurementModel.adc1_cal,
+            MeasurementModel.adc2_cal,
+            MeasurementModel.adc3_cal,
+            MeasurementModel.gps_lat,
+            MeasurementModel.gps_lon,
+            MeasurementModel.gps_alt,
+            MeasurementModel.gps_fix_quality,
+            MeasurementModel.gps_satellites,
+            MeasurementModel.gps_fix_age_ms,
+        ).where(MeasurementModel.device_id == device_id)
+        if start:
+            query = query.where(MeasurementModel.timestamp >= start)
+        if end:
+            query = query.where(MeasurementModel.timestamp <= end)
+        query = query.order_by(MeasurementModel.timestamp.asc(), MeasurementModel.id.asc())
+        result = await self._session.stream(query.execution_options(yield_per=batch_size))
+        async for rows in result.partitions(batch_size):
+            yield [
+                MeasurementPoint(
+                    timestamp=row.timestamp,
+                    timestamp_ms=row.timestamp_ms,
+                    adc1=float(row.adc1),
+                    adc2=float(row.adc2),
+                    adc3=float(row.adc3),
+                    temps=[float(value) for value in (row.temps or [])],
+                    bus_v=float(row.bus_v),
+                    bus_i=float(row.bus_i),
+                    bus_p=float(row.bus_p),
+                    adc1_cal=float(row.adc1_cal) if row.adc1_cal is not None else None,
+                    adc2_cal=float(row.adc2_cal) if row.adc2_cal is not None else None,
+                    adc3_cal=float(row.adc3_cal) if row.adc3_cal is not None else None,
+                    gps_lat=float(row.gps_lat) if row.gps_lat is not None else None,
+                    gps_lon=float(row.gps_lon) if row.gps_lon is not None else None,
+                    gps_alt=float(row.gps_alt) if row.gps_alt is not None else None,
+                    gps_fix_quality=int(row.gps_fix_quality) if row.gps_fix_quality is not None else None,
+                    gps_satellites=int(row.gps_satellites) if row.gps_satellites is not None else None,
+                    gps_fix_age_ms=int(row.gps_fix_age_ms) if row.gps_fix_age_ms is not None else None,
+                )
+                for row in rows
+            ]
 
     async def count(self, device_id: str, start: datetime | None, end: datetime | None) -> int:
         query = select(func.count()).select_from(MeasurementModel).where(MeasurementModel.device_id == device_id)

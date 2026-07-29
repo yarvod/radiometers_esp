@@ -77,6 +77,12 @@ class AtmosphereSeries:
     config: dict[str, object]
     station_labels: dict[str, str]
     adc_labels: dict[str, str]
+    temp_labels: list[str]
+    temp_addresses: list[str]
+    temp_label_map: dict[str, str]
+    temp_bindings: dict[str, str]
+    brightness_temp_labels: dict[str, str]
+    source_points: list[MeasurementPoint]
     t_eff_points: list[EffectiveTemperaturePoint]
     measurement_points: list[AtmosphereMeasurementPoint]
     raw_count: int
@@ -118,7 +124,9 @@ class AtmosphereService:
         if coefficient_config:
             config = self._merge_coefficient_config(config, coefficient_config)
         adc_labels = dict(device.adc_labels or {}) if device else {}
+        config_temp_labels = list(device.temp_labels or []) if device else []
         temp_addresses = list(device.temp_addresses or []) if device else []
+        temp_label_map = dict(device.temp_label_map or {}) if device else {}
         temp_bindings = dict(device.temp_bindings or {}) if device else {}
         (
             points,
@@ -145,6 +153,29 @@ class AtmosphereService:
             temp_addresses=temp_addresses,
             temp_bindings=temp_bindings,
         )
+        legacy_labels_by_address = {
+            address: label
+            for address, label in zip(temp_addresses, config_temp_labels)
+            if address and label
+        }
+        default_len = max(len(config_temp_labels), len(temp_addresses))
+        max_temp = max((len(point.temps) for point in measurement_points), default=default_len)
+        if len(temp_addresses) < max_temp:
+            temp_addresses.extend([""] * (max_temp - len(temp_addresses)))
+        temp_labels = []
+        for idx in range(max_temp):
+            address = temp_addresses[idx] if idx < len(temp_addresses) else ""
+            temp_labels.append(
+                (temp_label_map.get(address) if address else None)
+                or legacy_labels_by_address.get(address)
+                or (config_temp_labels[idx] if idx < len(config_temp_labels) and config_temp_labels[idx] else None)
+                or f"t{idx + 1}"
+            )
+        brightness_temp_labels = {
+            "brightness_temp1": f"{adc_labels.get('adc1') or 'ADC1'} Tk",
+            "brightness_temp2": f"{adc_labels.get('adc2') or 'ADC2'} Tk",
+            "brightness_temp3": f"{adc_labels.get('adc3') or 'ADC3'} Tk",
+        }
 
         station_ids = [str(item) for item in config.get("station_ids", [])]
         if not station_ids:
@@ -152,6 +183,12 @@ class AtmosphereService:
                 config=config,
                 station_labels={},
                 adc_labels=adc_labels,
+                temp_labels=temp_labels,
+                temp_addresses=temp_addresses,
+                temp_label_map=temp_label_map,
+                temp_bindings=temp_bindings,
+                brightness_temp_labels=brightness_temp_labels,
+                source_points=measurement_points,
                 t_eff_points=[],
                 measurement_points=[],
                 raw_count=raw_count,
@@ -229,6 +266,12 @@ class AtmosphereService:
             config=config,
             station_labels=station_labels,
             adc_labels=adc_labels,
+            temp_labels=temp_labels,
+            temp_addresses=temp_addresses,
+            temp_label_map=temp_label_map,
+            temp_bindings=temp_bindings,
+            brightness_temp_labels=brightness_temp_labels,
+            source_points=measurement_points,
             t_eff_points=t_eff_points,
             measurement_points=series_points,
             raw_count=raw_count,

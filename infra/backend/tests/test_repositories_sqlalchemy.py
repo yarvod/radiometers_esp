@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -32,6 +33,15 @@ class FakeResult:
 
     def scalars(self):
         return FakeScalars(self._scalars)
+
+
+class FakeStreamResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def partitions(self, batch_size):
+        for offset in range(0, len(self._rows), batch_size):
+            yield self._rows[offset : offset + batch_size]
 
 
 @pytest.mark.asyncio
@@ -148,6 +158,53 @@ async def test_measurement_repo_add_flushes():
     session.add.assert_called_once()
     assert isinstance(session.add.call_args.args[0], MeasurementModel)
     session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_measurement_repo_streams_scalar_rows_in_batches():
+    timestamp = datetime.now(timezone.utc)
+    rows = [
+        SimpleNamespace(
+            timestamp=timestamp,
+            timestamp_ms=1234 + index,
+            adc1=1,
+            adc2=2,
+            adc3=3,
+            temps=[10, 11],
+            bus_v=5,
+            bus_i=0.1,
+            bus_p=0.5,
+            adc1_cal=None,
+            adc2_cal=None,
+            adc3_cal=None,
+            gps_lat=None,
+            gps_lon=None,
+            gps_alt=None,
+            gps_fix_quality=None,
+            gps_satellites=None,
+            gps_fix_age_ms=None,
+        )
+        for index in range(3)
+    ]
+    session = AsyncMock()
+    session.stream = AsyncMock(return_value=FakeStreamResult(rows))
+
+    batches = [
+        batch
+        async for batch in SqlMeasurementRepository(session).stream_points(
+            "dev1",
+            start=None,
+            end=None,
+            batch_size=2,
+        )
+    ]
+
+    assert [len(batch) for batch in batches] == [2, 1]
+    assert batches[0][0].timestamp == timestamp
+    assert batches[0][0].temps == [10.0, 11.0]
+    statement = session.stream.await_args.args[0]
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert "ORDER BY measurements.timestamp ASC, measurements.id ASC" in sql
 
 
 @pytest.mark.asyncio

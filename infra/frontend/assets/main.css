@@ -70,6 +70,18 @@ button {
 }
 button:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(43, 102, 246, 0.35); filter: brightness(1.02); }
 button:active { transform: translateY(0); filter: brightness(0.98); }
+.loading-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: loading-spin 0.8s linear infinite;
+}
+@keyframes loading-spin { to { transform: rotate(360deg); } }
 
 input, select {
   background: #f1f3f4;

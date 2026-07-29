@@ -95,7 +95,12 @@ def filter_temperature_outliers(
 ) -> tuple[list[MeasurementPoint], TemperatureOutlierFilterStats]:
     normalized = normalize_filter_config(config)
     input_count = len(points)
-    inspected_indices = bound_temperature_indices(points, temp_addresses, temp_bindings) if normalized.enabled else []
+    outlier_rows, inspected_indices = find_temperature_outlier_rows(
+        points,
+        normalized,
+        temp_addresses=temp_addresses,
+        temp_bindings=temp_bindings,
+    )
     if not normalized.enabled or not points or not inspected_indices:
         return list(points), TemperatureOutlierFilterStats(
             enabled=normalized.enabled,
@@ -108,9 +113,37 @@ def filter_temperature_outliers(
             output_count=input_count,
         )
 
+    filtered = [point for idx, point in enumerate(points) if idx not in outlier_rows]
+    return filtered, TemperatureOutlierFilterStats(
+        enabled=normalized.enabled,
+        window=normalized.window,
+        threshold=normalized.threshold,
+        min_count=normalized.min_count,
+        inspected_indices=inspected_indices,
+        removed_count=len(outlier_rows),
+        input_count=input_count,
+        output_count=len(filtered),
+    )
+
+
+def find_temperature_outlier_rows(
+    points: Sequence[MeasurementPoint],
+    config: TemperatureOutlierFilterConfig | None,
+    temp_addresses: Sequence[str] | None = None,
+    temp_bindings: dict[str, str] | None = None,
+    inspected_indices: Sequence[int] | None = None,
+) -> tuple[set[int], list[int]]:
+    normalized = normalize_filter_config(config)
+    if inspected_indices is None:
+        indices = bound_temperature_indices(points, temp_addresses, temp_bindings) if normalized.enabled else []
+    else:
+        indices = list(inspected_indices)
+    if not normalized.enabled or not points or not indices:
+        return set(), indices
+
     radius = normalized.window // 2
     outlier_rows: set[int] = set()
-    for temp_idx in inspected_indices:
+    for temp_idx in indices:
         values = [
             float(point.temps[temp_idx])
             if temp_idx < len(point.temps) and _finite(point.temps[temp_idx])
@@ -140,17 +173,7 @@ def filter_temperature_outliers(
             elif delta > normalized.threshold:
                 outlier_rows.add(row_idx)
 
-    filtered = [point for idx, point in enumerate(points) if idx not in outlier_rows]
-    return filtered, TemperatureOutlierFilterStats(
-        enabled=normalized.enabled,
-        window=normalized.window,
-        threshold=normalized.threshold,
-        min_count=normalized.min_count,
-        inspected_indices=inspected_indices,
-        removed_count=len(outlier_rows),
-        input_count=input_count,
-        output_count=len(filtered),
-    )
+    return outlier_rows, indices
 
 
 def _finite(value: object) -> bool:

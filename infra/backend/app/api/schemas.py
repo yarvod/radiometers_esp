@@ -466,6 +466,10 @@ class MeasurementsResponse(BaseModel):
     temp_outlier_filter: dict[str, object] = Field(default_factory=dict)
 
 
+class DeviceHistoryResponse(MeasurementsResponse):
+    atmosphere: AtmosphereSeriesResponse
+
+
 class MeteoReadingPointOut(BaseModel):
     timestamp: datetime
     timestamp_ms: int

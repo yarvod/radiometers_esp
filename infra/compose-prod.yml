@@ -80,7 +80,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - soundings_exports:/tmp/exports
-    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${UVICORN_WORKERS:-2}"]
 
   worker:
     image: ${BACKEND_IMAGE_NAME:-ghcr.io/yarvod/esp-backend:latest}
