@@ -1,11 +1,15 @@
 # Active workplan: device page rollout smoke
 
-S3 recovery backend implementation is complete locally. Deployment validation
-must confirm the production MinIO credentials, per-device bucket configuration,
-and a recovery run containing both an MQTT duplicate and an offline-only row:
+S3 recovery backend and migration `00023` are deployed on production. The API,
+MQTT worker, and ARQ worker are healthy; timestamp-only uniqueness has been
+replaced with content fingerprints without deleting same-second measurements.
+The remaining rollout validation must cover production MinIO access and a real
+recovery run:
 
-- [ ] Apply migration `00023` and configure `APP_S3_ENDPOINT`,
-  `APP_S3_ACCESS_KEY`, and `APP_S3_SECRET_KEY` for the ARQ worker.
+- [x] Apply migration `00023` and verify healthy backend, MQTT, and ARQ
+  containers after the restart-safe recovery from the partial first attempt.
+- [ ] Confirm `APP_S3_ENDPOINT`, `APP_S3_ACCESS_KEY`, and `APP_S3_SECRET_KEY`
+  against the production MinIO bucket for the pilot device.
 - [ ] Enable recovery for one device, trigger an immediate run, and verify that
   the cursor/object ledger advances for both `radiometers/` and `meteo/`.
 - [ ] Confirm an MQTT-present content fingerprint is skipped, an offline-only
