@@ -8,8 +8,8 @@ and a recovery run containing both an MQTT duplicate and an offline-only row:
   `APP_S3_ACCESS_KEY`, and `APP_S3_SECRET_KEY` for the ARQ worker.
 - [ ] Enable recovery for one device, trigger an immediate run, and verify that
   the cursor/object ledger advances for both `radiometers/` and `meteo/`.
-- [ ] Confirm an MQTT-present timestamp is skipped and an offline-only CSV row
-  is inserted once.
+- [ ] Confirm an MQTT-present content fingerprint is skipped, an offline-only
+  CSV row is inserted once, and two distinct rows in one ISO second are retained.
 
 The corrective code pass has no open P1 findings after independent backend and
 frontend review. Automated checks are green. One deployment-level verification

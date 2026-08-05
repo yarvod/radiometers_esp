@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Sequence
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,7 @@ from app.domain.entities import (
     Station,
     User,
 )
+from app.domain.recovery_fingerprint import measurement_recovery_hash, meteo_recovery_hash
 from app.db.models import (
     AccessTokenModel,
     DeviceModel,
@@ -195,6 +196,15 @@ def to_measurement(model: MeasurementModel) -> Measurement:
         log_filename=model.log_filename,
         meteo_reading_id=model.meteo_reading_id,
     )
+
+
+def _timestamps_by_device(
+    rows: Sequence[Measurement] | Sequence[MeteoReading],
+) -> dict[str, set[datetime]]:
+    grouped: dict[str, set[datetime]] = {}
+    for row in rows:
+        grouped.setdefault(row.device_id, set()).add(row.timestamp)
+    return grouped
 
 
 def to_point_from_measurement(model: MeasurementModel) -> MeasurementPoint:
@@ -910,65 +920,50 @@ class SqlMeasurementRepository(MeasurementRepository):
         self._session = session
 
     async def add(self, measurement: Measurement) -> None:
-        values = self._values(measurement)
-        insert_stmt = pg_insert(MeasurementModel).values(**values)
-        stmt = insert_stmt.on_conflict_do_update(
-            index_elements=[MeasurementModel.device_id, MeasurementModel.timestamp],
-            set_={
-                "timestamp": insert_stmt.excluded.timestamp,
-                "adc1": insert_stmt.excluded.adc1,
-                "adc2": insert_stmt.excluded.adc2,
-                "adc3": insert_stmt.excluded.adc3,
-                "temps": insert_stmt.excluded.temps,
-                "bus_v": insert_stmt.excluded.bus_v,
-                "bus_i": insert_stmt.excluded.bus_i,
-                "bus_p": insert_stmt.excluded.bus_p,
-                "adc1_cal": func.coalesce(insert_stmt.excluded.adc1_cal, MeasurementModel.adc1_cal),
-                "adc2_cal": func.coalesce(insert_stmt.excluded.adc2_cal, MeasurementModel.adc2_cal),
-                "adc3_cal": func.coalesce(insert_stmt.excluded.adc3_cal, MeasurementModel.adc3_cal),
-                "gps_lat": func.coalesce(insert_stmt.excluded.gps_lat, MeasurementModel.gps_lat),
-                "gps_lon": func.coalesce(insert_stmt.excluded.gps_lon, MeasurementModel.gps_lon),
-                "gps_alt": func.coalesce(insert_stmt.excluded.gps_alt, MeasurementModel.gps_alt),
-                "gps_fix_quality": func.coalesce(
-                    insert_stmt.excluded.gps_fix_quality, MeasurementModel.gps_fix_quality
-                ),
-                "gps_satellites": func.coalesce(
-                    insert_stmt.excluded.gps_satellites, MeasurementModel.gps_satellites
-                ),
-                "gps_fix_age_ms": func.coalesce(
-                    insert_stmt.excluded.gps_fix_age_ms, MeasurementModel.gps_fix_age_ms
-                ),
-                "log_use_motor": insert_stmt.excluded.log_use_motor,
-                "log_duration": insert_stmt.excluded.log_duration,
-                "log_filename": func.coalesce(insert_stmt.excluded.log_filename, MeasurementModel.log_filename),
-                "meteo_reading_id": func.coalesce(
-                    insert_stmt.excluded.meteo_reading_id, MeasurementModel.meteo_reading_id
-                ),
-            },
+        recovery_hash = measurement_recovery_hash(measurement)
+        stmt = (
+            pg_insert(MeasurementModel)
+            .values(**self._values(measurement, recovery_hash))
+            .on_conflict_do_nothing(
+                index_elements=[MeasurementModel.device_id, MeasurementModel.recovery_hash],
+            )
         )
         await self._session.execute(stmt)
 
     async def add_many_ignore_conflicts(self, measurements: Sequence[Measurement]) -> int:
         if not measurements:
             return 0
-        rows = [self._values(measurement) for measurement in measurements]
+
+        unique: dict[tuple[str, str], Measurement] = {}
+        for measurement in measurements:
+            recovery_hash = measurement_recovery_hash(measurement)
+            unique.setdefault((measurement.device_id, recovery_hash), measurement)
+        existing_hashes = await self._existing_hashes(tuple(unique.values()))
+        rows = [
+            self._values(measurement, recovery_hash)
+            for (device_id, recovery_hash), measurement in unique.items()
+            if (device_id, recovery_hash) not in existing_hashes
+        ]
+        if not rows:
+            return 0
         stmt = (
             pg_insert(MeasurementModel)
             .values(rows)
             .on_conflict_do_nothing(
-                index_elements=[MeasurementModel.device_id, MeasurementModel.timestamp],
+                index_elements=[MeasurementModel.device_id, MeasurementModel.recovery_hash],
             )
         )
         result = await self._session.execute(stmt)
         return max(0, int(result.rowcount or 0))
 
     @staticmethod
-    def _values(measurement: Measurement) -> dict[str, object]:
+    def _values(measurement: Measurement, recovery_hash: str) -> dict[str, object]:
         return {
             "id": measurement.id,
             "device_id": measurement.device_id,
             "timestamp": measurement.timestamp,
             "timestamp_ms": measurement.timestamp_ms,
+            "recovery_hash": recovery_hash,
             "adc1": measurement.adc1,
             "adc2": measurement.adc2,
             "adc3": measurement.adc3,
@@ -989,6 +984,25 @@ class SqlMeasurementRepository(MeasurementRepository):
             "log_duration": measurement.log_duration,
             "log_filename": measurement.log_filename,
             "meteo_reading_id": measurement.meteo_reading_id,
+        }
+
+    async def _existing_hashes(self, measurements: Sequence[Measurement]) -> set[tuple[str, str]]:
+        filters = [
+            and_(
+                MeasurementModel.device_id == device_id,
+                MeasurementModel.timestamp.in_(timestamps),
+            )
+            for device_id, timestamps in _timestamps_by_device(measurements).items()
+        ]
+        if not filters:
+            return set()
+        result = await self._session.execute(select(MeasurementModel).where(or_(*filters)))
+        return {
+            (
+                model.device_id,
+                model.recovery_hash or measurement_recovery_hash(to_measurement(model)),
+            )
+            for model in result.scalars().all()
         }
 
     async def list(self, device_id: str, start: datetime | None, end: datetime | None, limit: int) -> Sequence[Measurement]:
@@ -1157,11 +1171,13 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
 
     async def upsert(self, reading: MeteoReading) -> str:
         new_id = str(uuid.uuid4())
+        recovery_hash = meteo_recovery_hash(reading)
         insert_stmt = pg_insert(MeteoReadingModel).values(
             id=new_id,
             device_id=reading.device_id,
             timestamp=reading.timestamp,
             timestamp_ms=reading.timestamp_ms,
+            recovery_hash=recovery_hash,
             temp_c=reading.temp_c,
             humidity_pct=reading.humidity_pct,
             wind_speed_ms=reading.wind_speed_ms,
@@ -1175,7 +1191,7 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
         stmt = (
             insert_stmt
             .on_conflict_do_update(
-                index_elements=[MeteoReadingModel.device_id, MeteoReadingModel.timestamp],
+                index_elements=[MeteoReadingModel.device_id, MeteoReadingModel.recovery_hash],
                 set_={
                     "timestamp_ms": func.coalesce(
                         insert_stmt.excluded.timestamp_ms, MeteoReadingModel.timestamp_ms
@@ -1213,12 +1229,18 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
     async def add_many_ignore_conflicts(self, readings: Sequence[MeteoReading]) -> int:
         if not readings:
             return 0
+        unique: dict[tuple[str, str], MeteoReading] = {}
+        for reading in readings:
+            recovery_hash = meteo_recovery_hash(reading)
+            unique.setdefault((reading.device_id, recovery_hash), reading)
+        existing_hashes = await self._existing_hashes(tuple(unique.values()))
         rows = [
             {
                 "id": str(uuid.uuid4()),
                 "device_id": reading.device_id,
                 "timestamp": reading.timestamp,
                 "timestamp_ms": reading.timestamp_ms,
+                "recovery_hash": recovery_hash,
                 "temp_c": reading.temp_c,
                 "humidity_pct": reading.humidity_pct,
                 "wind_speed_ms": reading.wind_speed_ms,
@@ -1229,17 +1251,39 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
                 "light_lux": reading.light_lux,
                 "uvi": reading.uvi,
             }
-            for reading in readings
+            for (device_id, recovery_hash), reading in unique.items()
+            if (device_id, recovery_hash) not in existing_hashes
         ]
+        if not rows:
+            return 0
         stmt = (
             pg_insert(MeteoReadingModel)
             .values(rows)
             .on_conflict_do_nothing(
-                index_elements=[MeteoReadingModel.device_id, MeteoReadingModel.timestamp]
+                index_elements=[MeteoReadingModel.device_id, MeteoReadingModel.recovery_hash]
             )
         )
         result = await self._session.execute(stmt)
         return max(0, int(result.rowcount or 0))
+
+    async def _existing_hashes(self, readings: Sequence[MeteoReading]) -> set[tuple[str, str]]:
+        filters = [
+            and_(
+                MeteoReadingModel.device_id == device_id,
+                MeteoReadingModel.timestamp.in_(timestamps),
+            )
+            for device_id, timestamps in _timestamps_by_device(readings).items()
+        ]
+        if not filters:
+            return set()
+        result = await self._session.execute(select(MeteoReadingModel).where(or_(*filters)))
+        return {
+            (
+                model.device_id,
+                model.recovery_hash or meteo_recovery_hash(self._to_entity(model)),
+            )
+            for model in result.scalars().all()
+        }
 
     def _base_query(self, device_id: str, start: datetime | None, end: datetime | None):
         filters = [MeteoReadingModel.device_id == device_id]

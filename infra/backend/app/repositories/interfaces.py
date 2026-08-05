@@ -364,6 +364,7 @@ class MeasurementRepository(ABC):
 
     @abstractmethod
     async def add_many_ignore_conflicts(self, measurements: Sequence[Measurement]) -> int:
+        """Insert rows not already present by canonical recovery content hash."""
         raise NotImplementedError
 
     @abstractmethod
@@ -403,12 +404,12 @@ class MeasurementRepository(ABC):
 class MeteoReadingRepository(ABC):
     @abstractmethod
     async def upsert(self, reading: MeteoReading) -> str:
-        """Insert a station reading (or return the existing one) deduped by
-        canonical UTC (device_id, timestamp). Returns the meteo_readings.id."""
+        """Insert a station reading or return its content-identical row."""
         raise NotImplementedError
 
     @abstractmethod
     async def add_many_ignore_conflicts(self, readings: Sequence[MeteoReading]) -> int:
+        """Insert rows not already present by canonical recovery content hash."""
         raise NotImplementedError
 
     @abstractmethod

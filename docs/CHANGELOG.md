@@ -9,9 +9,12 @@
   unchanged objects.
 - Added header-driven Pydantic CSV validation compatible with radiometer files
   that predate calibration and GPS columns; file `timestamp_ms` values are
-  ignored and canonical UTC `timestamp_iso` values drive deduplication.
-- Added atomic batch inserts protected by unique `(device_id, timestamp)`
-  indexes, preventing MQTT and S3 recovery from creating duplicate readings.
+  ignored.
+- Added canonical content fingerprints at the firmware CSV precision. MQTT and
+  S3 copies of the same sample deduplicate atomically, while distinct readings
+  within the same `timestamp_iso` second remain intact.
+- Removed timestamp-only uniqueness from radiometer and meteo readings and made
+  migration `00023` restart-safe after a partially applied deployment.
 - Added authenticated device endpoints for reading/updating S3 recovery
   settings and requesting an immediate run, with per-device intervals, enable
   controls, progress counters, cursors, and last-error state.

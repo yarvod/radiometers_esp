@@ -135,6 +135,7 @@ class MeasurementModel(Base):
     device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id"), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     timestamp_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recovery_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     adc1: Mapped[float] = mapped_column(Float)
     adc2: Mapped[float] = mapped_column(Float)
     adc3: Mapped[float] = mapped_column(Float)
@@ -164,9 +165,9 @@ class MeasurementModel(Base):
     __table_args__ = (
         Index("ix_measurements_device_timestamp_id", "device_id", "timestamp", "id"),
         Index(
-            "uq_measurements_device_timestamp",
+            "uq_measurements_device_recovery_hash",
             "device_id",
-            "timestamp",
+            "recovery_hash",
             unique=True,
         ),
     )
@@ -235,6 +236,7 @@ class MeteoReadingModel(Base):
     device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     timestamp_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recovery_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
     humidity_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     wind_speed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -249,8 +251,12 @@ class MeteoReadingModel(Base):
     device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="meteo_readings")
 
     __table_args__ = (
-        UniqueConstraint("device_id", "timestamp_ms", name="uq_meteo_reading_device_time"),
-        Index("uq_meteo_readings_device_timestamp", "device_id", "timestamp", unique=True),
+        Index(
+            "uq_meteo_readings_device_recovery_hash",
+            "device_id",
+            "recovery_hash",
+            unique=True,
+        ),
         Index("ix_meteo_readings_device_time", "device_id", "timestamp"),
     )
 

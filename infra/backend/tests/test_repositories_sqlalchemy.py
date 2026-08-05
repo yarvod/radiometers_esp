@@ -24,9 +24,10 @@ class FakeScalars:
 
 
 class FakeResult:
-    def __init__(self, scalar=None, scalars=None):
+    def __init__(self, scalar=None, scalars=None, rowcount=0):
         self._scalar = scalar
         self._scalars = scalars or []
+        self.rowcount = rowcount
 
     def scalar_one_or_none(self):
         return self._scalar
@@ -121,7 +122,7 @@ async def test_device_repo_touch_creates_new():
 
 
 @pytest.mark.asyncio
-async def test_measurement_repo_add_uses_timestamp_upsert():
+async def test_measurement_repo_add_uses_recovery_hash_conflict():
     session = AsyncMock()
     session.execute = AsyncMock()
 
@@ -157,7 +158,115 @@ async def test_measurement_repo_add_uses_timestamp_upsert():
     session.execute.assert_awaited_once()
     statement = session.execute.await_args.args[0]
     sql = str(statement.compile(dialect=postgresql.dialect())).lower()
-    assert "on conflict (device_id, timestamp) do update" in sql
+    assert "on conflict (device_id, recovery_hash) do nothing" in sql
+
+
+@pytest.mark.asyncio
+async def test_measurement_batch_keeps_distinct_rows_in_same_second():
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[FakeResult(scalars=[]), FakeResult(rowcount=2)]
+    )
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+    common = {
+        "device_id": "dev1",
+        "timestamp": timestamp,
+        "timestamp_ms": None,
+        "adc1": 1.0,
+        "adc3": 3.0,
+        "temps": [10.0],
+        "bus_v": 5.0,
+        "bus_i": 0.1,
+        "bus_p": 0.5,
+        "adc1_cal": None,
+        "adc2_cal": None,
+        "adc3_cal": None,
+        "gps_lat": None,
+        "gps_lon": None,
+        "gps_alt": None,
+        "gps_fix_quality": None,
+        "gps_satellites": None,
+        "gps_fix_age_ms": None,
+        "log_use_motor": False,
+        "log_duration": 1.0,
+        "log_filename": "data.txt",
+    }
+    rows = [
+        Measurement(id="m1", adc2=2.0, **common),
+        Measurement(id="m2", adc2=2.1, **common),
+    ]
+
+    inserted = await SqlMeasurementRepository(session).add_many_ignore_conflicts(rows)
+
+    assert inserted == 2
+    assert session.execute.await_count == 2
+    insert_statement = session.execute.await_args_list[1].args[0]
+    sql = str(insert_statement.compile(dialect=postgresql.dialect())).lower()
+    assert "on conflict (device_id, recovery_hash) do nothing" in sql
+
+
+@pytest.mark.asyncio
+async def test_measurement_batch_skips_content_match_from_legacy_mqtt_row():
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+    existing = MeasurementModel(
+        id="mqtt",
+        device_id="dev1",
+        timestamp=timestamp,
+        timestamp_ms=1778067367969,
+        recovery_hash=None,
+        adc1=1.1234564,
+        adc2=2.2345674,
+        adc3=3.3456784,
+        temps=[20.124],
+        bus_v=5.1234,
+        bus_i=0.2344,
+        bus_p=1.2344,
+        adc1_cal=None,
+        adc2_cal=None,
+        adc3_cal=None,
+        gps_lat=None,
+        gps_lon=None,
+        gps_alt=None,
+        gps_fix_quality=None,
+        gps_satellites=None,
+        gps_fix_age_ms=None,
+        log_use_motor=False,
+        log_duration=1.0,
+        log_filename="data.txt",
+        meteo_reading_id=None,
+    )
+    recovered = Measurement(
+        id="s3",
+        device_id="dev1",
+        timestamp=timestamp,
+        timestamp_ms=None,
+        adc1=1.123456,
+        adc2=2.234567,
+        adc3=3.345678,
+        temps=[20.12],
+        bus_v=5.123,
+        bus_i=0.234,
+        bus_p=1.234,
+        adc1_cal=None,
+        adc2_cal=None,
+        adc3_cal=None,
+        gps_lat=None,
+        gps_lon=None,
+        gps_alt=None,
+        gps_fix_quality=None,
+        gps_satellites=None,
+        gps_fix_age_ms=None,
+        log_use_motor=False,
+        log_duration=1.0,
+        log_filename="data.txt",
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=FakeResult(scalars=[existing]))
+
+    inserted = await SqlMeasurementRepository(session).add_many_ignore_conflicts([recovered])
+
+    assert inserted == 0
+    session.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -225,5 +334,6 @@ async def test_meteo_upsert_preserves_existing_non_null_fields():
     stmt = session.execute.await_args.args[0]
     sql = str(stmt.compile(dialect=postgresql.dialect()))
     assert returned_id == "meteo-1"
+    assert "ON CONFLICT (device_id, recovery_hash) DO UPDATE" in sql
     assert "coalesce(excluded.temp_c, meteo_readings.temp_c)" in sql
     assert "coalesce(excluded.pressure_hpa, meteo_readings.pressure_hpa)" in sql
