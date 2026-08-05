@@ -32,6 +32,46 @@ class DeviceGpsConfig:
 
 
 @dataclass
+class DeviceS3SyncConfig:
+    device_id: str
+    enabled: bool
+    bucket: str
+    interval_minutes: int
+    radiometer_prefix: str
+    meteo_prefix: str
+    max_files_per_prefix: int
+    last_radiometer_key: Optional[str]
+    last_meteo_key: Optional[str]
+    next_run_at: datetime
+    last_started_at: Optional[datetime]
+    last_success_at: Optional[datetime]
+    last_error: Optional[str]
+    processed_files: int
+    inserted_measurements: int
+    inserted_meteo_readings: int
+    lease_owner: Optional[str]
+    lease_until: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class S3ObjectDescriptor:
+    key: str
+    etag: str
+    last_modified: Optional[datetime]
+    size: int
+
+
+@dataclass
+class S3SyncObjectState:
+    key: str
+    etag: str
+    status: str
+    next_retry_at: Optional[datetime]
+
+
+@dataclass
 class GnssData:
     id: str
     device_id: str
@@ -86,7 +126,7 @@ class Measurement:
 class MeteoReading:
     device_id: str
     timestamp: datetime
-    timestamp_ms: int
+    timestamp_ms: Optional[int]
     temp_c: Optional[float] = None
     humidity_pct: Optional[float] = None
     wind_speed_ms: Optional[float] = None

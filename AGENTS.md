@@ -32,6 +32,7 @@ The repository contains two deployable systems:
 | `tests/firmware/` | Host-side firmware test harness and stubs |
 | `infra/backend/app/api/routes/` | FastAPI HTTP route adapters |
 | `infra/backend/app/services/` | Backend application/domain services |
+| `infra/backend/app/clients/` | External client adapters, including MinIO/S3 object access |
 | `infra/backend/app/repositories/` | Repository interfaces and SQLAlchemy implementations |
 | `infra/backend/app/db/` | Database models and sessions |
 | `infra/backend/app/worker.py` | MQTT ingestion worker |
@@ -86,6 +87,8 @@ Do not document generated files as architecture and do not commit them.
   `infra/backend/alembic/versions/`; do not rewrite applied migrations.
 - Runtime settings use the `APP_` prefix and are defined in
   `app/core/config.py`.
+- S3 recovery credentials and endpoint are global runtime settings; per-device
+  bucket, prefixes, interval, cursors, and processing state live in PostgreSQL.
 
 ### Frontend
 

@@ -6,6 +6,7 @@ from dishka import Provider, Scope, provide
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
+from app.clients.s3 import MinioObjectStore, S3ObjectStore
 from app.db.session import create_engine, create_session_factory
 from arq.connections import ArqRedis, RedisSettings, create_pool
 
@@ -16,6 +17,7 @@ from app.repositories.interfaces import (
     MeasurementRepository,
     MeteoReadingRepository,
     RadiometerCalibrationRepository,
+    S3SyncRepository,
     SoundingExportJobRepository,
     SoundingJobRepository,
     SoundingRepository,
@@ -32,6 +34,7 @@ from app.repositories.sqlalchemy import (
     SqlMeasurementRepository,
     SqlMeteoReadingRepository,
     SqlRadiometerCalibrationRepository,
+    SqlS3SyncRepository,
     SqlSoundingExportJobRepository,
     SqlSoundingJobRepository,
     SqlSoundingRepository,
@@ -49,6 +52,7 @@ from app.services.errors import ErrorService
 from app.services.gnss_data import GnssDataService
 from app.services.measurements import MeasurementService
 from app.services.meteo_readings import MeteoReadingService
+from app.services.s3_sync import S3SyncService
 from app.services.soundings import SoundingService
 from app.services.stations import StationService
 from app.services.users import UserService
@@ -66,6 +70,10 @@ class AppProvider(Provider):
     @provide(scope=Scope.APP)
     def provide_session_factory(self, engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
         return create_session_factory(engine)
+
+    @provide(scope=Scope.APP)
+    def provide_s3_object_store(self, settings: Settings) -> S3ObjectStore:
+        return MinioObjectStore(settings)
 
     @provide(scope=Scope.APP)
     async def provide_redis(self, settings: Settings) -> AsyncIterator[ArqRedis]:
@@ -98,6 +106,10 @@ class AppProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def provide_meteo_reading_repo(self, session: AsyncSession) -> MeteoReadingRepository:
         return SqlMeteoReadingRepository(session)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_s3_sync_repo(self, session: AsyncSession) -> S3SyncRepository:
+        return SqlS3SyncRepository(session)
 
     @provide(scope=Scope.REQUEST)
     def provide_gnss_data_repo(self, session: AsyncSession) -> GnssDataRepository:
@@ -160,6 +172,18 @@ class AppProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def provide_meteo_reading_service(self, meteo_readings: MeteoReadingRepository) -> MeteoReadingService:
         return MeteoReadingService(meteo_readings)
+
+    @provide(scope=Scope.REQUEST)
+    def provide_s3_sync_service(
+        self,
+        repository: S3SyncRepository,
+        measurements: MeasurementRepository,
+        meteo_readings: MeteoReadingRepository,
+        devices: DeviceRepository,
+        object_store: S3ObjectStore,
+        redis: ArqRedis,
+    ) -> S3SyncService:
+        return S3SyncService(repository, measurements, meteo_readings, devices, object_store, redis)
 
     @provide(scope=Scope.REQUEST)
     def provide_gnss_data_service(self, gnss_data: GnssDataRepository) -> GnssDataService:

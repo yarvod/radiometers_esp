@@ -12,6 +12,7 @@ from dishka.integrations.arq import inject, setup_dishka
 from app.container import AppProvider
 from app.core.config import Settings
 from app.services.soundings import SoundingService
+from app.services.s3_sync import S3SyncService
 from app.services.stations import StationService
 
 root_logger = logging.getLogger()
@@ -75,6 +76,35 @@ async def run_sounding_schedule(
     await soundings.run_schedule_tick()
 
 
+@inject
+async def run_s3_sync_schedule(
+    ctx: dict[str, Any],
+    s3_sync: FromDishka[S3SyncService],
+) -> None:
+    enqueued = await s3_sync.enqueue_due()
+    if enqueued:
+        logger.info("S3 recovery schedule enqueued devices=%s", enqueued)
+
+
+@inject
+async def sync_device_s3_job(
+    ctx: dict[str, Any],
+    device_id: str,
+    s3_sync: FromDishka[S3SyncService],
+    force: bool = False,
+) -> None:
+    summary = await s3_sync.sync_device(device_id, force=force)
+    logger.info(
+        "S3 recovery finished device=%s files=%s measurements=%s meteo=%s invalid=%s errors=%s",
+        summary.device_id,
+        summary.processed_files,
+        summary.inserted_measurements,
+        summary.inserted_meteo_readings,
+        summary.invalid_rows,
+        len(summary.errors),
+    )
+
+
 settings = Settings()
 container = make_async_container(AppProvider())
 
@@ -88,11 +118,14 @@ class WorkerSettings:
         load_soundings_job,
         export_soundings_job,
         run_sounding_schedule,
+        run_s3_sync_schedule,
+        sync_device_s3_job,
     ]
     cron_jobs = [
         cron(refresh_stations_midnight, hour=11, minute=0),
         cron(refresh_stations_noon, hour=23, minute=0),
         cron(run_sounding_schedule, minute=0),
+        cron(run_s3_sync_schedule),
     ]
 
 

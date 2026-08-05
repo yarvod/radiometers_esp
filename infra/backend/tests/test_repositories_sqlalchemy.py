@@ -121,10 +121,9 @@ async def test_device_repo_touch_creates_new():
 
 
 @pytest.mark.asyncio
-async def test_measurement_repo_add_flushes():
+async def test_measurement_repo_add_uses_timestamp_upsert():
     session = AsyncMock()
-    session.add = Mock()
-    session.flush = AsyncMock()
+    session.execute = AsyncMock()
 
     repo = SqlMeasurementRepository(session)
     measurement = Measurement(
@@ -155,9 +154,10 @@ async def test_measurement_repo_add_flushes():
 
     await repo.add(measurement)
 
-    session.add.assert_called_once()
-    assert isinstance(session.add.call_args.args[0], MeasurementModel)
-    session.flush.assert_awaited_once()
+    session.execute.assert_awaited_once()
+    statement = session.execute.await_args.args[0]
+    sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+    assert "on conflict (device_id, timestamp) do update" in sql
 
 
 @pytest.mark.asyncio

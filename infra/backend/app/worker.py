@@ -129,7 +129,7 @@ def parse_meteo(device_id: str, data: dict) -> MeteoReading | None:
     if ts_ms is None or ts_ms <= 0:
         return None
     try:
-        timestamp = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+        timestamp = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).replace(microsecond=0)
     except (OverflowError, OSError, ValueError):
         return None
     return MeteoReading(

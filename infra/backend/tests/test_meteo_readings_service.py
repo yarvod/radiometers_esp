@@ -33,6 +33,9 @@ class FakeMeteoRepository(MeteoReadingRepository):
     async def upsert(self, reading: MeteoReading) -> str:
         return "meteo-1"
 
+    async def add_many_ignore_conflicts(self, readings):
+        return len(readings)
+
     async def count(self, device_id, start, end):
         return len(self.rows)
 

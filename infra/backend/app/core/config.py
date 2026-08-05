@@ -24,5 +24,11 @@ class Settings(BaseSettings):
     soundings_read_timeout: float = 30.0
     soundings_concurrency: int = 6
     soundings_export_dir: str = "/tmp/exports"
+    s3_endpoint: str = "http://minio:9000"
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
+    s3_region: str = "us-east-1"
+    s3_cert_check: bool = True
+    s3_max_object_bytes: int = 1_048_576
 
     model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", extra="ignore")

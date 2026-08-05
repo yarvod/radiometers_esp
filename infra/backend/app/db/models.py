@@ -3,7 +3,19 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,6 +53,9 @@ class DeviceModel(Base):
     )
     gps_config: Mapped[DeviceGpsConfigModel | None] = relationship(
         "DeviceGpsConfigModel", back_populates="device", uselist=False
+    )
+    s3_sync_config: Mapped[DeviceS3SyncConfigModel | None] = relationship(
+        "DeviceS3SyncConfigModel", back_populates="device", uselist=False, cascade="all, delete-orphan"
     )
 
 
@@ -148,6 +163,68 @@ class MeasurementModel(Base):
 
     __table_args__ = (
         Index("ix_measurements_device_timestamp_id", "device_id", "timestamp", "id"),
+        Index(
+            "uq_measurements_device_timestamp",
+            "device_id",
+            "timestamp",
+            unique=True,
+        ),
+    )
+
+
+class DeviceS3SyncConfigModel(Base):
+    __tablename__ = "device_s3_sync_configs"
+
+    device_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    bucket: Mapped[str] = mapped_column(String(255))
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=10)
+    radiometer_prefix: Mapped[str] = mapped_column(String(512), default="radiometers/")
+    meteo_prefix: Mapped[str] = mapped_column(String(512), default="meteo/")
+    max_files_per_prefix: Mapped[int] = mapped_column(Integer, default=10)
+    last_radiometer_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_meteo_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_files: Mapped[int] = mapped_column(Integer, default=0)
+    inserted_measurements: Mapped[int] = mapped_column(Integer, default=0)
+    inserted_meteo_readings: Mapped[int] = mapped_column(Integer, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    device: Mapped[DeviceModel] = relationship("DeviceModel", back_populates="s3_sync_config")
+
+
+class DeviceS3SyncObjectModel(Base):
+    __tablename__ = "device_s3_sync_objects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    bucket: Mapped[str] = mapped_column(String(255))
+    object_key: Mapped[str] = mapped_column(Text)
+    etag: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16))
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    inserted_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_count: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_modified: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("device_id", "bucket", "object_key", name="uq_device_s3_sync_object"),
+        Index("ix_device_s3_sync_objects_device_kind", "device_id", "kind", "status"),
     )
 
 
@@ -157,7 +234,7 @@ class MeteoReadingModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    timestamp_ms: Mapped[int] = mapped_column(BigInteger)
+    timestamp_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
     humidity_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     wind_speed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -173,6 +250,7 @@ class MeteoReadingModel(Base):
 
     __table_args__ = (
         UniqueConstraint("device_id", "timestamp_ms", name="uq_meteo_reading_device_time"),
+        Index("uq_meteo_readings_device_timestamp", "device_id", "timestamp", unique=True),
         Index("ix_meteo_readings_device_time", "device_id", "timestamp"),
     )
 

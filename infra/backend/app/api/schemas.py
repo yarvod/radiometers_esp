@@ -78,6 +78,39 @@ class DeviceConfigOut(BaseModel):
     has_meteo: bool = False
 
 
+class DeviceS3SyncConfigUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    bucket: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    interval_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
+    radiometer_prefix: Optional[str] = Field(default=None, max_length=512)
+    meteo_prefix: Optional[str] = Field(default=None, max_length=512)
+    max_files_per_prefix: Optional[int] = Field(default=None, ge=1, le=100)
+
+
+class DeviceS3SyncConfigOut(BaseModel):
+    device_id: str
+    enabled: bool
+    bucket: str
+    interval_minutes: int
+    radiometer_prefix: str
+    meteo_prefix: str
+    max_files_per_prefix: int
+    last_radiometer_key: Optional[str] = None
+    last_meteo_key: Optional[str] = None
+    next_run_at: datetime
+    last_started_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    processed_files: int
+    inserted_measurements: int
+    inserted_meteo_readings: int
+    running: bool = False
+
+
+class DeviceS3SyncRunResponse(BaseModel):
+    queued: bool
+
+
 class GnssDataOut(BaseModel):
     id: str
     device_id: str
@@ -472,7 +505,7 @@ class DeviceHistoryResponse(MeasurementsResponse):
 
 class MeteoReadingPointOut(BaseModel):
     timestamp: datetime
-    timestamp_ms: int
+    timestamp_ms: Optional[int]
     temp_c: Optional[float] = None
     humidity_pct: Optional[float] = None
     wind_speed_ms: Optional[float] = None

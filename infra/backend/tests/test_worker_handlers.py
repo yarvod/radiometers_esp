@@ -104,6 +104,21 @@ def test_parse_meteo_builds_reading_from_online_block():
     assert reading.uvi is None
 
 
+def test_parse_meteo_normalizes_mqtt_time_to_csv_second_precision():
+    payload = _base_measure_payload()
+    payload["meteo"] = {
+        "online": True,
+        "timestampMs": 1710071999123,
+        "tempC": 21.4,
+    }
+
+    reading = parse_meteo("dev1", payload)
+
+    assert reading is not None
+    assert reading.timestamp.microsecond == 0
+    assert reading.timestamp_ms == 1710071999123
+
+
 def test_parse_meteo_none_when_offline_or_absent():
     assert parse_meteo("dev1", _base_measure_payload()) is None  # no meteo block
     offline = _base_measure_payload()

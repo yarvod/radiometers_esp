@@ -15,6 +15,9 @@ from app.api.schemas import (
     DeviceGpsConfigUpdateRequest,
     DeviceHistoryResponse,
     DeviceOut,
+    DeviceS3SyncConfigOut,
+    DeviceS3SyncConfigUpdateRequest,
+    DeviceS3SyncRunResponse,
     DeviceUpdateRequest,
     ErrorEventOut,
     ErrorEventsResponse,
@@ -29,9 +32,22 @@ from app.services.atmosphere import AtmosphereSeries, AtmosphereService
 from app.services.calibrations import CalibrationError, RadiometerCalibrationService
 from app.services.devices import DeviceService
 from app.services.errors import ErrorService
+from app.services.s3_sync import S3SyncService
 from app.services.temp_outliers import TemperatureOutlierFilterConfig
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+
+
+def s3_sync_response(config) -> DeviceS3SyncConfigOut:
+    now = datetime.now(config.next_run_at.tzinfo) if config.next_run_at.tzinfo else datetime.now()
+    return DeviceS3SyncConfigOut(
+        **{
+            field: getattr(config, field)
+            for field in DeviceS3SyncConfigOut.model_fields
+            if field != "running"
+        },
+        running=bool(config.lease_until and config.lease_until > now),
+    )
 
 
 def parse_datetime(value: str | None) -> datetime | None:
@@ -143,6 +159,49 @@ async def get_device(
     if not device:
         device = await devices.create_device(device_id)
     return DeviceConfigOut.model_validate(device, from_attributes=True)
+
+
+@router.get("/{device_id}/s3-sync", response_model=DeviceS3SyncConfigOut)
+@inject
+async def get_device_s3_sync(
+    device_id: str,
+    s3_sync: FromDishka[S3SyncService],
+    current_user: User = Depends(get_current_user),
+):
+    return s3_sync_response(await s3_sync.get_config(device_id))
+
+
+@router.patch("/{device_id}/s3-sync", response_model=DeviceS3SyncConfigOut)
+@inject
+async def update_device_s3_sync(
+    device_id: str,
+    payload: DeviceS3SyncConfigUpdateRequest,
+    s3_sync: FromDishka[S3SyncService],
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        config = await s3_sync.update_config(
+            device_id=device_id,
+            enabled=payload.enabled,
+            bucket=payload.bucket,
+            interval_minutes=payload.interval_minutes,
+            radiometer_prefix=payload.radiometer_prefix,
+            meteo_prefix=payload.meteo_prefix,
+            max_files_per_prefix=payload.max_files_per_prefix,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return s3_sync_response(config)
+
+
+@router.post("/{device_id}/s3-sync/run", response_model=DeviceS3SyncRunResponse, status_code=status.HTTP_202_ACCEPTED)
+@inject
+async def run_device_s3_sync(
+    device_id: str,
+    s3_sync: FromDishka[S3SyncService],
+    current_user: User = Depends(get_current_user),
+):
+    return DeviceS3SyncRunResponse(queued=await s3_sync.enqueue_now(device_id))
 
 
 @router.get("/{device_id}/atmosphere/coefficients")

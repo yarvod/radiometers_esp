@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-08-05 — Per-device S3 recovery import
+
+- Added configurable per-device recovery of radiometer and meteo CSV files from
+  a shared MinIO/S3 endpoint through the ARQ worker.
+- Added independent per-prefix cursors plus an object/ETag processing ledger, so
+  old files uploaded after newer files are still discovered without reimporting
+  unchanged objects.
+- Added header-driven Pydantic CSV validation compatible with radiometer files
+  that predate calibration and GPS columns; file `timestamp_ms` values are
+  ignored and canonical UTC `timestamp_iso` values drive deduplication.
+- Added atomic batch inserts protected by unique `(device_id, timestamp)`
+  indexes, preventing MQTT and S3 recovery from creating duplicate readings.
+- Added authenticated device endpoints for reading/updating S3 recovery
+  settings and requesting an immediate run, with per-device intervals, enable
+  controls, progress counters, cursors, and last-error state.
+- Files dated 1970 are recorded as ignored, malformed files are retried without
+  blocking later files, and missing optional `meteo/` content is accepted.
+
 ## 2026-07-29 — Scalable filtered measurement history
 
 - Replaced full ORM materialization of Hampel-filtered ranges with a server-side

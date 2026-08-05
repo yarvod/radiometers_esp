@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Sequence
 
 from sqlalchemy import delete, func, or_, select, update
@@ -12,6 +12,7 @@ from app.domain.entities import (
     AccessToken,
     Device,
     DeviceGpsConfig,
+    DeviceS3SyncConfig,
     ErrorEvent,
     GnssData,
     GnssDataMeasurementPoint,
@@ -19,6 +20,7 @@ from app.domain.entities import (
     MeasurementPoint,
     MeteoReading,
     RadiometerCalibration,
+    S3SyncObjectState,
     Sounding,
     SoundingExportJob,
     SoundingJob,
@@ -31,6 +33,8 @@ from app.db.models import (
     AccessTokenModel,
     DeviceModel,
     DeviceGpsConfigModel,
+    DeviceS3SyncConfigModel,
+    DeviceS3SyncObjectModel,
     ErrorEventModel,
     GnssDataMeasurementModel,
     GnssDataModel,
@@ -52,6 +56,7 @@ from app.repositories.interfaces import (
     MeasurementRepository,
     MeteoReadingRepository,
     RadiometerCalibrationRepository,
+    S3SyncRepository,
     SoundingJobRepository,
     SoundingExportJobRepository,
     SoundingRepository,
@@ -76,6 +81,31 @@ def to_device(model: DeviceModel) -> Device:
         atmosphere_config=dict(model.atmosphere_config or {}),
         adc_labels=dict(model.adc_labels or {}),
         has_meteo=bool(model.has_meteo),
+    )
+
+
+def to_s3_sync_config(model: DeviceS3SyncConfigModel) -> DeviceS3SyncConfig:
+    return DeviceS3SyncConfig(
+        device_id=model.device_id,
+        enabled=bool(model.enabled),
+        bucket=model.bucket,
+        interval_minutes=int(model.interval_minutes),
+        radiometer_prefix=model.radiometer_prefix,
+        meteo_prefix=model.meteo_prefix,
+        max_files_per_prefix=int(model.max_files_per_prefix),
+        last_radiometer_key=model.last_radiometer_key,
+        last_meteo_key=model.last_meteo_key,
+        next_run_at=model.next_run_at,
+        last_started_at=model.last_started_at,
+        last_success_at=model.last_success_at,
+        last_error=model.last_error,
+        processed_files=int(model.processed_files or 0),
+        inserted_measurements=int(model.inserted_measurements or 0),
+        inserted_meteo_readings=int(model.inserted_meteo_readings or 0),
+        lease_owner=model.lease_owner,
+        lease_until=model.lease_until,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -495,6 +525,242 @@ class SqlDeviceRepository(DeviceRepository):
             await self._session.flush()
 
 
+class SqlS3SyncRepository(S3SyncRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_or_create_config(self, device_id: str) -> DeviceS3SyncConfig:
+        model = await self._get_config_model(device_id)
+        if model is None:
+            await self._session.execute(
+                pg_insert(DeviceModel)
+                .values(
+                    id=device_id,
+                    temp_labels=[],
+                    temp_addresses=[],
+                    temp_label_map={},
+                    temp_bindings={},
+                    atmosphere_config={},
+                    adc_labels={},
+                    has_meteo=False,
+                )
+                .on_conflict_do_nothing(index_elements=[DeviceModel.id])
+            )
+            await self._session.execute(
+                pg_insert(DeviceS3SyncConfigModel)
+                .values(device_id=device_id, bucket=device_id)
+                .on_conflict_do_nothing(index_elements=[DeviceS3SyncConfigModel.device_id])
+            )
+            await self._session.flush()
+            model = await self._get_config_model(device_id)
+            assert model is not None
+        return to_s3_sync_config(model)
+
+    async def update_config(
+        self,
+        device_id: str,
+        enabled: bool | None,
+        bucket: str | None,
+        interval_minutes: int | None,
+        radiometer_prefix: str | None,
+        meteo_prefix: str | None,
+        max_files_per_prefix: int | None,
+    ) -> DeviceS3SyncConfig:
+        await self.get_or_create_config(device_id)
+        model = await self._get_config_model(device_id)
+        assert model is not None
+        if enabled is not None:
+            model.enabled = enabled
+        if bucket is not None:
+            if model.bucket != bucket:
+                model.last_radiometer_key = None
+                model.last_meteo_key = None
+            model.bucket = bucket
+        if interval_minutes is not None:
+            model.interval_minutes = interval_minutes
+        if radiometer_prefix is not None:
+            if model.radiometer_prefix != radiometer_prefix:
+                model.last_radiometer_key = None
+            model.radiometer_prefix = radiometer_prefix
+        if meteo_prefix is not None:
+            if model.meteo_prefix != meteo_prefix:
+                model.last_meteo_key = None
+            model.meteo_prefix = meteo_prefix
+        if max_files_per_prefix is not None:
+            model.max_files_per_prefix = max_files_per_prefix
+        model.next_run_at = datetime.now(timezone.utc)
+        model.updated_at = datetime.now(timezone.utc)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return to_s3_sync_config(model)
+
+    async def list_due(self, now: datetime, limit: int = 100) -> Sequence[DeviceS3SyncConfig]:
+        result = await self._session.execute(
+            select(DeviceS3SyncConfigModel)
+            .where(
+                DeviceS3SyncConfigModel.enabled.is_(True),
+                DeviceS3SyncConfigModel.next_run_at <= now,
+                or_(
+                    DeviceS3SyncConfigModel.lease_until.is_(None),
+                    DeviceS3SyncConfigModel.lease_until < now,
+                ),
+            )
+            .order_by(DeviceS3SyncConfigModel.next_run_at.asc(), DeviceS3SyncConfigModel.device_id.asc())
+            .limit(limit)
+        )
+        return [to_s3_sync_config(model) for model in result.scalars().all()]
+
+    async def claim(
+        self,
+        device_id: str,
+        owner: str,
+        now: datetime,
+        lease_until: datetime,
+        force: bool = False,
+    ) -> DeviceS3SyncConfig | None:
+        filters = [
+            DeviceS3SyncConfigModel.device_id == device_id,
+            or_(
+                DeviceS3SyncConfigModel.lease_until.is_(None),
+                DeviceS3SyncConfigModel.lease_until < now,
+            ),
+        ]
+        if not force:
+            filters.append(DeviceS3SyncConfigModel.enabled.is_(True))
+        result = await self._session.execute(
+            select(DeviceS3SyncConfigModel)
+            .where(*filters)
+            .with_for_update(skip_locked=True)
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return None
+        model.lease_owner = owner
+        model.lease_until = lease_until
+        model.last_started_at = now
+        model.next_run_at = now + timedelta(minutes=max(1, model.interval_minutes))
+        model.last_error = None
+        await self._session.flush()
+        return to_s3_sync_config(model)
+
+    async def list_object_states(self, device_id: str, bucket: str) -> Sequence[S3SyncObjectState]:
+        result = await self._session.execute(
+            select(DeviceS3SyncObjectModel).where(
+                DeviceS3SyncObjectModel.device_id == device_id,
+                DeviceS3SyncObjectModel.bucket == bucket,
+            )
+        )
+        return [
+            S3SyncObjectState(
+                key=model.object_key,
+                etag=model.etag,
+                status=model.status,
+                next_retry_at=model.next_retry_at,
+            )
+            for model in result.scalars().all()
+        ]
+
+    async def record_object_result(
+        self,
+        device_id: str,
+        bucket: str,
+        object_key: str,
+        etag: str,
+        kind: str,
+        status: str,
+        row_count: int,
+        inserted_count: int,
+        invalid_count: int,
+        error: str | None,
+        next_retry_at: datetime | None,
+        last_modified: datetime | None,
+        processed_at: datetime,
+    ) -> None:
+        insert_stmt = pg_insert(DeviceS3SyncObjectModel).values(
+            id=str(uuid.uuid4()),
+            device_id=device_id,
+            bucket=bucket,
+            object_key=object_key,
+            etag=etag,
+            kind=kind,
+            status=status,
+            row_count=row_count,
+            inserted_count=inserted_count,
+            invalid_count=invalid_count,
+            attempt_count=1,
+            last_error=error,
+            next_retry_at=next_retry_at,
+            last_modified=last_modified,
+            processed_at=processed_at,
+            updated_at=processed_at,
+        )
+        stmt = insert_stmt.on_conflict_do_update(
+            constraint="uq_device_s3_sync_object",
+            set_={
+                "etag": insert_stmt.excluded.etag,
+                "kind": insert_stmt.excluded.kind,
+                "status": insert_stmt.excluded.status,
+                "row_count": insert_stmt.excluded.row_count,
+                "inserted_count": insert_stmt.excluded.inserted_count,
+                "invalid_count": insert_stmt.excluded.invalid_count,
+                "attempt_count": DeviceS3SyncObjectModel.attempt_count + 1,
+                "last_error": insert_stmt.excluded.last_error,
+                "next_retry_at": insert_stmt.excluded.next_retry_at,
+                "last_modified": insert_stmt.excluded.last_modified,
+                "processed_at": insert_stmt.excluded.processed_at,
+                "updated_at": insert_stmt.excluded.updated_at,
+            },
+        )
+        await self._session.execute(stmt)
+
+        config = await self._get_config_model(device_id)
+        if config is None:
+            return
+        if status in {"done", "ignored"}:
+            if kind == "radiometer":
+                config.last_radiometer_key = object_key
+            else:
+                config.last_meteo_key = object_key
+        if status == "done":
+            config.processed_files += 1
+            if kind == "radiometer":
+                config.inserted_measurements += inserted_count
+            else:
+                config.inserted_meteo_readings += inserted_count
+        config.updated_at = processed_at
+        await self._session.flush()
+
+    async def finish_run(
+        self,
+        device_id: str,
+        owner: str,
+        finished_at: datetime,
+        error: str | None,
+    ) -> None:
+        model = await self._get_config_model(device_id)
+        if model is None or model.lease_owner != owner:
+            return
+        model.lease_owner = None
+        model.lease_until = None
+        model.last_error = error
+        if error is None:
+            model.last_success_at = finished_at
+        model.updated_at = finished_at
+        await self._session.flush()
+
+    async def commit(self) -> None:
+        await self._session.commit()
+
+    async def rollback(self) -> None:
+        await self._session.rollback()
+
+    async def _get_config_model(self, device_id: str) -> DeviceS3SyncConfigModel | None:
+        result = await self._session.execute(
+            select(DeviceS3SyncConfigModel).where(DeviceS3SyncConfigModel.device_id == device_id)
+        )
+        return result.scalar_one_or_none()
+
+
 class SqlGnssDataRepository(GnssDataRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -644,34 +910,86 @@ class SqlMeasurementRepository(MeasurementRepository):
         self._session = session
 
     async def add(self, measurement: Measurement) -> None:
-        model = MeasurementModel(
-            id=measurement.id,
-            device_id=measurement.device_id,
-            timestamp=measurement.timestamp,
-            timestamp_ms=measurement.timestamp_ms,
-            adc1=measurement.adc1,
-            adc2=measurement.adc2,
-            adc3=measurement.adc3,
-            temps=measurement.temps,
-            bus_v=measurement.bus_v,
-            bus_i=measurement.bus_i,
-            bus_p=measurement.bus_p,
-            adc1_cal=measurement.adc1_cal,
-            adc2_cal=measurement.adc2_cal,
-            adc3_cal=measurement.adc3_cal,
-            gps_lat=measurement.gps_lat,
-            gps_lon=measurement.gps_lon,
-            gps_alt=measurement.gps_alt,
-            gps_fix_quality=measurement.gps_fix_quality,
-            gps_satellites=measurement.gps_satellites,
-            gps_fix_age_ms=measurement.gps_fix_age_ms,
-            log_use_motor=measurement.log_use_motor,
-            log_duration=measurement.log_duration,
-            log_filename=measurement.log_filename,
-            meteo_reading_id=measurement.meteo_reading_id,
+        values = self._values(measurement)
+        insert_stmt = pg_insert(MeasurementModel).values(**values)
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[MeasurementModel.device_id, MeasurementModel.timestamp],
+            set_={
+                "timestamp": insert_stmt.excluded.timestamp,
+                "adc1": insert_stmt.excluded.adc1,
+                "adc2": insert_stmt.excluded.adc2,
+                "adc3": insert_stmt.excluded.adc3,
+                "temps": insert_stmt.excluded.temps,
+                "bus_v": insert_stmt.excluded.bus_v,
+                "bus_i": insert_stmt.excluded.bus_i,
+                "bus_p": insert_stmt.excluded.bus_p,
+                "adc1_cal": func.coalesce(insert_stmt.excluded.adc1_cal, MeasurementModel.adc1_cal),
+                "adc2_cal": func.coalesce(insert_stmt.excluded.adc2_cal, MeasurementModel.adc2_cal),
+                "adc3_cal": func.coalesce(insert_stmt.excluded.adc3_cal, MeasurementModel.adc3_cal),
+                "gps_lat": func.coalesce(insert_stmt.excluded.gps_lat, MeasurementModel.gps_lat),
+                "gps_lon": func.coalesce(insert_stmt.excluded.gps_lon, MeasurementModel.gps_lon),
+                "gps_alt": func.coalesce(insert_stmt.excluded.gps_alt, MeasurementModel.gps_alt),
+                "gps_fix_quality": func.coalesce(
+                    insert_stmt.excluded.gps_fix_quality, MeasurementModel.gps_fix_quality
+                ),
+                "gps_satellites": func.coalesce(
+                    insert_stmt.excluded.gps_satellites, MeasurementModel.gps_satellites
+                ),
+                "gps_fix_age_ms": func.coalesce(
+                    insert_stmt.excluded.gps_fix_age_ms, MeasurementModel.gps_fix_age_ms
+                ),
+                "log_use_motor": insert_stmt.excluded.log_use_motor,
+                "log_duration": insert_stmt.excluded.log_duration,
+                "log_filename": func.coalesce(insert_stmt.excluded.log_filename, MeasurementModel.log_filename),
+                "meteo_reading_id": func.coalesce(
+                    insert_stmt.excluded.meteo_reading_id, MeasurementModel.meteo_reading_id
+                ),
+            },
         )
-        self._session.add(model)
-        await self._session.flush()
+        await self._session.execute(stmt)
+
+    async def add_many_ignore_conflicts(self, measurements: Sequence[Measurement]) -> int:
+        if not measurements:
+            return 0
+        rows = [self._values(measurement) for measurement in measurements]
+        stmt = (
+            pg_insert(MeasurementModel)
+            .values(rows)
+            .on_conflict_do_nothing(
+                index_elements=[MeasurementModel.device_id, MeasurementModel.timestamp],
+            )
+        )
+        result = await self._session.execute(stmt)
+        return max(0, int(result.rowcount or 0))
+
+    @staticmethod
+    def _values(measurement: Measurement) -> dict[str, object]:
+        return {
+            "id": measurement.id,
+            "device_id": measurement.device_id,
+            "timestamp": measurement.timestamp,
+            "timestamp_ms": measurement.timestamp_ms,
+            "adc1": measurement.adc1,
+            "adc2": measurement.adc2,
+            "adc3": measurement.adc3,
+            "temps": measurement.temps,
+            "bus_v": measurement.bus_v,
+            "bus_i": measurement.bus_i,
+            "bus_p": measurement.bus_p,
+            "adc1_cal": measurement.adc1_cal,
+            "adc2_cal": measurement.adc2_cal,
+            "adc3_cal": measurement.adc3_cal,
+            "gps_lat": measurement.gps_lat,
+            "gps_lon": measurement.gps_lon,
+            "gps_alt": measurement.gps_alt,
+            "gps_fix_quality": measurement.gps_fix_quality,
+            "gps_satellites": measurement.gps_satellites,
+            "gps_fix_age_ms": measurement.gps_fix_age_ms,
+            "log_use_motor": measurement.log_use_motor,
+            "log_duration": measurement.log_duration,
+            "log_filename": measurement.log_filename,
+            "meteo_reading_id": measurement.meteo_reading_id,
+        }
 
     async def list(self, device_id: str, start: datetime | None, end: datetime | None, limit: int) -> Sequence[Measurement]:
         query = select(MeasurementModel).where(MeasurementModel.device_id == device_id)
@@ -857,9 +1175,11 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
         stmt = (
             insert_stmt
             .on_conflict_do_update(
-                constraint="uq_meteo_reading_device_time",
+                index_elements=[MeteoReadingModel.device_id, MeteoReadingModel.timestamp],
                 set_={
-                    "timestamp": reading.timestamp,
+                    "timestamp_ms": func.coalesce(
+                        insert_stmt.excluded.timestamp_ms, MeteoReadingModel.timestamp_ms
+                    ),
                     "temp_c": func.coalesce(insert_stmt.excluded.temp_c, MeteoReadingModel.temp_c),
                     "humidity_pct": func.coalesce(
                         insert_stmt.excluded.humidity_pct, MeteoReadingModel.humidity_pct
@@ -889,6 +1209,37 @@ class SqlMeteoReadingRepository(MeteoReadingRepository):
         )
         result = await self._session.execute(stmt)
         return result.scalar_one()
+
+    async def add_many_ignore_conflicts(self, readings: Sequence[MeteoReading]) -> int:
+        if not readings:
+            return 0
+        rows = [
+            {
+                "id": str(uuid.uuid4()),
+                "device_id": reading.device_id,
+                "timestamp": reading.timestamp,
+                "timestamp_ms": reading.timestamp_ms,
+                "temp_c": reading.temp_c,
+                "humidity_pct": reading.humidity_pct,
+                "wind_speed_ms": reading.wind_speed_ms,
+                "gust_speed_ms": reading.gust_speed_ms,
+                "wind_dir_deg": reading.wind_dir_deg,
+                "pressure_hpa": reading.pressure_hpa,
+                "rainfall_mm": reading.rainfall_mm,
+                "light_lux": reading.light_lux,
+                "uvi": reading.uvi,
+            }
+            for reading in readings
+        ]
+        stmt = (
+            pg_insert(MeteoReadingModel)
+            .values(rows)
+            .on_conflict_do_nothing(
+                index_elements=[MeteoReadingModel.device_id, MeteoReadingModel.timestamp]
+            )
+        )
+        result = await self._session.execute(stmt)
+        return max(0, int(result.rowcount or 0))
 
     def _base_query(self, device_id: str, start: datetime | None, end: datetime | None):
         filters = [MeteoReadingModel.device_id == device_id]

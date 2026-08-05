@@ -8,6 +8,7 @@ from app.domain.entities import (
     AccessToken,
     Device,
     DeviceGpsConfig,
+    DeviceS3SyncConfig,
     ErrorEvent,
     GnssData,
     GnssDataMeasurementPoint,
@@ -15,6 +16,7 @@ from app.domain.entities import (
     MeasurementPoint,
     MeteoReading,
     RadiometerCalibration,
+    S3SyncObjectState,
     Sounding,
     SoundingExportJob,
     SoundingJob,
@@ -73,6 +75,81 @@ class DeviceRepository(ABC):
 
     @abstractmethod
     async def set_has_meteo(self, device_id: str, value: bool) -> None:
+        raise NotImplementedError
+
+
+class S3SyncRepository(ABC):
+    @abstractmethod
+    async def get_or_create_config(self, device_id: str) -> DeviceS3SyncConfig:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_config(
+        self,
+        device_id: str,
+        enabled: bool | None,
+        bucket: str | None,
+        interval_minutes: int | None,
+        radiometer_prefix: str | None,
+        meteo_prefix: str | None,
+        max_files_per_prefix: int | None,
+    ) -> DeviceS3SyncConfig:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_due(self, now: datetime, limit: int = 100) -> Sequence[DeviceS3SyncConfig]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def claim(
+        self,
+        device_id: str,
+        owner: str,
+        now: datetime,
+        lease_until: datetime,
+        force: bool = False,
+    ) -> DeviceS3SyncConfig | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_object_states(self, device_id: str, bucket: str) -> Sequence[S3SyncObjectState]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def record_object_result(
+        self,
+        device_id: str,
+        bucket: str,
+        object_key: str,
+        etag: str,
+        kind: str,
+        status: str,
+        row_count: int,
+        inserted_count: int,
+        invalid_count: int,
+        error: str | None,
+        next_retry_at: datetime | None,
+        last_modified: datetime | None,
+        processed_at: datetime,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def finish_run(
+        self,
+        device_id: str,
+        owner: str,
+        finished_at: datetime,
+        error: str | None,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def commit(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def rollback(self) -> None:
         raise NotImplementedError
 
 
@@ -286,6 +363,10 @@ class MeasurementRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def add_many_ignore_conflicts(self, measurements: Sequence[Measurement]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
     async def list(self, device_id: str, start: datetime | None, end: datetime | None, limit: int) -> Sequence[Measurement]:
         raise NotImplementedError
 
@@ -323,7 +404,11 @@ class MeteoReadingRepository(ABC):
     @abstractmethod
     async def upsert(self, reading: MeteoReading) -> str:
         """Insert a station reading (or return the existing one) deduped by
-        (device_id, timestamp_ms). Returns the meteo_readings.id."""
+        canonical UTC (device_id, timestamp). Returns the meteo_readings.id."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_many_ignore_conflicts(self, readings: Sequence[MeteoReading]) -> int:
         raise NotImplementedError
 
     @abstractmethod
