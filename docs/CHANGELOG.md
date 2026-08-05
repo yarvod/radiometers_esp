@@ -18,6 +18,9 @@
 - Added authenticated device endpoints for reading/updating S3 recovery
   settings and requesting an immediate run, with per-device intervals, enable
   controls, progress counters, cursors, and last-error state.
+- Added a Nuxt device-settings panel for configuring the bucket, schedule,
+  prefixes and batch size, viewing recovery progress/errors, and triggering an
+  immediate file check without exposing shared MinIO credentials to the browser.
 - Files dated 1970 are recorded as ignored, malformed files are retried without
   blocking later files, and missing optional `meteo/` content is accepted.
 

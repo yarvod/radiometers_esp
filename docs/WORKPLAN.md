@@ -10,8 +10,9 @@ recovery run:
   containers after the restart-safe recovery from the partial first attempt.
 - [ ] Confirm `APP_S3_ENDPOINT`, `APP_S3_ACCESS_KEY`, and `APP_S3_SECRET_KEY`
   against the production MinIO bucket for the pilot device.
-- [ ] Enable recovery for one device, trigger an immediate run, and verify that
-  the cursor/object ledger advances for both `radiometers/` and `meteo/`.
+- [ ] Enable recovery for one device through the Nuxt Settings tab, trigger an
+  immediate run, and verify that the cursor/object ledger advances for both
+  `radiometers/` and `meteo/`.
 - [ ] Confirm an MQTT-present content fingerprint is skipped, an offline-only
   CSV row is inserted once, and two distinct rows in one ISO second are retained.
 

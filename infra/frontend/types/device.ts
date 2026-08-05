@@ -42,6 +42,36 @@ export type DeviceGpsConfig = {
   created_at: string | null
 }
 
+export type DeviceS3SyncConfig = {
+  device_id: string
+  enabled: boolean
+  bucket: string
+  interval_minutes: number
+  radiometer_prefix: string
+  meteo_prefix: string
+  max_files_per_prefix: number
+  last_radiometer_key: string | null
+  last_meteo_key: string | null
+  next_run_at: string
+  last_started_at: string | null
+  last_success_at: string | null
+  last_error: string | null
+  processed_files: number
+  inserted_measurements: number
+  inserted_meteo_readings: number
+  running: boolean
+}
+
+export type DeviceS3SyncUpdate = Pick<
+  DeviceS3SyncConfig,
+  | 'enabled'
+  | 'bucket'
+  | 'interval_minutes'
+  | 'radiometer_prefix'
+  | 'meteo_prefix'
+  | 'max_files_per_prefix'
+>
+
 export type GnssData = {
   id: string
   device_id: string
