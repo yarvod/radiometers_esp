@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -11,6 +11,7 @@ from app.repositories.sqlalchemy import (
     SqlDeviceRepository,
     SqlMeasurementRepository,
     SqlMeteoReadingRepository,
+    SqlS3SyncRepository,
     SqlTokenRepository,
 )
 
@@ -43,6 +44,53 @@ class FakeStreamResult:
     async def partitions(self, batch_size):
         for offset in range(0, len(self._rows), batch_size):
             yield self._rows[offset : offset + batch_size]
+
+
+@pytest.mark.asyncio
+async def test_s3_sync_claim_sets_updated_at_before_flush():
+    now = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
+    lease_until = now + timedelta(minutes=30)
+    model = SimpleNamespace(
+        device_id="dev3",
+        enabled=True,
+        bucket="dev3",
+        interval_minutes=10,
+        radiometer_prefix="radiometers/",
+        meteo_prefix="meteo/",
+        max_files_per_prefix=10,
+        last_radiometer_key=None,
+        last_meteo_key=None,
+        next_run_at=now,
+        last_started_at=None,
+        last_success_at=None,
+        last_error="previous error",
+        processed_files=0,
+        inserted_measurements=0,
+        inserted_meteo_readings=0,
+        lease_owner=None,
+        lease_until=None,
+        created_at=now - timedelta(days=1),
+        updated_at=now - timedelta(hours=1),
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=FakeResult(scalar=model))
+
+    async def assert_updated_at_is_set():
+        assert model.updated_at == now
+
+    session.flush = AsyncMock(side_effect=assert_updated_at_is_set)
+
+    claimed = await SqlS3SyncRepository(session).claim(
+        "dev3", "worker-1", now, lease_until
+    )
+
+    assert claimed is not None
+    assert claimed.updated_at == now
+    assert claimed.lease_owner == "worker-1"
+    assert claimed.lease_until == lease_until
+    assert claimed.next_run_at == now + timedelta(minutes=10)
+    assert claimed.last_error is None
+    session.flush.assert_awaited_once()
 
 
 @pytest.mark.asyncio

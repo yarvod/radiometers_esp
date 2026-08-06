@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-06 — Restore S3 recovery job startup
+
+- Prevented the async SQLAlchemy repository from implicitly reloading the
+  server-managed `updated_at` column after claiming an S3 recovery job, which
+  previously raised `MissingGreenlet` before the worker could inspect MinIO.
+- Added regression coverage for lease, schedule, error and timestamp updates
+  performed while claiming a device sync job.
+
 ## 2026-08-05 — Per-device S3 recovery import
 
 - Added configurable per-device recovery of radiometer and meteo CSV files from

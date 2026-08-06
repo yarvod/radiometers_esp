@@ -15,3 +15,4 @@
 | 4 | Firmware / WN90LP | `TAG` name conflict with `inline constexpr char TAG[]` in `app_state.h` | Renamed to `kTag` in `wn90lp.cpp` |
 | 5 | Firmware / WN90LP | Task stack 4096 bytes — insufficient for `std::string` + file I/O | Increased to 8192 bytes |
 | 6 | Firmware / GNSS | After receiver reconfiguration, COM2 emitted ZDA and RTCM but no periodic GGA, so the UI position cache stayed empty outside one-shot measurement requests | Added `GPGGA COM2 1` to periodic output setup and made NMEA sentence detection accept both GP/GN talker IDs |
+| 7 | Backend / S3 recovery | ARQ jobs failed during config claim with `MissingGreenlet` because SQLAlchemy expired the server-managed `updated_at` value after flush | Set `updated_at` explicitly as part of the claim and added repository regression coverage |

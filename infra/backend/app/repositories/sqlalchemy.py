@@ -650,6 +650,7 @@ class SqlS3SyncRepository(S3SyncRepository):
         model.last_started_at = now
         model.next_run_at = now + timedelta(minutes=max(1, model.interval_minutes))
         model.last_error = None
+        model.updated_at = now
         await self._session.flush()
         return to_s3_sync_config(model)
 
