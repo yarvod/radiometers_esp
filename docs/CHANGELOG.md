@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-08 — Larger S3 recovery objects
+
+- Raised the S3 recovery import limit from 1 MiB to 1 GiB and exposed the
+  limit through `APP_S3_MAX_OBJECT_BYTES` in local and production Compose.
+
 ## 2026-08-06 — Restore S3 recovery job startup
 
 - Prevented the async SQLAlchemy repository from implicitly reloading the
