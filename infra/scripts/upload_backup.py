@@ -36,8 +36,12 @@ def main():
         target = remote.rstrip("/") + "/" + path.name
         run(*base, "copyto", str(path), target, "--checksum", "--drive-chunk-size", "32M")
         # Google Drive MD5 + length readback: no success marker until verified.
-        result = run(*base, "lsjson", target, "--stat", "--hash", stdout=subprocess.PIPE, text=True)
-        metadata = json.loads(result.stdout)
+        result = run(*base, "lsjson", remote, "--hash", stdout=subprocess.PIPE, text=True)
+        matches = [item for item in json.loads(result.stdout)
+                   if item.get("Name") == path.name and not item.get("IsDir")]
+        if len(matches) != 1:
+            raise RuntimeError(f"Expected one Google Drive file for {path.name}, found {len(matches)}")
+        metadata = matches[0]
         import hashlib
         digest = hashlib.md5()
         with path.open("rb") as stream:
