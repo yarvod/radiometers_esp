@@ -92,6 +92,25 @@ class BackupSafetyTests(unittest.TestCase):
         run.assert_called_once_with("docker", "start", "minio", "worker", stdout=subprocess.DEVNULL)
         self.assertFalse(self.state.exists())
 
+    def test_zero_retention_removes_only_drive_verified_archives(self):
+        destination = self.root / "backups"
+        destination.mkdir()
+        verified = destination / "radiometer-full-20261013T010000Z.tar.zst"
+        local_only = destination / "radiometer-full-20261013T020000Z.tar.zst"
+        for archive in (verified, local_only):
+            archive.write_bytes(b"archive")
+            Path(str(archive) + ".sha256").write_text("checksum")
+            Path(str(archive) + ".success").touch()
+        Path(str(verified) + ".drive.json").write_text("[]")
+
+        backup.prune_local_archives(destination, 0)
+
+        self.assertFalse(verified.exists())
+        self.assertFalse(Path(str(verified) + ".sha256").exists())
+        self.assertFalse(Path(str(verified) + ".drive.json").exists())
+        self.assertTrue(local_only.exists())
+        self.assertTrue(Path(str(local_only) + ".sha256").exists())
+
 
 class RestoreSafetyTests(unittest.TestCase):
     def test_existing_project_is_refused_before_any_mutation(self):

@@ -45,6 +45,24 @@ def resume_stopped():
         state.unlink()
 
 
+def prune_local_archives(destination, keep):
+    if keep < 0:
+        raise RuntimeError("BACKUP_LOCAL_KEEP must be non-negative")
+    completed = sorted(destination.glob("radiometer-full-*.tar.zst.success"), reverse=True)
+    if keep == 0:
+        # A local-only archive has no Drive receipt and must survive.
+        removable = [marker for marker in completed
+                     if Path(str(marker).removesuffix(".success") + ".drive.json").is_file()]
+    else:
+        removable = completed[keep:]
+    for marker in removable:
+        old = Path(str(marker).removesuffix(".success"))
+        old.unlink(missing_ok=True)
+        Path(str(old) + ".sha256").unlink(missing_ok=True)
+        Path(str(old) + ".drive.json").unlink(missing_ok=True)
+        marker.unlink()
+
+
 def backup(infra, destination, upload):
     infra, destination = infra.resolve(), destination.resolve()
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -221,25 +239,24 @@ def backup(infra, destination, upload):
     log(f"Archive created: {archive.name} ({archive.stat().st_size} bytes)")
     if upload:
         run("python3", str(SCRIPT_DIR / "upload_backup.py"), "upload", str(archive), str(digest_file))
+    receipt = Path(str(archive) + ".drive.json")
+    drive_files = json.loads(receipt.read_text()) if upload else []
     # Retention only removes successful copies. Failed/unuploaded copies remain.
     success = Path(str(archive) + ".success")
     success.touch(mode=0o600)
-    status = {"created_utc": stamp, "archive": str(archive), "bytes": archive.stat().st_size,
-              "google_drive_verified": upload, "interruption_seconds": downtime}
+    archive_bytes = archive.stat().st_size
+    keep = int(os.environ.get("BACKUP_LOCAL_KEEP", "0"))
+    prune_local_archives(destination, keep)
+    status = {"created_utc": stamp, "archive_name": archive.name,
+              "local_archive": str(archive) if archive.exists() else None,
+              "bytes": archive_bytes, "google_drive_verified": upload,
+              "drive_files": drive_files,
+              "drive_remote": os.environ.get("BACKUP_RCLONE_REMOTE", "radiometer-gdrive:radiometer-backups") if upload else None,
+              "interruption_seconds": downtime}
     status_path = state.parent / "last-success.json"
     temporary_status = status_path.with_suffix(".tmp")
     temporary_status.write_text(json.dumps(status, indent=2) + "\n")
     temporary_status.replace(status_path)
-    keep = int(os.environ.get("BACKUP_LOCAL_KEEP", "2"))
-    if keep < 1:
-        raise RuntimeError("BACKUP_LOCAL_KEEP must be at least 1")
-    completed = sorted(destination.glob("radiometer-full-*.tar.zst.success"), reverse=True)
-    for marker in completed[keep:]:
-        old = Path(str(marker).removesuffix(".success"))
-        old.unlink(missing_ok=True)
-        Path(str(old) + ".sha256").unlink(missing_ok=True)
-        Path(str(old) + ".drive.json").unlink(missing_ok=True)
-        marker.unlink()
     log("Full backup completed successfully")
 
 

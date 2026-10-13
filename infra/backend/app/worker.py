@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import signal
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -301,31 +302,53 @@ async def run_worker() -> None:
     settings = Settings()
     host, port = parse_mqtt(settings)
     container = make_async_container(AppProvider())
+    stop = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
 
-    while True:
-        try:
-            async with Client(hostname=host, port=port, username=settings.mqtt_user, password=settings.mqtt_password) as client:
-                await client.subscribe(settings.mqtt_measure_topic)
-                await client.subscribe(settings.mqtt_state_topic)
-                await client.subscribe(settings.mqtt_error_topic)
-                messages = client.messages
-                async for message in messages:
-                    topic = str(message.topic)
-                    try:
-                        if topic.endswith("/measure"):
-                            await handle_measurement(topic, message.payload, container)
-                        elif topic.endswith("/state"):
-                            await handle_state(topic, message.payload, container)
-                        elif topic.endswith("/error"):
-                            await handle_error(topic, message.payload, container)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        # A malformed or poisoned retained message must not terminate the
-                        # worker and turn container restart policy into a crash loop.
-                        logger.exception("Failed to process MQTT message on topic %s", topic)
-        except MqttError:
-            await asyncio.sleep(2)
+    try:
+        while not stop.is_set():
+            try:
+                async with Client(hostname=host, port=port, username=settings.mqtt_user, password=settings.mqtt_password) as client:
+                    await client.subscribe(settings.mqtt_measure_topic)
+                    await client.subscribe(settings.mqtt_state_topic)
+                    await client.subscribe(settings.mqtt_error_topic)
+                    messages = client.messages
+                    while not stop.is_set():
+                        incoming = asyncio.create_task(anext(messages))
+                        stopping = asyncio.create_task(stop.wait())
+                        try:
+                            done, _ = await asyncio.wait({incoming, stopping}, return_when=asyncio.FIRST_COMPLETED)
+                            if incoming not in done:
+                                break
+                            message = incoming.result()
+                        except StopAsyncIteration:
+                            break
+                        finally:
+                            for task in (incoming, stopping):
+                                if not task.done():
+                                    task.cancel()
+                            await asyncio.gather(incoming, stopping, return_exceptions=True)
+                        topic = str(message.topic)
+                        try:
+                            if topic.endswith("/measure"):
+                                await handle_measurement(topic, message.payload, container)
+                            elif topic.endswith("/state"):
+                                await handle_state(topic, message.payload, container)
+                            elif topic.endswith("/error"):
+                                await handle_error(topic, message.payload, container)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            # A malformed or poisoned retained message must not terminate the
+                            # worker and turn container restart policy into a crash loop.
+                            logger.exception("Failed to process MQTT message on topic %s", topic)
+            except MqttError:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=2)
+                except TimeoutError:
+                    pass
+    finally:
+        await container.close()
 
 
 if __name__ == "__main__":

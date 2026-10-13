@@ -11,6 +11,9 @@
   `drive.file` scope and size/MD5 verification before marking success.
 - Added fresh-project restoration, isolated validation and portable SHA256
   sidecars. Removed unused partial `backup.sh` and `restore.sh` scripts.
+- Successful Drive uploads now remove local archives after verification; failed
+  uploads remain on the server for retry. MQTT ingestion exits cleanly on
+  SIGTERM after its current message, avoiding Docker's 45-second kill timeout.
 
 ## 2026-08-08 — Larger S3 recovery objects
 
