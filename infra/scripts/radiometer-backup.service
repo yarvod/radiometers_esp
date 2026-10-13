@@ -1,0 +1,19 @@
+[Unit]
+Description=Radiometer full backup to Google Drive
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/devuser/radiometers_esp/infra
+EnvironmentFile=/home/devuser/radiometers_esp/infra/backup.env
+UMask=0077
+ExecStart=/usr/bin/python3 scripts/full_backup.py
+ExecStopPost=/usr/bin/python3 scripts/full_backup.py --resume-only
+TimeoutStartSec=2h
+TimeoutStopSec=120
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -42,3 +42,11 @@ config.txt
 # Firmware bundle for manual flashing (not committed)
 firmware_release/
 firmware_release_*.zip
+
+# Server-only backup data, credentials, and runtime configuration
+/infra/.env
+/infra/backup.env
+/infra/backup-secrets/
+/infra/backups/
+/infra/certs/
+/infra/mosquitto_passwd/

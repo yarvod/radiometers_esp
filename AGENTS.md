@@ -46,7 +46,8 @@ The repository contains two deployable systems:
 | `infra/frontend/utils/`, `types/` | Shared frontend utilities and contracts |
 | `infra/docker-compose.yml` | Local development stack |
 | `infra/compose-prod.yml` | Production service definitions |
-| `infra/scripts/` | Backup and restore scripts |
+| `infra/backup-privacy.html` | Source of public OAuth app privacy page served by ru1 Nginx |
+| `infra/scripts/` | Full backup and restore scripts, daily systemd units; see `infra/BACKUPS.md` |
 | `.github/workflows/deploy.yml` | Docker image build, push, and production deployment |
 | `docs/` | Workplan, changelog, and known bugs |
 
@@ -181,6 +182,20 @@ rtk git diff --check
 ```
 
 ### Final check
+
+Backup/restore tooling checks, from the repository root:
+
+```bash
+rtk proxy python3 -m unittest discover -s infra/scripts/tests -v
+rtk proxy python3 -m py_compile infra/scripts/full_backup.py infra/scripts/full_restore.py infra/scripts/upload_backup.py
+```
+
+Operational rollout requires a real archive, checksum and Drive size/hash
+readback, plus an isolated restore. Never restore production data for validation.
+Server scripts run from `infra/scripts/` in the server checkout. Root-only
+`infra/backup.env`, `infra/backup-secrets/` and `infra/backups/` are ignored by
+Git. The daily systemd timer points at this checkout; see
+`infra/BACKUPS.md`.
 
 Before handoff:
 

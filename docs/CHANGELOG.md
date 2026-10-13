@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-13 — Full daily infrastructure backups
+
+- Added consistent full archives with PostgreSQL dump, full MinIO metadata and
+  object versions, MQTT/Redis/export volumes, configuration, TLS credentials and
+  exact deployed Docker images.
+- Added a daily 04:00 Moscow systemd timer, restart recovery after snapshot
+  failure, a process lock and retention of two successful local copies.
+- Google Drive uploads use a private OAuth client through rclone, limited
+  `drive.file` scope and size/MD5 verification before marking success.
+- Added fresh-project restoration, isolated validation and portable SHA256
+  sidecars. Removed unused partial `backup.sh` and `restore.sh` scripts.
+
 ## 2026-08-08 — Larger S3 recovery objects
 
 - Raised the S3 recovery import limit from 1 MiB to 1 GiB and exposed the

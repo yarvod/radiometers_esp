@@ -1,5 +1,16 @@
 # Active workplan: device page rollout smoke
 
+## Daily full infrastructure backup rollout
+
+- [x] Implement full data/configuration/image archive and fresh-project restore.
+- [x] Enable Drive API in the user's dedicated `radiometer-511512` project.
+- [ ] Finish private OAuth client with `drive.file` and connect server rclone.
+- [x] Verify first local archive, checksum and isolated restore.
+- [ ] Verify Google Drive size/hash readback.
+- [ ] Install and verify daily 04:00 Moscow timer on `ru1`.
+
+## Device page rollout
+
 S3 recovery backend and migration `00023` are deployed on production. The API,
 MQTT worker, and ARQ worker are healthy; timestamp-only uniqueness has been
 replaced with content fingerprints without deleting same-second measurements.
