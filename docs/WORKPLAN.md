@@ -8,8 +8,8 @@
 - [x] Verify first local archive, checksum and isolated restore.
 - [x] Verify Google Drive size/hash readback.
 - [x] Install and verify daily 04:00 Moscow timer on `ru1`.
-- [ ] Deploy graceful MQTT worker shutdown and verify shorter backup pause.
-- [ ] Remove already uploaded local archives after switching retention to zero.
+- [x] Deploy graceful MQTT worker shutdown and verify shorter backup pause (104.8s to 62.3s).
+- [x] Remove already uploaded local archives after switching retention to zero.
 
 ## Device page rollout
 
