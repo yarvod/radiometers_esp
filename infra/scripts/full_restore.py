@@ -46,7 +46,10 @@ def restore_minio(bundle, container, buckets):
                    f"type=bind,src={source},dst=/backup,readonly", "--entrypoint", "mc", image]
 
         def mc(*args, **kwargs):
-            return run(*command, *args, **kwargs)
+            invocation = command.copy()
+            if kwargs.get("stdin") is not None:
+                invocation.insert(2, "-i")
+            return run(*invocation, *args, **kwargs)
 
         for _ in range(90):
             result = subprocess.run([*command, "ready", "backup"], stdout=subprocess.DEVNULL,
