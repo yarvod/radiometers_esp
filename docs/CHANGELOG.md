@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-18 — Backups without device logging interruption
+
+- Changed daily backup to leave API, MQTT, S3, Redis and ingestion running. PostgreSQL
+  uses an online logical dump; MinIO objects and settings are exported via its API;
+  Redis and MQTT use their live snapshot mechanisms.
+- Restore supports both the original stopped-service archive and the new online
+  archive. Online MinIO export requires unversioned buckets and does not retain
+  arbitrary per-object metadata.
+
 ## 2026-10-13 — Full daily infrastructure backups
 
 - Added consistent full archives with PostgreSQL dump, full MinIO metadata and

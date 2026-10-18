@@ -2,6 +2,7 @@
 
 ## Daily full infrastructure backup rollout
 
+- [ ] Replace the service-stopping snapshot with online PostgreSQL, MinIO, Redis and MQTT capture; validate a real archive, Drive readback, isolated restore and uninterrupted dev3 logging.
 - [x] Implement full data/configuration/image archive and fresh-project restore.
 - [x] Enable Drive API in the user's dedicated `radiometer-511512` project.
 - [x] Finish private OAuth client with `drive.file` and connect server rclone.

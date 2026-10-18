@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import time
+from urllib.parse import quote
 
 
 def run(*args, **kwargs):
@@ -28,11 +30,50 @@ def wait_database(container):
     raise RuntimeError("Restored PostgreSQL did not become ready within 90 seconds")
 
 
+def restore_minio(bundle, container, buckets):
+    image, cid = container["Image"], container["Id"]
+    values = dict(item.split("=", 1) for item in container["Config"]["Env"] if "=" in item)
+    username = values.get("MINIO_ROOT_USER", "minioadmin")
+    password = values.get("MINIO_ROOT_PASSWORD", "minioadmin")
+    alias = "http://" + quote(username, safe="") + ":" + quote(password, safe="") + "@127.0.0.1:9000"
+    source = bundle / "minio"
+    with tempfile.TemporaryDirectory(prefix="radiometer-mc-") as temp:
+        credentials = Path(temp) / "mc.env"
+        credentials.write_text(f"MC_HOST_backup={alias}\n")
+        credentials.chmod(0o600)
+        command = ["docker", "run", "--rm", "--network", f"container:{cid}",
+                   "--env-file", str(credentials), "--mount",
+                   f"type=bind,src={source},dst=/backup,readonly", "--entrypoint", "mc", image]
+
+        def mc(*args, **kwargs):
+            return run(*command, *args, **kwargs)
+
+        for _ in range(90):
+            result = subprocess.run([*command, "ready", "backup"], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            if result.returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            raise RuntimeError("Restored MinIO did not become ready within 90 seconds")
+        for bucket in buckets:
+            mc("mb", "--ignore-existing", f"backup/{bucket}", stdout=subprocess.DEVNULL)
+        mc("admin", "cluster", "bucket", "import", "backup", "/backup/config/buckets.zip",
+           stdout=subprocess.DEVNULL)
+        mc("admin", "cluster", "iam", "import", "backup", "/backup/config/iam.zip",
+           stdout=subprocess.DEVNULL)
+        for bucket in buckets:
+            mc("mirror", "--retry", f"/backup/buckets/{bucket}", f"backup/{bucket}",
+               stdout=subprocess.DEVNULL)
+        with (source / "config" / "server.txt").open("rb") as stream:
+            mc("admin", "config", "import", "backup", stdin=stream, stdout=subprocess.DEVNULL)
+
+
 def restore(bundle, target, project, isolated, host_config):
     if isolated and host_config:
         raise RuntimeError("Isolated validation must not install host configuration")
     manifest = json.loads((bundle / "manifest.json").read_text())
-    if manifest.get("format") != 1:
+    if manifest.get("format") not in (1, 2):
         raise RuntimeError("Unsupported backup format")
     configuration = json.loads((bundle / "infra/compose.restore.json").read_text())
     configuration["name"] = project
@@ -68,6 +109,15 @@ def restore(bundle, target, project, isolated, host_config):
         name = mount["archive"]
         if Path(name).name != name or not (bundle / "volumes" / name).is_file():
             raise RuntimeError("Invalid or missing volume archive")
+    if manifest["format"] == 2:
+        for name in ("buckets.zip", "iam.zip", "server.txt"):
+            if not (bundle / "minio" / "config" / name).is_file():
+                raise RuntimeError(f"Missing MinIO configuration export: {name}")
+        for bucket in manifest["minio_buckets"]:
+            if Path(bucket).name != bucket or not (bundle / "minio" / "buckets" / bucket).is_dir():
+                raise RuntimeError("Invalid or missing MinIO bucket")
+        if not (bundle / "redis" / "dump.rdb").is_file():
+            raise RuntimeError("Missing Redis snapshot")
     if host_config:
         install_paths = [p for p in manifest["host_paths"] if p.startswith((
             "/etc/nginx/conf.d/", "/etc/letsencrypt/live/", "/etc/letsencrypt/archive/",
@@ -101,11 +151,17 @@ def restore(bundle, target, project, isolated, host_config):
                 continue
             restored_volumes.add(mount["Name"])
             run("tar", "--numeric-owner", "-C", mount["Source"], "-xf", str(bundle / "volumes" / saved["archive"]))
+    if manifest["format"] == 2:
+        run("docker", "cp", str(bundle / "redis" / "dump.rdb"),
+            f"{deployed['redis']['Id']}:/data/dump.rdb")
     run("docker", "start", deployed["db"]["Id"], stdout=subprocess.DEVNULL)
     wait_database(deployed["db"]["Id"])
     with (bundle / "postgres/database.dump").open("rb") as stream:
         run("docker", "exec", "-i", deployed["db"]["Id"], "sh", "-ec",
             'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl --exit-on-error', stdin=stream)
+    if manifest["format"] == 2:
+        run("docker", "start", deployed["minio"]["Id"], stdout=subprocess.DEVNULL)
+        restore_minio(bundle, deployed["minio"], manifest["minio_buckets"])
     run(*compose, "up", "-d", "--pull", "never")
     if host_config:
         for path in install_paths:

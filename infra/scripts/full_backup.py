@@ -11,6 +11,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
+from urllib.parse import quote
+import zipfile
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_STATE_DIR = SCRIPT_DIR.parent / "backups" / ".state"
@@ -63,6 +66,96 @@ def prune_local_archives(destination, keep):
         marker.unlink()
 
 
+def minio_client(image, container, credentials, directory, *args, **kwargs):
+    """Run the deployed mc binary against the live MinIO through its network."""
+    command = ["docker", "run", "--rm", "--network", f"container:{container}",
+               "--env-file", str(credentials), "--mount",
+               f"type=bind,src={directory},dst=/backup", "--workdir", "/backup/config",
+               "--entrypoint", "mc",
+               image, *args]
+    return run(*command, **kwargs)
+
+
+def minio_credentials(container, destination):
+    values = dict(item.split("=", 1) for item in container["Config"]["Env"] if "=" in item)
+    username = values.get("MINIO_ROOT_USER", "minioadmin")
+    password = values.get("MINIO_ROOT_PASSWORD", "minioadmin")
+    alias = "http://" + quote(username, safe="") + ":" + quote(password, safe="") + "@127.0.0.1:9000"
+    destination.write_text(f"MC_HOST_backup={alias}\n")
+    destination.chmod(0o600)
+
+
+def backup_minio(container, work):
+    root = work / "minio"
+    (root / "buckets").mkdir(parents=True)
+    (root / "config").mkdir()
+    credentials = work / ".mc.env"
+    minio_credentials(container, credentials)
+    image, cid = container["Image"], container["Id"]
+    try:
+        listing = minio_client(image, cid, credentials, root, "--json", "ls", "backup",
+                               stdout=subprocess.PIPE, text=True).stdout
+        buckets = sorted({json.loads(line)["key"].rstrip("/") for line in listing.splitlines() if line})
+        if not buckets:
+            raise RuntimeError("No MinIO buckets found; refusing an empty backup")
+        for bucket in buckets:
+            info = minio_client(image, cid, credentials, root, "--json", "version", "info",
+                                f"backup/{bucket}", stdout=subprocess.PIPE, text=True).stdout
+            versioning = json.loads(info)["versioning"]["status"]
+            if versioning:
+                raise RuntimeError(f"MinIO bucket {bucket} has versioning enabled; live mirror cannot retain history")
+            destination = root / "buckets" / bucket
+            destination.mkdir()
+            log(f"Mirroring MinIO bucket {bucket} while services remain online")
+            minio_client(image, cid, credentials, root, "mirror", "--retry", "--summary",
+                         f"backup/{bucket}", f"/backup/buckets/{bucket}",
+                         stdout=subprocess.DEVNULL)
+        minio_client(image, cid, credentials, root, "admin", "cluster", "bucket", "export",
+                     "backup", stdout=subprocess.DEVNULL)
+        exports = list((root / "config").glob("*.zip"))
+        if len(exports) != 1:
+            raise RuntimeError("MinIO bucket metadata export is missing or ambiguous")
+        exports[0].rename(root / "config" / "buckets.zip")
+        minio_client(image, cid, credentials, root, "admin", "cluster", "iam", "export",
+                     "backup", "--output", "/backup/config/iam.zip", stdout=subprocess.DEVNULL)
+        with (root / "config" / "server.txt").open("wb") as stream:
+            minio_client(image, cid, credentials, root, "admin", "config", "export", "backup", stdout=stream)
+        for name in ("buckets.zip", "iam.zip"):
+            if not zipfile.is_zipfile(root / "config" / name):
+                raise RuntimeError(f"MinIO {name} export is invalid")
+        (root / "buckets.json").write_text(json.dumps(buckets) + "\n")
+        return buckets
+    finally:
+        credentials.unlink(missing_ok=True)
+
+
+def backup_redis(container, work):
+    (work / "redis").mkdir()
+    temporary = "/tmp/radiometer-backup.rdb"
+    try:
+        run("docker", "exec", container["Id"], "redis-cli", "--rdb", temporary,
+            stdout=subprocess.DEVNULL)
+        run("docker", "cp", f"{container['Id']}:{temporary}", str(work / "redis" / "dump.rdb"))
+    finally:
+        run("docker", "exec", container["Id"], "rm", "-f", temporary)
+
+
+def flush_mosquitto(container, mounts):
+    data_mount = next((mount for mount in mounts.values() if any(
+        target["service"] == "mosquitto" and target["target"] == "/mosquitto/data"
+        for target in mount["targets"])), None)
+    if data_mount is None:
+        raise RuntimeError("Mosquitto data volume is missing")
+    database = Path(data_mount["source"]) / "mosquitto.db"
+    previous = database.stat().st_mtime_ns if database.exists() else None
+    run("docker", "kill", "--signal", "USR1", container["Id"], stdout=subprocess.DEVNULL)
+    for _ in range(100):
+        if database.exists() and database.stat().st_mtime_ns != previous:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("Mosquitto did not flush its persistence database")
+
+
 def backup(infra, destination, upload):
     infra, destination = infra.resolve(), destination.resolve()
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -88,7 +181,7 @@ def backup(infra, destination, upload):
         raise RuntimeError("Less than the configured minimum free space for a full backup")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     archive = destination / f"radiometer-full-{stamp}.tar.zst"
-    stopped, tags = [], []
+    tags = []
     state = Path(os.environ.get("BACKUP_STATE", str(DEFAULT_STATE_DIR / "stopped.json")))
     state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     resume_stopped()
@@ -163,7 +256,7 @@ def backup(infra, destination, upload):
                             raise RuntimeError(f"Bind mount outside infra requires explicit support: {original}")
                         mount["source"] = "./" + str(original.relative_to(infra))
                 for mount in deployed.get(service, {}).get("Mounts", []):
-                    if mount["Type"] != "volume" or service == "db":
+                    if mount["Type"] != "volume" or service in ("db", "minio"):
                         continue
                     key = mount["Name"]
                     if key not in mounts:
@@ -173,50 +266,33 @@ def backup(infra, destination, upload):
             (bundle_infra / "compose.restore.json").write_text(json.dumps(configuration, indent=2) + "\n")
             log("Saving exact Docker images while services are online")
             run("docker", "image", "save", "--output", str(work / "images.tar"), *tags)
-            writers = [deployed[s]["Id"] for s in ("backend", "worker", "arq-worker", "mosquitto", "minio", "redis")
-                       if deployed[s]["State"]["Running"]]
             snapshot_started = dt.datetime.now(dt.timezone.utc)
-            # Record every running container before stop, so errors also resume it.
-            stopped.extend(writers)
-            state.write_text(json.dumps(writers) + "\n")
-            log("Stopping radiometer writers for a consistent snapshot")
-            run("docker", "stop", "--time", "45", *writers, stdout=subprocess.DEVNULL)
-            log("Dumping PostgreSQL")
+            log("Dumping PostgreSQL online; device logging continues")
             for filename, command in (
                 ("globals.sql", 'pg_dumpall -U "$POSTGRES_USER" --globals-only'),
                 ("database.dump", 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner --no-acl'),
             ):
                 with (work / "postgres" / filename).open("wb") as stream:
                     run("docker", "exec", deployed["db"]["Id"], "sh", "-ec", command, stdout=stream)
-            log("Saving complete MinIO, MQTT, Redis and export volumes")
+            log("Saving MinIO objects and settings through its live API")
+            buckets = backup_minio(deployed["minio"], work)
+            log("Saving Redis and flushing Mosquitto while both remain online")
+            backup_redis(deployed["redis"], work)
+            flush_mosquitto(deployed["mosquitto"], mounts)
             for mount in mounts.values():
                 run("tar", "--numeric-owner", "-C", mount["source"], "-cf",
                     str(work / "volumes" / mount["archive"]), ".")
         finally:
-            if stopped:
-                log("Resuming radiometer services")
-                # Dependencies first. Start the same containers, without changing images/migrations.
-                start_order = ("minio", "redis", "mosquitto", "backend", "worker", "arq-worker")
-                errors = []
-                for service in start_order:
-                    cid = deployed[service]["Id"]
-                    if cid in stopped:
-                        try:
-                            run("docker", "start", cid, stdout=subprocess.DEVNULL)
-                        except subprocess.CalledProcessError as exc:
-                            errors.append(exc)
-                if errors:
-                    raise RuntimeError("Failed to resume one or more radiometer services") from errors[0]
-                state.unlink(missing_ok=True)
             for tag in tags:
                 run("docker", "image", "rm", tag, stdout=subprocess.DEVNULL)
-        downtime = (dt.datetime.now(dt.timezone.utc) - snapshot_started).total_seconds()
-        log(f"Snapshot complete; service interruption {downtime:.1f}s")
+        elapsed = (dt.datetime.now(dt.timezone.utc) - snapshot_started).total_seconds()
+        log(f"Online snapshot complete in {elapsed:.1f}s; no service was stopped")
         for mount in mounts.values():
             mount.pop("source")
-        manifest = {"format": 1, "created_utc": stamp, "project": configuration["name"],
+        manifest = {"format": 2, "created_utc": stamp, "project": configuration["name"],
                     "source_infra": str(infra), "volumes": mounts, "host_paths": included_host_paths,
-                    "interruption_seconds": downtime}
+                    "backup_mode": "online", "minio_buckets": buckets,
+                    "snapshot_seconds": elapsed, "interruption_seconds": 0}
         (work / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (work / "RESTORE.txt").write_text(
             "Install Docker Compose v2, Python >=3.10 and zstd on Linux.\n"
@@ -252,7 +328,7 @@ def backup(infra, destination, upload):
               "bytes": archive_bytes, "google_drive_verified": upload,
               "drive_files": drive_files,
               "drive_remote": os.environ.get("BACKUP_RCLONE_REMOTE", "radiometer-gdrive:radiometer-backups") if upload else None,
-              "interruption_seconds": downtime}
+              "snapshot_seconds": elapsed, "interruption_seconds": 0}
     status_path = state.parent / "last-success.json"
     temporary_status = status_path.with_suffix(".tmp")
     temporary_status.write_text(json.dumps(status, indent=2) + "\n")

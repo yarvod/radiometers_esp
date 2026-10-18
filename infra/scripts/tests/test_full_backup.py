@@ -45,7 +45,7 @@ class BackupSafetyTests(unittest.TestCase):
             return json.dumps(self.containers)
         return " ".join(self.services)
 
-    def assert_resumed_after(self, failure):
+    def assert_online_failure(self, failure):
         calls = []
 
         def run(*args, **kwargs):
@@ -57,19 +57,15 @@ class BackupSafetyTests(unittest.TestCase):
         with patch.object(backup, "output", side_effect=self.output), patch.object(backup, "run", side_effect=run):
             with self.assertRaises(subprocess.CalledProcessError):
                 backup.backup(self.infra, self.root / "backups", False)
-        resumed = {args[2] for args in calls if args[:2] == ("docker", "start")}
-        self.assertEqual(resumed, {"backend", "worker", "arq-worker", "mosquitto", "minio", "redis"})
+        self.assertFalse(any(args[:2] in (("docker", "stop"), ("docker", "start")) for args in calls))
         self.assertFalse(self.state.exists())
         self.assertFalse(list((self.root / "backups").glob("*.success")))
         # A pruned one-shot migration container uses the captured running backend image.
         tags = [args for args in calls if args[:3] == ("docker", "image", "tag")]
         self.assertEqual(len(tags), len(self.services))
 
-    def test_stop_failure_resumes_all_previously_running_writers(self):
-        self.assert_resumed_after(lambda args: args[:2] == ("docker", "stop"))
-
-    def test_database_dump_failure_resumes_writers(self):
-        self.assert_resumed_after(lambda args: args[:2] == ("docker", "exec"))
+    def test_database_dump_failure_leaves_all_services_running(self):
+        self.assert_online_failure(lambda args: args[:2] == ("docker", "exec"))
 
     def test_drive_auth_failure_does_not_stop_services(self):
         with patch.object(backup, "output", side_effect=self.output), patch.object(
